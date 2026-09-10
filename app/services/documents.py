@@ -86,7 +86,7 @@ def _styles():
     }
 
 
-def _letterhead(doc_title: str, meta: list[tuple[str, str]], accent: str = CRIMSON):
+def _letterhead(meta: list[tuple[str, str]], accent: str = CRIMSON, doc_title: str = ""):
     from reportlab.lib import colors
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, Table, TableStyle
@@ -100,7 +100,9 @@ def _letterhead(doc_title: str, meta: list[tuple[str, str]], accent: str = CRIMS
         Paragraph(f"{company['tel']} &nbsp;·&nbsp; {company['email']}", styles["small"]),
         Paragraph(company["website"], styles["small"]),
     ]
-    right = [Paragraph(doc_title, styles["title"])]
+    # The heading is optional. The document number and dates below already say
+    # what this is, so a second "TAX INVOICE" above them is just noise.
+    right = [Paragraph(doc_title, styles["title"])] if doc_title else []
     right += [Paragraph(f"<b>{label}</b> {value}", styles["subtitle"]) for label, value in meta]
 
     table = Table([[left, right]], colWidths=[100 * mm, 70 * mm])
@@ -288,7 +290,7 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
     items = [i.to_dict() for i in estimate.items]
 
     story = [
-        _letterhead("QUOTATION", meta),
+        _letterhead(meta),
         Spacer(1, 6 * mm),
         _party_block([
             ("Prepared for", [
@@ -397,7 +399,7 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
     ]
 
     story = [
-        _letterhead("TAX INVOICE", meta),
+        _letterhead(meta),
         Spacer(1, 6 * mm),
         _party_block([
             ("Billed to", [
@@ -493,7 +495,7 @@ def build_receipt_pdf(payment: Payment) -> bytes:
     ]
 
     story = [
-        _letterhead("RECEIPT", meta, accent=GREEN),
+        _letterhead(meta, accent=GREEN),
         Spacer(1, 6 * mm),
         Paragraph(
             f"Received with thanks from <b>{customer.name if customer else '—'}</b> "
@@ -509,7 +511,7 @@ def build_receipt_pdf(payment: Payment) -> bytes:
             ]),
             ("Against", [
                 ("Invoice", invoice.invoice_no if invoice else "—"),
-                ("Job no", job.job_no if job else "—"),
+                ("Job card", job.job_no if job else "—"),
                 ("Vehicle", job.vehicle.reg_no if job and job.vehicle else "—"),
             ]),
         ]),

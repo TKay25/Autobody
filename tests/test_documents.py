@@ -1,6 +1,9 @@
 """Quotation / invoice / receipt documents and WhatsApp delivery."""
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from app.extensions import db
@@ -16,6 +19,8 @@ from app.models import (
 )
 from app.services import documents, intent_router, notifications
 from app.services.whatsapp_client import get_or_create_conversation
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
@@ -113,6 +118,47 @@ def test_pdf_endpoints_are_protected_and_typed(auth_client):
         assert "filename=" in res.headers.get("Content-Disposition", "")
 
     assert auth_client.get("/api/estimates/999999/pdf").status_code == 404
+
+
+def test_the_letterhead_carries_no_shouted_title(app):
+    """The number and dates already identify the document.
+
+    A second "TAX INVOICE" above "Invoice INV-…" is noise, and on the printed
+    page it was the loudest thing on the sheet.
+    """
+    with app.app_context():
+        table = documents._letterhead([("Invoice", "INV-2026-0001")])
+    right_cell = table._cellvalues[0][1]
+    assert len(right_cell) == 1, "the right column should hold only the meta lines"
+    assert "INV-2026-0001" in right_cell[0].text
+
+
+def test_no_pdf_builder_passes_a_shouted_heading():
+    """Guard the three builders, not just the helper's default.
+
+    Matched against the call sites rather than the whole file, so the comment
+    explaining *why* the heading is optional does not trip the guard.
+    """
+    source = (ROOT / "app" / "services" / "documents.py").read_text(encoding="utf-8")
+    # Call sites only — the definition starts with `def ` so it is skipped.
+    calls = re.findall(r"^\s*_letterhead\([^)]*", source, re.MULTILINE)
+    assert len(calls) == 3, f"expected three letterhead calls, found {len(calls)}"
+    for call in calls:
+        assert not re.search(r"['\"](TAX INVOICE|QUOTATION|RECEIPT)['\"]", call), call
+
+
+def test_the_document_page_does_not_repeat_its_kind(client, auth_client, app):
+    job = _job_with_estimate(auth_client, reg="TITLE1")
+    _ensure_invoice(auth_client, job["id"])
+    with app.app_context():
+        from app.models import Invoice
+        token = Invoice.query.first().public_token
+
+    html = client.get(f"/doc/invoice/{token}").get_data(as_text=True)
+    assert 'class="doc-title"' not in html
+    # The document number still says what it is, and the tab keeps the full name.
+    assert "INV-" in html
+    assert "<title>Tax invoice " in html
 
 
 # ── public document routes ───────────────────────────────────────────────────

@@ -1884,10 +1884,7 @@ body.doc-body { background: #eef1f7; }
 .doc-meta { text-align: right; font-size: .8rem; color: var(--tc-ink-muted); }
 .doc-meta div { margin-bottom: .15rem; }
 .doc-meta span { color: var(--tc-ink-faint); margin-right: .35rem; }
-.doc-title {
-  font-size: 1.15rem; font-weight: 800; letter-spacing: .06em;
-  text-transform: uppercase; color: var(--tc-navy-900); margin-bottom: .4rem;
-}
+
 .doc-parties {
   display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.4rem;
 }

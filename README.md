@@ -206,6 +206,17 @@ signature strip. Append `.pdf` to any share link, or use the API:
 GET /api/estimates/<id>/pdf     GET /api/invoices/<id>/pdf     GET /api/payments/<id>/pdf
 ```
 
+The letterhead carries the company block on the left and the record on the right —
+`Invoice INV-2026-0001`, its dates and the job card. There is deliberately **no
+second heading** above those lines: the number already says what the document is, and
+a shouted "TAX INVOICE" over the top was the loudest thing on the sheet. `_letterhead()`
+still accepts an optional `doc_title` if you ever want one back. The browser tab keeps
+the full name, so the page is still identifiable in a stack of tabs.
+
+> If Topclass registers for VAT, check the invoice wording against ZIMRA's requirements
+> before printing — some jurisdictions require the words "Tax Invoice" on the face of
+> the document.
+
 **Numbering** — quotations use `TC-EST-XXXXXX`, invoices `INV-YYYY-NNNN` and receipts
 `RCT-YYYY-NNNN`, all allocated inside the same transaction as the record.
 
