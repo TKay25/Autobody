@@ -106,46 +106,49 @@
       oninput: T.debounce((e) => { state.q = e.target.value; load(); }, 350),
     });
 
+    async function newPart() {
+      const res = await T.formModal({
+        title: 'New stock item',
+        icon: 'box-seam',
+        intro: 'Anything you hold on the shelf — panels, paint, consumables, fasteners.',
+        fields: [
+          { name: 'name', label: 'Description', col: 8, required: true, icon: 'box',
+            placeholder: 'Front bumper — Toyota Hilux 2016-2020' },
+          { name: 'sku', label: 'SKU', col: 4, icon: 'upc', placeholder: 'Auto-generated' },
+          { name: 'category', label: 'Category', type: 'select', col: 6,
+            icon: 'tags', options: meta.part_categories },
+          { name: 'supplier', label: 'Supplier', type: 'select', col: 6,
+            icon: 'truck', options: meta.suppliers },
+          { name: 'cost_price', label: 'Cost price', type: 'money', step: '0.01', col: 3,
+            icon: 'cash-stack', affix: 'USD' },
+          { name: 'sell_price', label: 'Sell price', type: 'money', step: '0.01', col: 3,
+            icon: 'tag', affix: 'USD' },
+          { name: 'qty_on_hand', label: 'Opening stock', type: 'number', col: 3,
+            icon: '123', step: '1', value: 0 },
+          { name: 'reorder_level', label: 'Reorder level', type: 'number', col: 3,
+            icon: 'exclamation-triangle', step: '1', value: 3,
+            hint: 'Alert when stock drops to this.' },
+          { name: 'location', label: 'Storage location', col: 12, icon: 'geo-alt',
+            placeholder: 'Shelf A3 · bay 2' },
+        ],
+        submitLabel: 'Create item',
+      });
+      if (!res) return;
+      await api.post('/api/parts', res);
+      T.toast('Stock item created.');
+      load();
+    }
+
     await load();
+    /* /parts?new=1 deep-links straight into the form. */
+    if (ctx.query.new === '1') setTimeout(newPart, 150);
 
     return h('div', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
         h('div.flex-fill', h('h1.h4.mb-0', 'Parts & stock')),
         search,
-        h('button.btn.btn-brand.btn-sm', {
-          onclick: async () => {
-            const res = await T.formModal({
-              title: 'New stock item',
-              icon: 'box-seam',
-              intro: 'Anything you hold on the shelf — panels, paint, consumables, fasteners.',
-              fields: [
-                { name: 'name', label: 'Description', col: 8, required: true, icon: 'box',
-                  placeholder: 'Front bumper — Toyota Hilux 2016-2020' },
-                { name: 'sku', label: 'SKU', col: 4, icon: 'upc', placeholder: 'Auto-generated' },
-                { name: 'category', label: 'Category', type: 'select', col: 6,
-                  icon: 'tags', options: meta.part_categories },
-                { name: 'supplier', label: 'Supplier', type: 'select', col: 6,
-                  icon: 'truck', options: meta.suppliers },
-                { name: 'cost_price', label: 'Cost price', type: 'money', step: '0.01', col: 3,
-                  icon: 'cash-stack', affix: 'USD' },
-                { name: 'sell_price', label: 'Sell price', type: 'money', step: '0.01', col: 3,
-                  icon: 'tag', affix: 'USD' },
-                { name: 'qty_on_hand', label: 'Opening stock', type: 'number', col: 3,
-                  icon: '123', step: '1', value: 0 },
-                { name: 'reorder_level', label: 'Reorder level', type: 'number', col: 3,
-                  icon: 'exclamation-triangle', step: '1', value: 3,
-                  hint: 'Alert when stock drops to this.' },
-                { name: 'location', label: 'Storage location', col: 12, icon: 'geo-alt',
-                  placeholder: 'Shelf A3 · bay 2' },
-              ],
-              submitLabel: 'Create item',
-            });
-            if (!res) return;
-            await api.post('/api/parts', res);
-            T.toast('Stock item created.');
-            load();
-          },
-        }, T.icon('plus-lg'), ' New stock item'),
+        h('button.btn.btn-brand.btn-sm', { onclick: newPart },
+          T.icon('plus-lg'), ' New stock item'),
       ]),
       summary,
       T.section({ body: host, flush: true }),

@@ -79,6 +79,24 @@ def test_theme_tokens_are_complete():
     assert not undefined, f"used but never defined: {sorted(undefined)}"
 
 
+def test_identity_lives_in_the_top_bar():
+    """The user menu and sign out belong in the top bar, not the sidebar foot."""
+    appjs = (JS_DIR / "app.js").read_text(encoding="utf-8")
+    assert "userWrap" in appjs, "the top bar should render the user menu"
+    assert "tc-topbar-sep" in appjs
+    assert "userRow" not in appjs, "the sidebar user row was replaced by the top-bar menu"
+
+
+def test_quick_actions_strip_is_wired():
+    """Quick actions render as cards under the top bar, styled by the kit."""
+    appjs = (JS_DIR / "app.js").read_text(encoding="utf-8")
+    css = (ROOT / "app" / "static" / "css" / "app.css").read_text(encoding="utf-8")
+    assert "QUICK_ACTIONS" in appjs
+    assert "tc-quickbar" in appjs, "the layout must mount the strip"
+    for cls in (".tc-quickbar", ".tc-quick-card", ".tc-quick-icon", ".tc-quick-label"):
+        assert cls in css, f"{cls} is missing from the stylesheet"
+
+
 @pytest.mark.parametrize("colour", ["brand", "primary", "success", "warning", "danger"])
 def test_stage_colours_are_known_bootstrap_slots(colour):
     """Stage badges must map to a real utility class, not a made-up colour."""

@@ -85,41 +85,44 @@
       oninput: T.debounce((e) => load(e.target.value), 350),
     });
 
+    async function newCustomer() {
+      const res = await T.formModal({
+        title: 'New customer',
+        icon: 'person-plus',
+        fields: [
+          { name: 'name', label: 'Full name or company', col: 6, required: true,
+            icon: 'person', placeholder: 'Chipo Zvenyika' },
+          { name: 'company', label: 'Company', col: 6, icon: 'building',
+            hint: 'Fleet or corporate account name.' },
+          { name: 'phone', label: 'Phone', col: 4, icon: 'telephone',
+            placeholder: '+263 77 000 0000' },
+          { name: 'whatsapp', label: 'WhatsApp', col: 4, icon: 'whatsapp',
+            hint: 'Leave blank to use the phone number.' },
+          { name: 'email', label: 'Email', type: 'email', col: 4, icon: 'envelope' },
+          { name: 'address', label: 'Address', col: 12, icon: 'geo-alt' },
+          { name: 'is_fleet', label: 'Fleet / corporate account', type: 'switch', col: 12,
+            value: false, help: 'Fleet customers get consolidated invoicing and priority slots.' },
+          { name: 'notes', label: 'Notes', type: 'textarea', col: 12,
+            placeholder: 'Preferred contact times, special instructions…' },
+        ],
+        submitLabel: 'Create customer',
+      });
+      if (!res) return;
+      await api.post('/api/customers', res);
+      T.toast('Customer created.');
+      load('');
+    }
+
     await load('');
+    /* /customers?new=1 deep-links straight into the form. */
+    if (ctx.query.new === '1') setTimeout(newCustomer, 150);
 
     return h('div', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
         h('div.flex-fill', h('h1.h4.mb-0', 'Customers')),
         search,
-        h('button.btn.btn-brand.btn-sm', {
-          onclick: async () => {
-            const res = await T.formModal({
-              title: 'New customer',
-              icon: 'person-plus',
-              fields: [
-                { name: 'name', label: 'Full name or company', col: 6, required: true,
-                  icon: 'person', placeholder: 'Chipo Zvenyika' },
-                { name: 'company', label: 'Company', col: 6, icon: 'building',
-                  hint: 'Fleet or corporate account name.' },
-                { name: 'phone', label: 'Phone', col: 4, icon: 'telephone',
-                  placeholder: '+263 77 000 0000' },
-                { name: 'whatsapp', label: 'WhatsApp', col: 4, icon: 'whatsapp',
-                  hint: 'Leave blank to use the phone number.' },
-                { name: 'email', label: 'Email', type: 'email', col: 4, icon: 'envelope' },
-                { name: 'address', label: 'Address', col: 12, icon: 'geo-alt' },
-                { name: 'is_fleet', label: 'Fleet / corporate account', type: 'switch', col: 12,
-                  value: false, help: 'Fleet customers get consolidated invoicing and priority slots.' },
-                { name: 'notes', label: 'Notes', type: 'textarea', col: 12,
-                  placeholder: 'Preferred contact times, special instructions…' },
-              ],
-              submitLabel: 'Create customer',
-            });
-            if (!res) return;
-            await api.post('/api/customers', res);
-            T.toast('Customer created.');
-            load('');
-          },
-        }, T.icon('person-plus'), ' New customer'),
+        h('button.btn.btn-brand.btn-sm', { onclick: newCustomer },
+          T.icon('person-plus'), ' New customer'),
       ]),
       T.section({ body: host, flush: true }),
     ]);
