@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block title %}{{ label }}{% if kind == 'quote' %} {{ estimate.reference }}
+  {%- elif kind == 'invoice' %} {{ invoice.invoice_no }}
+  {%- else %} {{ payment.receipt_no }}{% endif %} — {{ company.name }}{% endblock %}
+{% block body_class %}doc-body{% endblock %}
+
+{% block body %}
+{% set accent = '#106b41' if (kind == 'receipt' or (kind == 'invoice' and balance <= 0)) else '#c2102e' %}
+<div class="doc-page">
+
+  <div class="doc-actions no-print">
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('docs.pdf', kind=kind, token=token) }}">
+      <i class="bi bi-file-earmark-pdf me-1"></i>Download PDF
+    </a>
+    <button class="btn btn-sm btn-brand" type="button" onclick="window.print()">
+      <i class="bi bi-printer me-1"></i>Print
+    </button>
+    <a class="btn btn-sm btn-success"
+       href="https://wa.me/{{ company.mobile | replace(' ', '') | replace('+', '') }}">
+      <i class="bi bi-whatsapp me-1"></i>Chat with us
+    </a>
+  </div>
+
+  <header class="doc-head" style="border-bottom-color: {{ accent }}">
+    <div class="doc-brand">
+      <div class="doc-logo"><i class="bi bi-car-front-fill"></i></div>
+      <div>
+        <div class="doc-company">{{ company.name }}</div>
+        <div class="doc-muted">{{ company.address }}</div>
+        <div class="doc-muted">{{ company.tel }} · {{ company.email }}</div>
+        <div class="doc-muted">{{ company.website }}</div>
+      </div>
+    </div>
+    <div class="doc-meta">
+      <div class="doc-title">{{ label }}</div>
+      {% if kind == 'quote' %}
+        <div><span>Quotation</span> <strong>{{ estimate.reference }}</strong></div>
+        <div><span>Date</span> <strong>{{ estimate.created_at.strftime('%d %b %Y') }}</strong></div>
+        <div><span>Valid until</span> <strong>{{ expires_on.strftime('%d %b %Y') }}</strong></div>
+        <div><span>Job card</span> <strong>{{ job.job_no if job else '—' }}</strong></div>
+      {% elif kind == 'invoice' %}
+        <div><span>Invoice</span> <strong>{{ invoice.invoice_no }}</strong></div>
+        <div><span>Issued</span> <strong>{{ (invoice.issued_at or invoice.created_at).strftime('%d %b %Y') }}</strong></div>
+        <div><span>Due</span> <strong>{{ invoice.due_date.strftime('%d %b %Y') if invoice.due_date else 'On collection' }}</strong></div>
+        <div><span>Job card</span> <strong>{{ job.job_no if job else '—' }}</strong></div>
+      {% else %}
+        <div><span>Receipt</span> <strong>{{ payment.receipt_no or payment.id }}</strong></div>
+        <div><span>Date</span> <strong>{{ payment.created_at.strftime('%d %b %Y') }}</strong></div>
+        <div><span>Invoice</span> <strong>{{ invoice.invoice_no if invoice else '—' }}</strong></div>
+        <div><span>Received by</span> <strong>{{ payment.user.full_name if payment.user else 'Front desk' }}</strong></div>
+      {% endif %}
+    </div>
+  </header>
+
+  <section class="doc-parties">
+    <div>
+      {% if kind == 'receipt' %}
+        <h2>Received from</h2>
+        <div class="doc-field"><span>Customer</span><strong>{{ (customer.name if customer else '') or '—' }}</strong></div>
+        <div class="doc-field"><span>Phone</span><strong>{{ (customer.phone if customer else '') or '—' }}</strong></div>
+        <div class="doc-field"><span>Vehicle</span><strong>{{ (vehicle.reg_no if vehicle else '') or '—' }}</strong></div>
+      {% else %}
+        <h2>Prepared for</h2>
+        <div class="doc-field"><span>Customer</span><strong>{{ (customer.name if customer else '') or '—' }}</strong></div>
+        <div class="doc-field"><span>Phone</span><strong>{{ (customer.phone if customer else '') or '—' }}</strong></div>
+        <div class="doc-field"><span>Email</span><strong>{{ (customer.email if customer else '') or '—' }}</strong></div>
+      {% endif %}
+    </div>
+    <div>
+      {% if kind == 'receipt' %}
+        <h2>Against</h2>
+        <div class="doc-field"><span>Invoice</span><strong>{{ invoice.invoice_no if invoice else '—' }}</strong></div>
+        <div class="doc-field"><span>Job card</span><strong>{{ job.job_no if job else '—' }}</strong></div>
+        <div class="doc-field"><span>Method</span><strong>{{ (payment.method or '') | replace('_', ' ') | title }}</strong></div>
+      {% else %}
+        <h2>Vehicle</h2>
+        <div class="doc-field"><span>Registration</span><strong>{{ vehicle.reg_no if vehicle else '—' }}</strong></div>
+        <div class="doc-field"><span>Vehicle</span><strong>{{ vehicle.title if vehicle else '—' }}</strong></div>
+        <div class="doc-field"><span>Service</span><strong>{{ job.service if job else '—' }}</strong></div>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if kind == 'receipt' %}
+    <p class="doc-lead">
+      Received with thanks from <strong>{{ customer.name if customer else '—' }}</strong>
+      the sum of <strong>{{ currency }} {{ payment.amount | money }}</strong>.
+    </p>
+    <table class="doc-table">
+      <tbody>
+        <tr><td>Invoice total</td><td class="num">{{ currency }} {{ (invoice.total if invoice else 0) | money }}</td></tr>
+        <tr><td>Paid to date</td><td class="num">{{ currency }} {{ (invoice.amount_paid if invoice else 0) | money }}</td></tr>
+        <tr class="row-strong"><td>Balance remaining</td>
+          <td class="num">{{ currency }} {{ balance_after | money }}</td></tr>
+      </tbody>
+    </table>
+    <p class="doc-lead">
+      {% if settled %}
+        <strong style="color:#106b41">PAID IN FULL</strong> — thank you for your business.
+      {% else %}
+        <strong style="color:#c8860a">PART PAYMENT</strong> — the balance above remains due.
+      {% endif %}
+    </p>
+
+  {% else %}
+    {% if items %}
+    <table class="doc-table">
+      <thead>
+        <tr><th>Description</th><th>Type</th><th class="num">Qty</th>
+            <th class="num">Rate</th><th class="num">Amount</th></tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+        <tr>
+          <td>{{ item.description }}</td>
+          <td>{{ item.kind | title }}</td>
+          <td class="num">{{ item.quantity | float | round(2) }} {{ item.unit or '' }}</td>
+          <td class="num">{{ item.unit_price | money }}</td>
+          <td class="num">{{ item.line_total | money }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <table class="doc-table doc-totals">
+      <tbody>
+        {% if kind == 'quote' %}
+          <tr><td>Labour</td><td class="num">{{ currency }} {{ estimate.labour_total | money }}</td></tr>
+          <tr><td>Materials</td><td class="num">{{ currency }} {{ estimate.materials_total | money }}</td></tr>
+          <tr><td>Parts</td><td class="num">{{ currency }} {{ estimate.parts_total | money }}</td></tr>
+          <tr><td>Subtotal</td><td class="num">{{ currency }} {{ estimate.subtotal | money }}</td></tr>
+          <tr><td>VAT ({{ company.vat }}%)</td><td class="num">{{ currency }} {{ estimate.vat | money }}</td></tr>
+          <tr class="row-strong"><td>Total</td>
+            <td class="num">{{ currency }} {{ estimate.total | money }}</td></tr>
+          {% if estimate.is_insurance %}
+            <tr><td>Insurer portion</td>
+              <td class="num">{{ currency }} {{ (estimate.total - estimate.excess) | money }}</td></tr>
+            <tr class="row-strong"><td>Excess payable by you</td>
+              <td class="num">{{ currency }} {{ estimate.excess | money }}</td></tr>
+          {% endif %}
+        {% else %}
+          <tr><td>Subtotal</td><td class="num">{{ currency }} {{ invoice.subtotal | money }}</td></tr>
+          <tr><td>VAT ({{ company.vat }}%)</td><td class="num">{{ currency }} {{ invoice.vat | money }}</td></tr>
+          <tr class="row-strong"><td>Invoice total</td>
+            <td class="num">{{ currency }} {{ invoice.total | money }}</td></tr>
+          <tr><td>Paid to date</td><td class="num">{{ currency }} {{ invoice.amount_paid | money }}</td></tr>
+          <tr class="row-strong"><td>Balance due</td>
+            <td class="num">{{ currency }} {{ balance | money }}</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+
+    {% if kind == 'quote' and claim %}
+      <p class="doc-lead">
+        <strong>Insurance repair.</strong> Insurer <strong>{{ claim.insurer_name }}</strong>,
+        claim <strong>{{ claim.claim_no or '—' }}</strong>.
+        Excess of <strong>{{ currency }} {{ claim.excess | money }}</strong> is payable by the customer.
+      </p>
+    {% endif %}
+
+    {% if kind == 'invoice' and payments %}
+      <h2 class="doc-sub">Payments received</h2>
+      <table class="doc-table">
+        <thead><tr><th>Receipt</th><th>Date</th><th>Method</th><th>Reference</th><th class="num">Amount</th></tr></thead>
+        <tbody>
+          {% for p in payments %}
+          <tr>
+            <td>{{ p.receipt_no or '—' }}</td>
+            <td>{{ p.created_at.strftime('%d %b %Y') }}</td>
+            <td>{{ (p.method or '') | replace('_', ' ') | title }}</td>
+            <td>{{ p.reference or '—' }}</td>
+            <td class="num">{{ currency }} {{ p.amount | money }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  {% endif %}
+
+  <footer class="doc-foot">
+    {% if kind == 'quote' %}
+      <p><strong>Terms</strong> — This quotation is valid for {{ estimate.valid_days }} days and assumes no
+        hidden damage is found on strip-down. Any additional work will be re-quoted for approval before
+        proceeding. Parts carry the manufacturer's warranty; workmanship is warranted for 12 months.</p>
+      <div class="doc-sign">
+        <div><span>Customer acceptance / signature</span></div>
+        <div><span>For and on behalf of the workshop</span></div>
+      </div>
+    {% elif kind == 'invoice' %}
+      <p><strong>Payment</strong> — {{ company.bank }}{% if company.ecocash %} · EcoCash {{ company.ecocash }}{% endif %}.
+        Please quote the invoice number with any transfer.</p>
+    {% else %}
+      <p>This is a computer-generated receipt. Retain it for your records and warranty claims.</p>
+    {% endif %}
+    <p class="doc-muted">
+      {{ company.name }} · {{ company.address }} · {{ company.tel }} · {{ company.hours }}
+    </p>
+  </footer>
+</div>
+{% endblock %}

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{{ COMPANY.name }} — {{ code }}{% endblock %}
+{% block body %}
+<div class="d-flex flex-column align-items-center justify-content-center vh-100 text-center px-3">
+  <div class="display-1 fw-bold text-warning">{{ code }}</div>
+  <p class="lead text-secondary">{{ message }}</p>
+  <a class="btn btn-brand" href="{{ url_for('views.index') }}">
+    <i class="bi bi-house me-1"></i> Back to safety
+  </a>
+  <div class="small text-secondary mt-4">{{ COMPANY.address }} · {{ COMPANY.tel }}</div>
+</div>
+{% endblock %}

@@ -1,0 +1,14 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Topclass (dev server)",
+			"type": "shell",
+			"command": "& \"C:/Users/tzvakasikwa/AppData/Local/Python/pythoncore-3.14-64/python.exe\" run.py",
+			"args": [],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

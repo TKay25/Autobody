@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}{{ COMPANY.name }} — Workshop OS{% endblock %}
+{% block body_class %}app-body{% endblock %}
+
+{% block body %}
+<div id="app" class="app-shell">
+  <div class="app-loading">
+    <div class="boot-mark"><i class="bi bi-car-front-fill"></i></div>
+    <div class="boot-bar"><span></span></div>
+    <p class="mt-3 text-secondary small mb-0">Loading workshop…</p>
+  </div>
+</div>
+
+<!-- Mobile navigation scrim -->
+<div class="sidebar-scrim" id="sidebarScrim"></div>
+
+<!-- Global modal -->
+<div class="modal fade" id="tcaModal" tabindex="-1" aria-hidden="true"
+     aria-labelledby="tcaModalTitle">
+  <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="tc-modal-icon" id="tcaModalIcon" hidden></div>
+        <div class="flex-fill min-w-0">
+          <h5 class="modal-title" id="tcaModalTitle">—</h5>
+          <div class="tc-modal-subtitle" id="tcaModalSubtitle" hidden></div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="tcaModalBody"></div>
+      <div class="modal-footer" id="tcaModalFooter">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Command palette -->
+<div id="cmdkHost"></div>
+
+<!-- Toast host -->
+<div class="toast-host" id="toastHost" aria-live="polite" aria-atomic="false"></div>
+
+<!-- Connection status -->
+<div class="conn-banner" id="connBanner" role="status">
+  <i class="bi bi-wifi-off me-1"></i>You are offline — changes will not be saved until the connection returns.
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.__BOOTSTRAP__ = {{ bootstrap | tojson }};
+  window.__CSRF__ = "{{ csrf_token() if csrf_token is defined else '' }}";
+  /* Apply the saved navigation width before first paint so the shell does not
+     flash from full width to rail. */
+  try {
+    if (localStorage.getItem('topclass.sidebar.rail') === '1') {
+      document.documentElement.classList.add('sidebar-rail');
+    }
+  } catch (e) { /* private mode */ }
+</script>
+<script src="{{ static_url('js/core.js') }}"></script>
+<script src="{{ static_url('js/views/dashboard.js') }}"></script>
+<script src="{{ static_url('js/views/board.js') }}"></script>
+<script src="{{ static_url('js/views/jobs.js') }}"></script>
+<script src="{{ static_url('js/views/job_detail.js') }}"></script>
+<script src="{{ static_url('js/views/registry.js') }}"></script>
+<script src="{{ static_url('js/views/parts.js') }}"></script>
+<script src="{{ static_url('js/views/money.js') }}"></script>
+<script src="{{ static_url('js/views/inbox.js') }}"></script>
+<script src="{{ static_url('js/views/activity.js') }}"></script>
+<script src="{{ static_url('js/cmdk.js') }}"></script>
+<script src="{{ static_url('js/app.js') }}"></script>
+{% endblock %}

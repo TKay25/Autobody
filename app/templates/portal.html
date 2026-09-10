@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}My vehicles — {{ COMPANY.name }}{% endblock %}
+{% block body_class %}bg-body-tertiary{% endblock %}
+
+{% block body %}
+<header class="portal-hero">
+  <div class="container">
+    <div class="d-flex align-items-center gap-3">
+      <div class="brand-mark"><i class="bi bi-car-front-fill"></i></div>
+      <div>
+        <div class="text-white-50 small">{{ COMPANY.name }}</div>
+        <h1 class="h4 text-white mb-0">Hello {{ customer.name }}</h1>
+      </div>
+      <a class="btn btn-sm btn-outline-light ms-auto" href="tel:{{ COMPANY.tel }}">
+        <i class="bi bi-telephone"></i> Call us
+      </a>
+    </div>
+  </div>
+</header>
+
+<main class="container py-4">
+  {% if invoices %}
+  <div class="card border-0 shadow-sm mb-4">
+    <div class="card-body">
+      <h2 class="h6 text-uppercase text-secondary mb-3">Outstanding</h2>
+      {% for inv in invoices %}
+        <div class="d-flex justify-content-between align-items-center border-bottom py-2">
+          <div>
+            <div class="fw-semibold">{{ inv.invoice_no }}</div>
+            <div class="small text-secondary">
+              Job card {{ inv.job.job_no if inv.job else '—' }}
+              {% if inv.due_date %} · due {{ inv.due_date | nice_date }}{% endif %}
+            </div>
+          </div>
+          <div class="text-end">
+            <div class="fw-bold">{{ inv.currency }} {{ inv.balance | money }}</div>
+            <span class="badge text-bg-{{ 'danger' if inv.is_overdue else 'warning' }}">{{ inv.status }}</span>
+          </div>
+        </div>
+      {% endfor %}
+      <div class="small text-secondary mt-3">
+        Pay by EcoCash, InnBucks, bank transfer or at reception.
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <h2 class="h6 text-uppercase text-secondary mb-3">Your repairs</h2>
+  {% if not jobs %}
+    <div class="alert alert-info">No job cards on our system yet.</div>
+  {% endif %}
+
+  {% for job in jobs %}
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+      <div class="d-flex justify-content-between flex-wrap gap-2">
+        <div>
+          <div class="h5 mb-1">{{ job.vehicle.title if job.vehicle else 'Vehicle' }}
+            <span class="badge text-bg-dark">{{ job.vehicle.reg_no if job.vehicle else '' }}</span>
+          </div>
+          <div class="small text-secondary">
+            Job card {{ job.job_no }} · {{ job.service }} · booked in {{ job.checked_in_at | nice_date }}
+          </div>
+        </div>
+        <div class="text-end">
+          <span class="badge text-bg-warning">{{ stage_labels.get(job.stage, job.stage) }}</span>
+          {% if job.promised_date %}
+            <div class="small text-secondary mt-1">
+              Promised {{ job.promised_date | nice_date }}
+              {% if job.is_overdue %}<span class="text-danger fw-semibold">(delayed)</span>{% endif %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="progress mt-3" style="height: 8px">
+        <div class="progress-bar bg-warning" style="width: {{ job.progress }}%"></div>
+      </div>
+      <div class="small text-secondary mt-1">{{ job.progress }}% complete</div>
+
+      <ul class="timeline mt-3 mb-0">
+        {% for event in job.stage_history() | reverse %}
+          <li>
+            <span class="dot"></span>
+            <div class="fw-semibold small">{{ event.stage_label }}</div>
+            <div class="small text-secondary">{{ event.at[:16].replace('T', ' ') }}{% if event.note %} — {{ event.note }}{% endif %}</div>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  {% endfor %}
+
+  {% if bookings %}
+  <h2 class="h6 text-uppercase text-secondary mb-3 mt-4">Your bookings</h2>
+  <div class="card border-0 shadow-sm">
+    <ul class="list-group list-group-flush">
+      {% for b in bookings %}
+      <li class="list-group-item d-flex justify-content-between">
+        <div>
+          <div class="fw-semibold">{{ b.service }}</div>
+          <div class="small text-secondary">{{ b.reference }} · {{ b.slot_date | nice_date }}
+            {% if b.slot_time %} at {{ b.slot_time }}{% endif %}</div>
+        </div>
+        <span class="badge text-bg-{{ 'success' if b.status == 'CONFIRMED' else 'secondary' }} align-self-center">
+          {{ b.status }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="text-center text-secondary small py-4">
+    {{ COMPANY.address }} · {{ COMPANY.tel }} · {{ COMPANY.hours }}
+  </div>
+</main>
+{% endblock %}

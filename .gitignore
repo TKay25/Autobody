@@ -1,0 +1,20 @@
+# Artifacto — generated semantic artifacts (auto-updated by plugin)
+artifacts/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.env
+instance/
+*.db
+*.sqlite3
+.pytest_cache/
+.coverage
+htmlcov/
+test-results.txt
+*.log
+
