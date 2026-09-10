@@ -561,7 +561,7 @@
    *               every change, which is how Make → Model cascades.
    */
   function formModal({ title, fields, values = {}, submitLabel = 'Save', size, intro,
-                       icon: headerIcon, accent }) {
+                       icon: headerIcon, accent, validate }) {
     return new Promise((resolve) => {
       const refs = {};
       const gates = {};
@@ -820,6 +820,19 @@
           }
           out[f.name] = v;
         });
+
+        /* Cross-field rules (matching passwords, a date after another…).
+           Running here rather than after the dialog closes keeps the
+           operator's typing on screen when something is wrong. */
+        if (typeof validate === 'function') {
+          const errors = validate(out) || {};
+          Object.entries(errors).forEach(([name, message]) => {
+            if (!message) return;
+            if (gates[name]) gates[name].fail(message);
+            if (!firstBad) firstBad = refs[name];
+            ok = false;
+          });
+        }
 
         if (!ok) {
           toast('Please complete the highlighted fields.', 'warning');

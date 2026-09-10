@@ -92,6 +92,15 @@ class Config:
     # ── Behaviour ────────────────────────────────────────────────────────
     NOTIFY_ON_STAGE_CHANGE = _bool("NOTIFY_ON_STAGE_CHANGE", True)
 
+    # ── Seeding ──────────────────────────────────────────────────────────
+    # Password handed to the staff accounts the seeder creates. Set
+    # SEED_PASSWORD before a real deployment — the default is published in this
+    # repository, so any instance left on it is effectively unlocked.
+    SEED_PASSWORD = os.getenv("SEED_PASSWORD", "topclass123")
+    # Offer the one-click demo logins on the sign-in page. A convenience while
+    # developing; a production sign-in page must never list working accounts.
+    SHOW_DEMO_ACCOUNTS = _bool("SHOW_DEMO_ACCOUNTS", True)
+
 
 class TestConfig(Config):
     TESTING = True
@@ -106,6 +115,9 @@ class TestConfig(Config):
 class ProductionConfig(Config):
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
+    # Anyone can reach the sign-in page, so don't advertise demo credentials
+    # there. Opt back in with SHOW_DEMO_ACCOUNTS=true for a staging app.
+    SHOW_DEMO_ACCOUNTS = _bool("SHOW_DEMO_ACCOUNTS", False)
 
 
 CONFIG_MAP = {

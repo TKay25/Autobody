@@ -6,6 +6,8 @@ import random
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from flask import current_app
+
 from .constants import SUPPLIERS
 from .extensions import db
 from .models import (
@@ -24,7 +26,17 @@ from .models import (
 )
 from .services import job_flow, pricing
 
+# Fallback only. Override per-instance with the SEED_PASSWORD env var so a
+# deployed workshop isn't left on a password published in this repository.
 DEFAULT_PASSWORD = "topclass123"
+
+
+def seed_password() -> str:
+    """The password the seeder should hand new staff accounts."""
+    try:
+        return current_app.config.get("SEED_PASSWORD") or DEFAULT_PASSWORD
+    except RuntimeError:      # outside an application context
+        return DEFAULT_PASSWORD
 
 STAFF = [
     ("Tendai Moyo", "owner@topclass.co.zw", "owner", "+263 77 555 0555"),
@@ -112,12 +124,13 @@ def run_seed(with_demo: bool = True) -> None:
 
 
 def _seed_staff() -> None:
+    password = seed_password()
     for full_name, email, role, phone in STAFF:
         existing = User.query.filter(db.func.lower(User.email) == email).first()
         if existing:
             continue
         user = User(full_name=full_name, email=email, role=role, phone=phone)
-        user.set_password(DEFAULT_PASSWORD)
+        user.set_password(password)
         db.session.add(user)
     db.session.commit()
 

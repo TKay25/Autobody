@@ -16,6 +16,20 @@ def _wants_json() -> bool:
     return request.path.startswith("/api/") or request.is_json
 
 
+def _safe_next() -> str:
+    """Where to land after signing in.
+
+    Flask-Login bounces anonymous visitors to `/login?next=<path>`, so the value
+    is attacker-controllable. Only ever honour a same-site path — anything with a
+    scheme, a host or a protocol-relative `//` prefix is dropped, otherwise the
+    sign-in form becomes an open redirect.
+    """
+    target = request.args.get("next") or ""
+    if target.startswith("/") and not target.startswith("//") and "\\" not in target:
+        return target
+    return url_for("views.shell")
+
+
 @bp.post("/login")
 def do_login():
     data = request.get_json(silent=True) or request.form
@@ -37,7 +51,7 @@ def do_login():
 
     if _wants_json():
         return jsonify({"ok": True, "user": user.to_dict()})
-    return redirect(request.args.get("next") or url_for("views.shell"))
+    return redirect(_safe_next())
 
 
 @bp.post("/logout")

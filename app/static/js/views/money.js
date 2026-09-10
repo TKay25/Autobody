@@ -437,6 +437,20 @@
     const user = T.store.get('user');
     const data = await api.get('/api/users');
 
+    /* A one-line explanation of what each role is for, so a manager picking
+       from the list knows what they are granting. */
+    const ROLE_BLURB = {
+      owner: 'Full control, including staff accounts and settings.',
+      manager: 'Runs the shop: job cards, claims, money and staff.',
+      estimator: 'Quotes, assessor liaison and insurer approvals.',
+      storeman: 'Stock, parts ordering and supplier receipts.',
+      technician: 'Sees the board and updates the job cards assigned to them.',
+      frontdesk: 'Books vehicles in, takes payments and handles customers.',
+    };
+    const roleOptions = meta.roles.map((x) => ({
+      value: x.code, label: x.label, description: ROLE_BLURB[x.code] || '',
+    }));
+
     const table = T.dataTable({
       columns: [
         { label: 'Name', render: (r) => h('div.d-flex.align-items-center.gap-2', [
@@ -455,8 +469,10 @@
                   { name: 'full_name', label: 'Full name', col: 12, value: r.full_name },
                   { name: 'phone', label: 'Phone', col: 12, value: r.phone },
                   { name: 'role', label: 'Role', type: 'select', col: 12, value: r.role,
-                    options: meta.roles.map((x) => ({ value: x.code, label: x.label })) },
-                  { name: 'password', label: 'New password', col: 12, placeholder: 'Leave blank to keep current' },
+                    options: roleOptions },
+                  { name: 'password', label: 'New password', type: 'password', col: 12,
+                    placeholder: 'Leave blank to keep the current one',
+                    hint: 'Fill this in to issue someone a fresh password.' },
                   { name: 'is_active_user', label: 'Active', type: 'switch', col: 12, value: r.is_active_user },
                 ],
                 submitLabel: 'Save',
@@ -470,32 +486,70 @@
           }, T.icon('pencil')) : null },
       ],
       rows: data.items,
+      empty: T.emptyState('No staff yet', 'Add the people who work in the shop.', 'people'),
     });
+
+    async function addStaff() {
+      const res = await T.formModal({
+        title: 'Add staff member',
+        icon: 'person-plus',
+        size: 'lg',
+        intro: 'They can sign in as soon as you save. Pass the password on — you can '
+          + 'change it any time by editing their row.',
+        fields: [
+          { name: 'full_name', label: 'Full name', col: 6, required: true, icon: 'person',
+            placeholder: 'Tapiwa Sibanda' },
+          { name: 'email', label: 'Work email', type: 'email', col: 6, required: true,
+            icon: 'envelope', placeholder: 'tapiwa@topclass.co.zw',
+            hint: 'This becomes their sign-in name, and must be unique.' },
+          { name: 'phone', label: 'Phone', type: 'tel', col: 6, icon: 'telephone',
+            placeholder: '+263 77 000 0000' },
+          { name: 'role', label: 'Role', type: 'select', col: 6, icon: 'person-badge',
+            value: 'technician', options: roleOptions,
+            hint: 'Decides what they can see and change.' },
+          { name: 'password', label: 'Temporary password', type: 'password', col: 6,
+            required: true, icon: 'key', hint: 'At least 8 characters.' },
+          { name: 'confirm', label: 'Repeat password', type: 'password', col: 6,
+            required: true, icon: 'key' },
+        ],
+        /* Checked before the dialog closes, so a typo doesn't cost the manager
+           everything they just typed. */
+        validate: (v) => {
+          const errors = {};
+          if (String(v.password || '').length < 8) {
+            errors.password = 'Use at least 8 characters.';
+          }
+          if (v.confirm !== v.password) {
+            errors.confirm = 'This must match the password above.';
+          }
+          return errors;
+        },
+        submitLabel: 'Create account',
+      });
+      if (!res) return;
+      try {
+        await api.post('/api/users', {
+          full_name: res.full_name, email: res.email, phone: res.phone,
+          role: res.role, password: res.password,
+        });
+        T.toast(`${res.full_name} signs in with ${res.email}.`, 'success', {
+          title: 'Staff account created',
+        });
+        ctx.refresh();
+      } catch (err) {
+        T.toast(err.message || 'The account could not be created.', 'danger');
+      }
+    }
+
+    /* /staff?new=1 opens the form straight away. */
+    if (user.is_manager && ctx.query.new === '1') setTimeout(addStaff, 150);
 
     return h('div', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
         h('div.flex-fill', [h('h1.h4.mb-0', 'Staff & settings'),
           h('div.small.text-secondary', `Signed in as ${user.full_name} (${user.role_label})`)]),
-        user.is_manager ? h('button.btn.btn-brand.btn-sm', {
-          onclick: async () => {
-            const res = await T.formModal({
-              title: 'Add staff member',
-              fields: [
-                { name: 'full_name', label: 'Full name *', col: 6, required: true },
-                { name: 'email', label: 'Email *', type: 'email', col: 6, required: true },
-                { name: 'phone', label: 'Phone', col: 6 },
-                { name: 'role', label: 'Role', type: 'select', col: 6,
-                  options: meta.roles.map((x) => ({ value: x.code, label: x.label })) },
-                { name: 'password', label: 'Temporary password *', col: 12, required: true },
-              ],
-              submitLabel: 'Create account',
-            });
-            if (!res) return;
-            await api.post('/api/users', res);
-            T.toast('Staff account created.');
-            ctx.refresh();
-          },
-        }, T.icon('person-plus'), ' Add staff') : null,
+        user.is_manager ? h('button.btn.btn-brand.btn-sm', { onclick: addStaff },
+          T.icon('person-plus'), ' Add staff member') : null,
       ]),
       T.section({ title: 'Team accounts', body: table, flush: true }),
       T.section({

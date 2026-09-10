@@ -137,9 +137,20 @@ python run.py
 
 Open <http://127.0.0.1:5000>.
 
-### Demo accounts
+### Signing in
 
-Password for all accounts: `topclass123`
+The landing page is the sign-in page: the form on the left, the workshop story on
+the right. In development it also lists the seeded accounts as **one-click
+buttons** — click one and you are signed in, no typing. The buttons are generated
+from the same table the seeder uses, so they can never point at an account that
+does not exist.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `SEED_PASSWORD` | `topclass123` | The password given to the accounts the seeder creates. **Set this before deploying** — the default is published in this repository. |
+| `SHOW_DEMO_ACCOUNTS` | `true` in dev, `false` in production | Whether the sign-in page advertises the demo logins. A staging app can opt back in with `SHOW_DEMO_ACCOUNTS=true`. |
+
+Demo accounts (development only):
 
 | Email | Role |
 |---|---|
@@ -149,6 +160,20 @@ Password for all accounts: `topclass123`
 | `store@topclass.co.zw` | Storeman |
 | `tech1@topclass.co.zw` | Technician |
 | `front@topclass.co.zw` | Front desk |
+
+### Adding staff
+
+Managers get **Add staff member** in the avatar menu (top-right) and a button on
+*Staff & settings* — both open the same form. Fill in a name, work email, role and
+a temporary password and they can sign in immediately. Each role is described in
+the dropdown so it is clear what is being granted.
+
+To change somebody's password, edit their row on *Staff & settings* and fill in
+**New password**. Roles and the active flag live in the same dialog, so leaving
+someone who has left the business is a two-click job.
+
+Only owners and managers can create or edit accounts; the endpoint behind the form
+enforces that independently of the button (`POST /api/users`).
 
 ### CLI shortcuts
 
@@ -373,6 +398,7 @@ Coverage:
 | Money | Invoice creation, part payments, balance and PAID transition |
 | Claims | Linking, status transitions, excess, shortfall |
 | Permissions | Manager-only staff creation, 401s for anonymous API calls |
+| Sign-in page | The demo shortcuts match the seeded accounts, are absent in production, `?next=` cannot become an open redirect, `SEED_PASSWORD` overrides the default, and only managers can create accounts |
 | Documents | PDF bytes for quotations, invoices and receipts; sequential receipt numbers; public `/doc/<kind>/<token>` pages and `.pdf` responses; junk tokens 404 |
 | Quotation attach | The picker's customer / registration / search filters, copying a quotation's lines with kinds and prices intact, insurance flag and excess inheritance, the `estimate.copied` activity entry, 404 on an unknown quotation, 400 on an empty one, attachment upload and its traversal guard |
 | Document delivery | `document_share` attachments logged in simulator mode, Approve/Decline buttons sent, `a_approve:`/`a_decline:` taps update the estimate and write a `quotation_decision` log |
@@ -418,6 +444,8 @@ python tools/check_js.py      # also runs as part of the suite
 ```dotenv
 FLASK_ENV=production
 SECRET_KEY=<long random string>          # without this, sessions use a dev default
+SEED_PASSWORD=<something private>        # otherwise the seeded staff keep the published default
+SHOW_DEMO_ACCOUNTS=false                 # the default in production
 PUBLIC_BASE_URL=https://<your-app>.onrender.com
 COMPANY_NAME=Topclass Auto Body
 COMPANY_ADDRESS=23 George Avenue, Msasa, Harare

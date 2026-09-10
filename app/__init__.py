@@ -112,7 +112,37 @@ def _register_jinja(app: Flask) -> None:
                 "website": app.config["COMPANY_WEBSITE"],
             },
             "APP_VERSION": __version__,
+            "DEMO_ACCOUNTS": _demo_accounts(app),
+            "DEMO_PASSWORD": (
+                app.config["SEED_PASSWORD"] if app.config.get("SHOW_DEMO_ACCOUNTS") else None
+            ),
         }
+
+    def _demo_accounts(flask_app: Flask) -> list[dict]:
+        """Sign-in shortcuts generated from the table the seeder uses.
+
+        Deriving them from `seed.STAFF` means the buttons can never advertise an
+        account that does not exist. Off by default in production, because a
+        public sign-in page should not list working credentials.
+        """
+        if not flask_app.config.get("SHOW_DEMO_ACCOUNTS"):
+            return []
+        from .seed import STAFF
+
+        order = ["owner", "manager", "estimator", "frontdesk"]
+        by_role = {role: (name, email) for name, email, role, _phone in STAFF}
+        accounts = []
+        for role in order:
+            if role not in by_role:
+                continue
+            name, email = by_role[role]
+            accounts.append({
+                "name": name,
+                "email": email,
+                "label": ROLE_LABELS.get(role, role),
+                "initials": "".join(p[0].upper() for p in name.split()[:2]),
+            })
+        return accounts
 
     @app.template_global("static_url")
     def static_url(filename: str) -> str:

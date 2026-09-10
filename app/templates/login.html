@@ -1,87 +1,197 @@
 {% extends "base.html" %}
-{% block body_class %}bg-body-tertiary{% endblock %}
+{% block title %}Sign in — {{ COMPANY.name }}{% endblock %}
+{% block body_class %}auth-body{% endblock %}
 {% block body %}
-<div class="auth-wrap">
-  <div class="auth-card">
-    <div class="auth-brand">
-      <div class="brand-mark"><i class="bi bi-car-front-fill"></i></div>
-      <div>
-        <h1 class="h4 mb-0">{{ COMPANY.name }}</h1>
-        <div class="text-secondary small">Workshop Operating System</div>
-      </div>
-    </div>
+<div class="auth-shell">
 
-    {% if error %}
-      <div class="alert alert-danger py-2 small mb-3">
-        <i class="bi bi-exclamation-triangle me-1"></i>{{ error }}
-      </div>
-    {% endif %}
+  <section class="auth-panel">
+    <div class="auth-panel-inner">
 
-    <form method="post" action="{{ url_for('auth.do_login') }}" autocomplete="on">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
-      <div class="mb-3">
-        <label class="form-label small fw-semibold" for="email">Email address</label>
-        <div class="input-group">
-          <span class="input-group-text"><i class="bi bi-envelope"></i></span>
-          <input class="form-control" id="email" name="email" type="email" required
-                 value="{{ email or '' }}" placeholder="you@topclass.co.zw">
+      <a class="auth-brand" href="/">
+        <span class="brand-mark"><i class="bi bi-car-front-fill"></i></span>
+        <span class="auth-brand-text">
+          <span class="auth-brand-name">{{ COMPANY.name }}</span>
+          <span class="auth-brand-sub">Workshop Operating System</span>
+        </span>
+      </a>
+
+      <h1 class="auth-title">Sign in</h1>
+      <p class="auth-lede">
+        Job cards, estimating, claims and the WhatsApp line — one console for the whole shop.
+      </p>
+
+      {% if error %}
+      <div class="auth-alert" role="alert">
+        <i class="bi bi-exclamation-triangle-fill"></i>
+        <div>
+          <div class="auth-alert-title">{{ error }}</div>
+          {% if email %}
+          <div class="auth-alert-sub">
+            No active account matches <code>{{ email }}</code> with that password.
+            {% if DEMO_ACCOUNTS %}Try one of the demo accounts below.{% endif %}
+          </div>
+          {% endif %}
         </div>
       </div>
-      <div class="mb-3">
-        <label class="form-label small fw-semibold" for="password">Password</label>
-        <div class="input-group">
-          <span class="input-group-text"><i class="bi bi-lock"></i></span>
-          <input class="form-control" id="password" name="password" type="password" required
-                 placeholder="••••••••">
-          <button class="btn btn-outline-secondary" type="button" id="togglePw" tabindex="-1">
-            <i class="bi bi-eye"></i>
+      {% endif %}
+
+      <form method="post" class="auth-form" autocomplete="on"
+            action="{{ url_for('auth.do_login', next=request.args.get('next', '')) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is defined else '' }}">
+
+        <div class="auth-field">
+          <label class="auth-label" for="email">Email address</label>
+          <div class="auth-input">
+            <i class="bi bi-envelope"></i>
+            <input id="email" name="email" type="email" required
+                   value="{{ email or '' }}" placeholder="you@topclass.co.zw"
+                   autocomplete="username" autocapitalize="none" spellcheck="false">
+          </div>
+        </div>
+
+        <div class="auth-field">
+          <label class="auth-label" for="password">Password</label>
+          <div class="auth-input">
+            <i class="bi bi-lock"></i>
+            <input id="password" name="password" type="password" required
+                   placeholder="••••••••" autocomplete="current-password">
+            <button class="auth-reveal" type="button" id="togglePw"
+                    aria-label="Show password" title="Show password" tabindex="-1">
+              <i class="bi bi-eye"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="auth-row">
+          <label class="auth-check">
+            <input type="checkbox" name="remember" value="1" checked>
+            <span>Keep me signed in for 14 days</span>
+          </label>
+        </div>
+
+        <button class="auth-submit" type="submit">
+          <span>Sign in</span>
+          <i class="bi bi-arrow-right"></i>
+        </button>
+      </form>
+
+      {% if DEMO_ACCOUNTS %}
+      <div class="auth-demo" data-password="{{ DEMO_PASSWORD }}">
+        <div class="auth-demo-head">
+          <span><i class="bi bi-lightning-charge-fill"></i> Demo accounts</span>
+          <span class="auth-demo-pw">password <code>{{ DEMO_PASSWORD }}</code></span>
+        </div>
+        <div class="auth-demo-grid">
+          {% for a in DEMO_ACCOUNTS %}
+          <button type="button" class="auth-demo-btn" data-email="{{ a.email }}"
+                  title="Sign in as {{ a.name }} — {{ a.label }}">
+            <span class="auth-demo-avatar">{{ a.initials }}</span>
+            <span class="auth-demo-text">
+              <span class="auth-demo-name">{{ a.name }}</span>
+              <span class="auth-demo-role">{{ a.label }}</span>
+            </span>
+            <i class="bi bi-box-arrow-in-right"></i>
           </button>
+          {% endfor %}
+        </div>
+        <p class="auth-demo-note">
+          One click fills the form and signs you in. Demo data only — these shortcuts are
+          hidden in production.
+        </p>
+      </div>
+      {% endif %}
+
+      <footer class="auth-foot">
+        <span>{{ COMPANY.address }}</span>
+        <span class="auth-foot-sep">·</span>
+        <span>{{ COMPANY.tel }}</span>
+        <span class="auth-foot-sep">·</span>
+        <span>v{{ APP_VERSION }}</span>
+      </footer>
+    </div>
+  </section>
+
+  <aside class="auth-hero">
+    <div class="auth-hero-inner">
+      <span class="auth-pill"><i class="bi bi-geo-alt-fill"></i> Msasa, Harare</span>
+      <h2 class="auth-hero-title">Masters of<br><span>Restoration</span></h2>
+      <p class="auth-hero-lede">
+        Panel by panel precision — from intake to invoice, with the customer updated on
+        WhatsApp at every stage.
+      </p>
+
+      <div class="auth-features">
+        <div class="auth-feature">
+          <i class="bi bi-clipboard-check"></i>
+          <div><strong>Job cards &amp; WIP board</strong>
+            <span>Thirteen stages, intake through to collection</span></div>
+        </div>
+        <div class="auth-feature">
+          <i class="bi bi-calculator"></i>
+          <div><strong>Insurer rate cards</strong>
+            <span>VAT, excess and insurer splits worked out for you</span></div>
+        </div>
+        <div class="auth-feature">
+          <i class="bi bi-shield-check"></i>
+          <div><strong>Claims tracking</strong>
+            <span>Old Mutual, AIC, NDI, FBC, Zimnat, CBZ, First Mutual</span></div>
+        </div>
+        <div class="auth-feature">
+          <i class="bi bi-whatsapp"></i>
+          <div><strong>WhatsApp line</strong>
+            <span>Quotations, approvals and receipts sent automatically</span></div>
+        </div>
+        <div class="auth-feature">
+          <i class="bi bi-box-seam"></i>
+          <div><strong>Parts &amp; stock</strong>
+            <span>Reorder alerts across every supplier</span></div>
+        </div>
+        <div class="auth-feature">
+          <i class="bi bi-file-earmark-pdf"></i>
+          <div><strong>Documents</strong>
+            <span>Quotation, tax invoice and receipt PDFs</span></div>
         </div>
       </div>
-      <div class="form-check mb-3">
-        <input class="form-check-input" type="checkbox" id="remember" name="remember" value="1" checked>
-        <label class="form-check-label small" for="remember">Keep me signed in</label>
-      </div>
-      <button class="btn btn-brand w-100 fw-semibold" type="submit">
-        <i class="bi bi-box-arrow-in-right me-1"></i> Sign in
-      </button>
-    </form>
 
-    <div class="demo-hint mt-4">
-      <div class="fw-semibold mb-1"><i class="bi bi-info-circle me-1"></i>Demo accounts</div>
-      <div class="small text-secondary">
-        Password for all: <code>topclass123</code><br>
-        <code>owner@topclass.co.zw</code> · <code>manager@topclass.co.zw</code> ·
-        <code>estimator@topclass.co.zw</code> · <code>front@topclass.co.zw</code>
+      <div class="auth-stats">
+        <div><strong>7</strong><span>Insurer panels</span></div>
+        <div><strong>13</strong><span>Workflow stages</span></div>
+        <div><strong>24/7</strong><span>Bot answering</span></div>
       </div>
     </div>
-  </div>
+  </aside>
 
-  <div class="auth-aside">
-    <h2 class="h3 fw-bold">Masters of Restoration</h2>
-    <p class="text-white-50">
-      Panel by panel precision — from intake to invoice, with the customer updated on
-      WhatsApp at every stage.
-    </p>
-    <ul class="auth-list">
-      <li><i class="bi bi-clipboard-check"></i> Job cards, WIP board &amp; QC</li>
-      <li><i class="bi bi-calculator"></i> Estimates with insurer rate cards</li>
-      <li><i class="bi bi-shield-check"></i> Claims tracking across 7 insurers</li>
-      <li><i class="bi bi-whatsapp"></i> WhatsApp chatbot &amp; notifications</li>
-      <li><i class="bi bi-box-seam"></i> Parts, stock &amp; suppliers</li>
-    </ul>
-    <div class="small text-white-50 mt-4">
-      {{ COMPANY.address }} · {{ COMPANY.tel }}
-    </div>
-  </div>
 </div>
 
 <script>
-document.getElementById('togglePw')?.addEventListener('click', function () {
-  const input = document.getElementById('password');
-  const icon = this.querySelector('i');
-  input.type = input.type === 'password' ? 'text' : 'password';
-  icon.className = input.type === 'password' ? 'bi bi-eye' : 'bi bi-eye-slash';
-});
+(function () {
+  /* Show / hide the password. */
+  var toggle = document.getElementById('togglePw');
+  if (toggle) {
+    toggle.addEventListener('click', function () {
+      var input = document.getElementById('password');
+      var shown = input.type === 'text';
+      input.type = shown ? 'password' : 'text';
+      toggle.querySelector('i').className = shown ? 'bi bi-eye' : 'bi bi-eye-slash';
+      toggle.setAttribute('aria-label', shown ? 'Show password' : 'Hide password');
+    });
+  }
+
+  /* One-click demo sign-in. */
+  var demo = document.querySelector('.auth-demo');
+  if (!demo) return;
+  var form = document.querySelector('.auth-form');
+
+  demo.addEventListener('click', function (event) {
+    var button = event.target.closest('.auth-demo-btn');
+    if (!button) return;
+    form.querySelector('#email').value = button.dataset.email;
+    form.querySelector('#password').value = demo.dataset.password;
+    demo.querySelectorAll('.auth-demo-btn').forEach(function (b) {
+      b.classList.toggle('is-active', b === button);
+    });
+    form.submit();
+  });
+})();
 </script>
 {% endblock %}

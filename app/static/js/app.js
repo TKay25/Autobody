@@ -112,6 +112,8 @@
       userBtn.setAttribute('aria-expanded', String(userOpen));
     }
 
+    const closeMenu = () => toggleUserMenu(false);
+
     const userBtn = h('button.tc-user-btn', {
       type: 'button',
       'aria-haspopup': 'true',
@@ -137,9 +139,14 @@
         ]),
       ]),
       h('div.tc-user-menu-body', [
-        h('a.tc-user-menu-item', { href: '#/staff' }, T.icon('person-gear'), 'My account'),
-        h('a.tc-user-menu-item', { href: '#/staff' }, T.icon('gear'), 'Settings'),
-        h('a.tc-user-menu-item', { href: '#/activity' }, T.icon('clock-history'), 'Activity log'),
+        h('a.tc-user-menu-item', { href: '#/staff', onclick: closeMenu },
+          T.icon('person-gear'), 'My account'),
+        user.is_manager ? h('a.tc-user-menu-item', { href: '#/staff?new=1', onclick: closeMenu },
+          T.icon('person-plus'), 'Add staff member') : null,
+        h('a.tc-user-menu-item', { href: '#/staff', onclick: closeMenu },
+          T.icon('gear'), 'Settings'),
+        h('a.tc-user-menu-item', { href: '#/activity', onclick: closeMenu },
+          T.icon('clock-history'), 'Activity log'),
       ]),
       h('div.tc-user-menu-foot', [
         h('button.tc-user-menu-item.is-danger', {
