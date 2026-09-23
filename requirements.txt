@@ -10,5 +10,8 @@ requests==2.32.3
 reportlab==5.0.1
 pillow==12.3.0
 gunicorn==22.0.0
-psycopg2-binary==2.9.9
+# Only needed when DATABASE_URL points at PostgreSQL. 2.9.9 and older ship no
+# wheels past CPython 3.12, so pip falls back to a source build that needs
+# libpq headers and fails the deploy on a stock Render Python image.
+psycopg2-binary==2.9.13
 pytest==8.2.2

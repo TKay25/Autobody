@@ -33,6 +33,7 @@ def main() -> int:
         run_seed(with_demo=not args.no_demo)
 
         from app.models import Booking, Customer, JobCard, Part, User, WaConversation
+        from app.seed import DEFAULT_PASSWORD, STAFF, seed_password
 
         print("\nDone.")
         print(f"  users        {User.query.count()}")
@@ -41,7 +42,16 @@ def main() -> int:
         print(f"  stock items  {Part.query.count()}")
         print(f"  bookings     {Booking.query.count()}")
         print(f"  wa threads   {WaConversation.query.count()}")
-        print("\nSign in at http://127.0.0.1:5000 with owner@topclass.co.zw / topclass123")
+
+        # Don't advertise a password the operator overrode: on a host it almost
+        # certainly came from SEED_PASSWORD, and claiming the published default
+        # is how you end up locked out of your own deploy.
+        seeded = seed_password()
+        origin = (
+            "the published default" if seeded == DEFAULT_PASSWORD
+            else "your SEED_PASSWORD setting"
+        )
+        print(f"\nSign in with {STAFF[0][1]} and {origin} ({len(STAFF)} staff accounts).")
     return 0
 
 
