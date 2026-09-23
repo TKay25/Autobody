@@ -477,17 +477,26 @@ live. Pick one:
    *Internal Database URL* into `DATABASE_URL`, and add the driver to
    `requirements.txt`:
    ```
-   psycopg2-binary==2.9.9
+   psycopg2-binary==2.9.13
    ```
+   Do not pin 2.9.9 or older: they ship no wheels past CPython 3.12, so pip falls
+   back to a source build that needs libpq headers and fails the deploy on a
+   stock Render Python image.
    Render hands out URLs beginning `postgres://`, which SQLAlchemy 2.x rejects;
    the app rewrites the scheme to `postgresql://` automatically. Then run the
-   bootstrap once (below).
+   bootstrap once (below) — or simply let the app do it, see below.
 2. **Persistent disk** — add a Render Disk mounted at `/opt/render/project/src/instance`
    and keep SQLite. Fine for one instance, but you get no backups.
 
 ### First-run bootstrap
 
-Tables must exist before the first request. From the Render **Shell** tab:
+The app provisions itself. `create_app()` runs `db.create_all()` on every boot,
+and on a database with no accounts `AUTO_SEED_STAFF` (on in production) creates
+the staff accounts and stock. So switching `DATABASE_URL` to a fresh Postgres
+instance needs nothing more than a redeploy — the tables and the seven staff
+accounts appear on the first request.
+
+From the Render **Shell** tab, if you want to drive it by hand:
 
 ```bash
 python bootstrap.py --no-demo     # reference data only — no demo customers or jobs

@@ -752,7 +752,11 @@ def list_quotations():
     reg = (want(request.args, "reg_no") or "").replace(" ", "").upper()
     if reg:
         # Registrations are stored without spaces, but tolerate legacy rows.
-        query = query.filter(func.replace(Vehicle.reg_no, " ", "").like(f"%{reg}%"))
+        # `ilike`, not `like`: the parameter above is upper-cased, and older rows
+        # may not be. SQLite's LIKE is case-insensitive so `like` happened to work
+        # there; PostgreSQL's is case-sensitive and would silently stop matching
+        # those rows. Matches the pattern used for the free-text search below.
+        query = query.filter(func.replace(Vehicle.reg_no, " ", "").ilike(f"%{reg}%"))
 
     q = want(request.args, "q")
     if q:
