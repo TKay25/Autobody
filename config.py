@@ -100,6 +100,11 @@ class Config:
     # Offer the one-click demo logins on the sign-in page. A convenience while
     # developing; a production sign-in page must never list working accounts.
     SHOW_DEMO_ACCOUNTS = _bool("SHOW_DEMO_ACCOUNTS", True)
+    # Recreate staff accounts and stock when the database is completely empty.
+    # Off locally, where seeding is a deliberate step; on in production, where
+    # an ephemeral SQLite file is wiped on every deploy and would otherwise
+    # leave behind an app that nobody can sign in to.
+    AUTO_SEED_STAFF = _bool("AUTO_SEED_STAFF", False)
 
 
 class TestConfig(Config):
@@ -118,6 +123,10 @@ class ProductionConfig(Config):
     # Anyone can reach the sign-in page, so don't advertise demo credentials
     # there. Opt back in with SHOW_DEMO_ACCOUNTS=true for a staging app.
     SHOW_DEMO_ACCOUNTS = _bool("SHOW_DEMO_ACCOUNTS", False)
+    # A wiped database still has to be able to hand someone a working login,
+    # otherwise the deploy is unreachable. Reference data only, never demo
+    # customers or job cards.
+    AUTO_SEED_STAFF = _bool("AUTO_SEED_STAFF", True)
 
 
 CONFIG_MAP = {

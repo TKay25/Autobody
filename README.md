@@ -149,6 +149,7 @@ does not exist.
 |---|---|---|
 | `SEED_PASSWORD` | `topclass123` | The password given to the accounts the seeder creates. **Set this before deploying** — the default is published in this repository. |
 | `SHOW_DEMO_ACCOUNTS` | `true` in dev, `false` in production | Whether the sign-in page advertises the demo logins. A staging app can opt back in with `SHOW_DEMO_ACCOUNTS=true`. |
+| `AUTO_SEED_STAFF` | `false` in dev, `true` in production | Recreate the staff accounts and stock when the database is completely empty. Keeps a deploy on an ephemeral filesystem from coming back with a sign-in page nobody can get past. |
 
 Demo accounts (development only):
 
@@ -492,6 +493,14 @@ Tables must exist before the first request. From the Render **Shell** tab:
 python bootstrap.py --no-demo     # reference data only — no demo customers or jobs
 python bootstrap.py --reset       # full reset with demo data, for a staging app
 ```
+
+**The sign-in page renders before the database is seeded**, which makes an
+empty database look like a broken login: every set of credentials is rejected
+with "Incorrect email or password" because there is no account to match.
+`AUTO_SEED_STAFF` is on in production and fixes this on the next boot — check
+the Render logs for `User table is empty — seeding staff accounts and stock.`
+If you set `SEED_PASSWORD`, that is the password the accounts get; the
+`topclass123` in this README only applies when the variable is unset.
 
 ### Notes
 

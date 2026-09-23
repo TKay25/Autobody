@@ -52,6 +52,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
     with app.app_context():
         db.create_all()
+        _bootstrap_reference_data(app)
 
     return app
 
@@ -88,6 +89,36 @@ def _init_extensions(app: Flask) -> None:
     app.config["UPLOAD_DIR"].mkdir(parents=True, exist_ok=True)
 
 
+def _bootstrap_reference_data(app: Flask) -> None:
+    """Give a database with no accounts something to sign in with.
+
+    Render's filesystem is ephemeral, so a SQLite deployment comes back with
+    empty tables after every release, restart or idle spin-down. The sign-in
+    page still renders in that state — but no credentials can ever match, which
+    looks exactly like a broken login rather than an empty database.
+
+    Seeding is idempotent and only fires when the user table is genuinely
+    empty, so it can never overwrite a live install. Opt out with
+    AUTO_SEED_STAFF=false (the default outside production).
+    """
+    if not app.config.get("AUTO_SEED_STAFF"):
+        return
+
+    from .models import User
+    from .seed import seed_reference_data
+
+    try:
+        if User.query.count():
+            return
+        app.logger.info("User table is empty — seeding staff accounts and stock.")
+        seed_reference_data()
+        db.session.commit()
+    except Exception:  # a failed seed must never stop the app from booting
+        db.session.rollback()
+        app.logger.warning("Auto-seed of reference data failed.", exc_info=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 def _register_blueprints(app: Flask) -> None:
     from .views import api, auth, docs, views, whatsapp
 

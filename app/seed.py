@@ -113,10 +113,20 @@ BAYS = ["Bay 1", "Bay 2", "Bay 3", "Bay 4", "Spray Booth", "Jig"]
 TECH_EMAILS = ["tech1@topclass.co.zw", "tech2@topclass.co.zw"]
 
 
-def run_seed(with_demo: bool = True) -> None:
-    """Idempotent seed — safe to run repeatedly."""
+def seed_reference_data() -> None:
+    """Staff accounts and stock — the minimum a usable install needs.
+
+    Split out of `run_seed` because a deployment has to be able to restore just
+    this much: staff accounts are what let anyone sign in, while demo customers,
+    job cards and the sample WhatsApp thread must never reappear in production.
+    """
     _seed_staff()
     _seed_parts()
+
+
+def run_seed(with_demo: bool = True) -> None:
+    """Idempotent seed — safe to run repeatedly."""
+    seed_reference_data()
     if with_demo:
         _seed_demo_work()
     _seed_whatsapp_demo()
