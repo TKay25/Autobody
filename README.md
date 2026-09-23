@@ -150,6 +150,11 @@ does not exist.
 | `SEED_PASSWORD` | `topclass123` | The password given to the accounts the seeder creates. **Set this before deploying** — the default is published in this repository. |
 | `SHOW_DEMO_ACCOUNTS` | `true` in dev, `false` in production | Whether the sign-in page advertises the demo logins. A staging app can opt back in with `SHOW_DEMO_ACCOUNTS=true`. |
 | `AUTO_SEED_STAFF` | `false` in dev, `true` in production | Recreate the staff accounts and stock when the database is completely empty. Keeps a deploy on an ephemeral filesystem from coming back with a sign-in page nobody can get past. |
+| `OWNER_EMAIL`, `OWNER_PASSWORD` | unset | Create this account on boot if it does not exist, with its own password instead of the shared `SEED_PASSWORD`. Existing accounts are never modified. |
+| `OWNER_NAME` | `Workshop Owner` | Display name for the account above. |
+
+Sign in at **`/login`** (or `/`). `/auth/login` is the form's POST target; a GET
+there redirects you to the real page rather than answering 405.
 
 Demo accounts (development only):
 

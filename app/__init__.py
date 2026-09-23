@@ -53,6 +53,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     with app.app_context():
         db.create_all()
         _bootstrap_reference_data(app)
+        _bootstrap_owner(app)
 
     return app
 
@@ -116,6 +117,39 @@ def _bootstrap_reference_data(app: Flask) -> None:
     except Exception:  # a failed seed must never stop the app from booting
         db.session.rollback()
         app.logger.warning("Auto-seed of reference data failed.", exc_info=True)
+
+
+def _bootstrap_owner(app: Flask) -> None:
+    """Create the account named by OWNER_EMAIL / OWNER_PASSWORD, if any.
+
+    A no-op unless both variables are set. Existing accounts are never touched,
+    so changing the password through the UI afterwards is not undone by the
+    next restart. Deliberately outside the AUTO_SEED_STAFF gate: naming an
+    account explicitly is a stronger signal than an empty-database heuristic.
+    """
+    email = app.config.get("OWNER_EMAIL")
+    password = app.config.get("OWNER_PASSWORD")
+    if not email or not password:
+        return
+
+    from .models import User
+
+    try:
+        if User.query.filter(db.func.lower(User.email) == email).first():
+            return
+        user = User(
+            full_name=app.config.get("OWNER_NAME") or email.split("@")[0],
+            email=email,
+            role="owner",
+            is_active_user=True,
+        )
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
+        app.logger.info("Created the configured owner account %s.", email)
+    except Exception:  # a failed bootstrap must never stop the app booting
+        db.session.rollback()
+        app.logger.warning("Could not create the owner account.", exc_info=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

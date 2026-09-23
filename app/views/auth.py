@@ -30,6 +30,18 @@ def _safe_next() -> str:
     return url_for("views.shell")
 
 
+@bp.get("/login")
+def login_page():
+    """GET on the sign-in form's action URL.
+
+    The form posts to /auth/login, so that path is what bookmarks, password
+    managers and anyone reading the page source ends up requesting directly.
+    Answering 405 there reads as a broken site, so hand them the real page
+    instead — this cost real debugging time once already.
+    """
+    return redirect(url_for("views.login", next=request.args.get("next", "")))
+
+
 @bp.post("/login")
 def do_login():
     data = request.get_json(silent=True) or request.form

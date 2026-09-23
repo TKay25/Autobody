@@ -106,6 +106,15 @@ class Config:
     # leave behind an app that nobody can sign in to.
     AUTO_SEED_STAFF = _bool("AUTO_SEED_STAFF", False)
 
+    # ── Bootstrap owner account ──────────────────────────────────────────
+    # Optional. Set both to have the app create this account on boot if it does
+    # not exist. Every account the seeder makes shares one password, so this is
+    # how you get a specific login with its own credentials into a deployment
+    # whose database may start empty. Nothing is written to the repository.
+    OWNER_EMAIL = (os.getenv("OWNER_EMAIL") or "").strip().lower()
+    OWNER_PASSWORD = os.getenv("OWNER_PASSWORD") or ""
+    OWNER_NAME = os.getenv("OWNER_NAME", "Workshop Owner").strip()
+
 
 class TestConfig(Config):
     TESTING = True
