@@ -1096,6 +1096,70 @@ def list_invoices():
     })
 
 
+@bp.post("/invoices")
+@login_required
+def raise_invoice():
+    """Raise an invoice straight from the desk, with no job card involved.
+
+    `Invoice.job_id` is nullable, so front desk can bill a walk-in — a straight
+    respray, a fleet top-up — without opening a job card first. Job-card work
+    still goes through `POST /api/jobs/<id>/invoice`, which pulls the money from
+    the estimate instead of the form.
+    """
+    data = payload()
+
+    customer_id = as_int(data.get("customer_id"))
+    customer = db.session.get(Customer, customer_id) if customer_id else None
+    if not customer:
+        return bad("Choose the customer this invoice is for.")
+
+    description = want(data, "description")
+    if not description:
+        return bad("Say what is being invoiced.")
+
+    subtotal = as_decimal(data.get("subtotal"))
+    if subtotal <= 0:
+        return bad("Enter the amount you are invoicing.")
+
+    # VAT is always derived, never taken from the client, so the subtotal, VAT and
+    # total on the PDF can never disagree with each other.
+    rate = Decimal(str(current_app.config["VAT_RATE"]))
+    vat = (subtotal * rate).quantize(Decimal("0.01"))
+    total = (subtotal + vat).quantize(Decimal("0.01"))
+    issue = bool(data.get("issue"))
+    currency = (want(data, "currency") or "USD").upper()[:8]
+
+    invoice = Invoice(
+        invoice_no=job_flow.next_invoice_no(),
+        job_id=None,
+        customer_id=customer.id,
+        currency=currency,
+        subtotal=subtotal,
+        vat=vat,
+        total=total,
+        status="ISSUED" if issue else "DRAFT",
+        issued_at=utcnow() if issue else None,
+        is_insurance=bool(data.get("is_insurance")),
+        insurer_code=want(data, "insurer_code"),
+        due_date=as_date(data.get("due_date")),
+        # Doubles as the PDF's particulars line — see build_invoice_pdf.
+        notes=description,
+    )
+    db.session.add(invoice)
+    db.session.commit()
+
+    log_activity(
+        "invoice.raised",
+        f"{invoice.invoice_no} raised for {customer.name} — {total:,.2f} {currency}",
+        entity_type="invoice", entity_id=invoice.id, entity_ref=invoice.invoice_no,
+        meta={"total": float(total), "vat": float(vat)}, commit=True,
+    )
+    return jsonify({
+        "invoice": invoice.to_dict(),
+        "pdf": f"/api/invoices/{invoice.id}/pdf",
+    }), 201
+
+
 @bp.post("/jobs/<int:job_id>/invoice")
 @login_required
 def create_invoice(job_id: int):

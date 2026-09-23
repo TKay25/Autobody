@@ -260,9 +260,6 @@
     return h('div', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
         h('div.flex-fill', h('h1.h4.mb-0', 'Bookings')),
-        h('button.btn.btn-outline-secondary.btn-sm', {
-          onclick: () => window.open('/quote', '_blank'),
-        }, T.icon('box-arrow-up-right'), ' Public quote page'),
         h('button.btn.btn-brand.btn-sm', {
           onclick: async () => {
             const customers = await api.get('/api/customers');

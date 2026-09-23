@@ -30,8 +30,6 @@
   const QUICK_ACTIONS = [
     { label: 'New job card', hint: 'Book a vehicle in and estimate it',
       icon: 'clipboard-plus', tone: 'brand', run: () => T.newJobCard() },
-    { label: 'New customer', hint: 'Retail or fleet account',
-      icon: 'person-plus', href: '#/customers?new=1' },
     { label: 'Add stock item', hint: 'Parts, paint and consumables',
       icon: 'box-seam', href: '#/parts?new=1' },
     { label: 'Payments & invoices', hint: 'Record a receipt against an invoice',

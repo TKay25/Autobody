@@ -149,7 +149,9 @@
         ],
         rows: data.items,
         onRowClick: (r) => invoiceDetail(r),
-        empty: T.emptyState('No invoices', 'Invoices are raised when a vehicle is collected.', 'receipt'),
+        empty: T.emptyState('No invoices yet',
+          'Use “New invoice” to bill straight from the desk, or open a job card and bill from there.',
+          'receipt'),
       }));
     }
 
@@ -318,6 +320,165 @@
       }
     }
 
+    /* ── raising documents from the desk ───────────────────────────── */
+
+    /* Shared last field: what to do with the PDF once the record is saved. */
+    function afterSaveField() {
+      return {
+        name: 'after_save', label: 'Then', type: 'segmented', col: 12,
+        value: 'download',
+        options: [
+          { value: 'download', label: 'Download PDF', icon: 'download' },
+          { value: 'whatsapp', label: 'Send on WhatsApp', icon: 'whatsapp' },
+          { value: 'none', label: 'Just save' },
+        ],
+        help: 'WhatsApp delivers the PDF to the customer on the number on file.',
+      };
+    }
+
+    /* Honour that choice on the record we just created. */
+    async function deliverDoc(rec, choice, sendPath) {
+      const pdfUrl = sendPath.startsWith('/api/invoices')
+        ? `/api/invoices/${rec.id}/pdf`
+        : `/api/payments/${rec.id}/pdf`;
+
+      if (choice === 'download') { openPdf(pdfUrl); return; }
+      if (choice !== 'whatsapp') return;
+
+      try {
+        T.toast('Sending…', 'info', { timeout: 2500 });
+        await api.post(sendPath, {});
+        T.toast('Delivered on WhatsApp.', 'success', {
+          title: 'Sent',
+          action: { label: 'Open PDF', run: () => openPdf(pdfUrl) },
+        });
+      } catch (err) {
+        // Never lose the document just because the message failed.
+        T.toast(err.message || 'Could not send on WhatsApp — downloading instead.', 'warning');
+        openPdf(pdfUrl);
+      }
+    }
+
+    async function customerOptions() {
+      const data = await api.get('/api/customers', { silent: true });
+      return (data.items || []).map((c) => ({
+        value: String(c.id),
+        label: c.company ? `${c.name} — ${c.company}` : (c.phone ? `${c.name} · ${c.phone}` : c.name),
+      }));
+    }
+
+    async function newInvoice() {
+      let options = [];
+      try {
+        options = await customerOptions();
+      } catch (err) {
+        T.toast('Could not load the customer list.', 'danger');
+        return;
+      }
+      if (!options.length) {
+        T.toast('Add a customer before raising an invoice.', 'warning');
+        return;
+      }
+
+      const res = await T.formModal({
+        title: 'Raise an invoice',
+        size: 'lg',
+        intro: 'For work billed straight from the desk — no job card needed. VAT is worked out for you.',
+        submitLabel: 'Save invoice',
+        fields: [
+          { name: 'customer_id', label: 'Customer *', type: 'select', col: 12,
+            icon: 'person', options, required: true },
+          { name: 'description', label: 'What is being invoiced *', type: 'textarea', col: 12,
+            rows: 2, required: true, icon: 'card-text',
+            hint: 'This line is printed on the invoice, so write it as the customer should read it.',
+            placeholder: 'e.g. Full respray — Toyota Hilux, 2 panels plus paint materials' },
+          { name: 'subtotal', label: 'Amount before VAT *', type: 'money', col: 6,
+            step: '0.01', required: true, icon: 'cash-stack', affix: 'USD' },
+          { name: 'due_date', label: 'Payment due', type: 'date', col: 6, icon: 'calendar-event' },
+          { name: 'issue', label: 'Issue it now', type: 'switch', col: 6, value: true,
+            help: 'Untick to keep it as a draft you can still change.' },
+          { name: 'is_insurance', label: 'Insurance work', type: 'switch', col: 6, value: false,
+            help: 'Marks the invoice as an insurer account.' },
+          afterSaveField(),
+        ],
+      });
+      if (!res) return;
+
+      const after = res.after_save;
+      delete res.after_save;
+      try {
+        const out = await api.post('/api/invoices', res);
+        const invoice = out.invoice || {};
+        T.toast(`Invoice ${invoice.invoice_no} saved — ${money(invoice.total, invoice.currency)}.`,
+          'info');
+        load();
+        await deliverDoc(invoice, after, `/api/invoices/${invoice.id}/send`);
+      } catch (err) {
+        T.toast(err.message || 'The invoice could not be saved.', 'danger');
+      }
+    }
+
+    async function newReceipt() {
+      let data;
+      try {
+        data = await api.get('/api/invoices', { silent: true });
+      } catch (err) {
+        T.toast('Could not load the invoice list.', 'danger');
+        return;
+      }
+      const open_ = (data.items || []).filter(
+        (i) => Number(i.balance) > 0 && i.status !== 'CANCELLED');
+      if (!open_.length) {
+        T.toast('Every invoice is settled — there is nothing to receipt.', 'info');
+        return;
+      }
+
+      const res = await T.formModal({
+        title: 'Record a payment',
+        size: 'md',
+        intro: 'Records the money against an invoice and issues a numbered receipt.',
+        submitLabel: 'Save receipt',
+        fields: [
+          { name: 'invoice_id', label: 'Against invoice *', type: 'select', col: 12,
+            icon: 'receipt', required: true,
+            options: open_.map((i) => ({
+              value: String(i.id),
+              label: `${i.invoice_no} · ${i.customer_name} · ${money(i.balance, i.currency)} due`,
+            })) },
+          { name: 'amount', label: 'Amount received *', type: 'money', col: 6,
+            step: '0.01', required: true, icon: 'cash-stack', affix: 'USD' },
+          { name: 'method', label: 'Method', type: 'select', col: 6,
+            icon: 'credit-card', options: methodOptions },
+          { name: 'reference', label: 'Reference', col: 12, icon: 'hash',
+            hint: 'EcoCash transaction id or bank reference.',
+            placeholder: 'e.g. MP240915.1234' },
+          afterSaveField(),
+        ],
+        validate: (values) => {
+          const chosen = open_.find((i) => String(i.id) === String(values.invoice_id));
+          if (chosen && Number(values.amount) > Number(chosen.balance) + 0.001) {
+            return { amount: `That is more than the ${money(chosen.balance, chosen.currency)} outstanding.` };
+          }
+          return {};
+        },
+      });
+      if (!res) return;
+
+      const after = res.after_save;
+      delete res.after_save;
+      const invoiceId = res.invoice_id;
+      try {
+        const out = await api.post(`/api/invoices/${invoiceId}/payment`,
+          { ...res, send_receipt: false });
+        const payment = out.payment || {};
+        T.toast(`Receipt ${payment.receipt_no || 'issued'} saved.`, 'info');
+        load();
+        await deliverDoc(payment, after, `/api/payments/${payment.id}/receipt/send`);
+      } catch (err) {
+        T.toast(err.message || 'The payment could not be recorded.', 'danger');
+      }
+    }
+
     const statusFilter = T.iconSelect({
       value: state.status, icon: 'funnel', width: 158, ariaLabel: 'Invoice status',
       onChange: (v) => { state.status = v; load(); },
@@ -331,6 +492,14 @@
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
         h('div.flex-fill', h('h1.h4.mb-0', 'Invoices & payments')),
         h('div.tc-toolbar', [statusFilter]),
+        h('button.btn.btn-sm.btn-outline-secondary', {
+          onclick: () => newReceipt(),
+          title: 'Record a payment and issue a receipt',
+        }, T.icon('receipt'), ' Record payment'),
+        h('button.btn.btn-sm.btn-brand', {
+          onclick: () => newInvoice(),
+          title: 'Raise an invoice without a job card',
+        }, T.icon('plus-lg'), ' New invoice'),
       ]),
       summary,
       T.section({ body: host, flush: true }),

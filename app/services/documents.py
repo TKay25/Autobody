@@ -422,6 +422,21 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
             _items_table([i.to_dict() for i in estimate.items], currency),
             Spacer(1, 4 * mm),
         ]
+    elif invoice.notes:
+        # Raised straight from the desk: there is no estimate behind it, so its own
+        # wording is the only description of what is charged. Without this the
+        # document is a totals block with nothing above it.
+        story += [
+            _items_table([{
+                "description": invoice.notes,
+                "kind": "Labour",
+                "quantity": 1,
+                "unit": "",
+                "unit_price": float(invoice.subtotal or 0),
+                "line_total": float(invoice.subtotal or 0),
+            }], currency),
+            Spacer(1, 4 * mm),
+        ]
 
     story.append(_totals_block([
         ("Subtotal", _money(invoice.subtotal), False),

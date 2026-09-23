@@ -1,7 +1,9 @@
 """WhatsApp chatbot tests — no network required (simulator mode)."""
 from __future__ import annotations
 
-from datetime import date
+import hashlib
+import hmac
+from datetime import date, timedelta
 
 from app.extensions import db
 from app.models import Booking, Customer, JobCard, Vehicle, WaConversation
@@ -22,9 +24,49 @@ def test_greeting_returns_main_menu(app):
         conv = get_or_create_conversation("263771110001", "Tester")
         replies = intent_router.handle_inbound(conv, text_body="Hello")
         assert replies
-        assert replies[0]["type"] == "buttons"
-        ids = [b["id"] for b in replies[0]["buttons"]]
+        assert replies[0]["type"] == "list"
+        ids = [row["id"] for s in replies[0]["sections"] for row in s["rows"]]
         assert "m_quote" in ids
+        # Booking used to be unreachable from the greeting: WhatsApp caps buttons
+        # at three and the menu spent all three on quote/track/claim.
+        assert "m_book" in ids
+
+
+def test_a_booking_completes_by_tapping_and_keeps_the_chosen_day(app):
+    """Two bugs in one flow: it could not be finished, and it lost the day.
+
+    The service list used `svc:` ids, which the router sent into the *quote* flow,
+    so tapping a service while booking never reached the day step. And the day the
+    customer then picked was collected but discarded, so every booking silently
+    landed on tomorrow.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263771120010", "Booker")
+
+        picker = intent_router.handle_inbound(conv, interactive_id="m_book")[0]
+        service_ids = [r["id"] for s in picker["sections"] for r in s["rows"]]
+        assert service_ids, "the booking flow offered no services"
+        assert all(i.startswith("bsvc:") for i in service_ids), service_ids
+
+        day_picker = intent_router.handle_inbound(conv, interactive_id=service_ids[0])[0]
+        day_ids = [r["id"] for s in day_picker["sections"] for r in s["rows"]]
+        assert day_ids, "no days were offered"
+        chosen = day_ids[2]
+        wanted = chosen.split(":", 1)[1]
+
+        intent_router.handle_inbound(conv, interactive_id=chosen)
+        confirmation = intent_router.handle_inbound(conv, text_body="Tariro Moyo")
+        assert "Preferred day" in confirmation[0]["body"], confirmation[0]["body"]
+
+        booking = Booking.query.order_by(Booking.id.desc()).first()
+        assert booking is not None, "the booking was never created"
+        assert booking.source == "whatsapp"
+        assert booking.status == "REQUESTED"
+        assert booking.slot_date.isoformat() == wanted, (
+            f"booking landed on {booking.slot_date}, the customer asked for {wanted}"
+        )
+        # The chosen day also survives the flow reset, so it can be re-read.
+        assert conv.ctx_get("book_date") is None
 
 
 def test_intent_detection():
@@ -208,3 +250,120 @@ def test_webhook_processes_inbound_message(app, client):
         assert outbound, "the bot should have replied to the greeting"
         assert outbound[0].is_bot is True
         assert conv.last_message_at is not None
+
+
+# ── language switching ───────────────────────────────────────────────────────
+def test_language_can_be_switched_while_a_flow_is_waiting_for_data(app):
+    """Naming a language mid-flow must switch, not be eaten as bad input.
+
+    The registration prompt used to reject "Shona" as a dodgy plate number and
+    answer in English, so there was no way to change language part-way through.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263771120001", "Midflow Tester")
+        intent_router.handle_inbound(conv, interactive_id="m_quote")
+        assert conv.state == "QUOTE_REG"
+
+        replies = intent_router.handle_inbound(conv, text_body="Shona")
+        assert conv.ctx_get("lang") == "sn"
+        body = " ".join(r.get("body", "") for r in replies)
+        assert "Nderipi" in body, f"should re-ask for the plate in Shona: {body}"
+        assert conv.state == "QUOTE_REG", "the flow should continue, not reset"
+
+
+def test_switching_language_mid_flow_keeps_earlier_answers(app):
+    """Changing language must not silently discard what was already given."""
+    with app.app_context():
+        conv = get_or_create_conversation("263771120002", "Keep Answers")
+        intent_router.handle_inbound(conv, interactive_id="m_quote")
+        intent_router.handle_inbound(conv, text_body="ABC 1234")
+        assert conv.ctx_get("reg") == "ABC1234"
+
+        intent_router.handle_inbound(conv, text_body="ndebele")
+        assert conv.ctx_get("lang") == "nd"
+        assert conv.ctx_get("reg") == "ABC1234", "the registration was thrown away"
+        assert conv.state == "QUOTE_SERVICE"
+
+
+def test_language_names_phrases_and_codes_all_switch(app):
+    cases = [("English", "en"), ("chishona", "sn"), ("isiNdebele", "nd")]
+    with app.app_context():
+        for index, (raw, expected) in enumerate(cases):
+            conv = get_or_create_conversation(f"2637711300{index:02d}", "Names")
+            intent_router.handle_inbound(conv, text_body=raw)
+            assert conv.ctx_get("lang") == expected, raw
+
+        # Generic "change language" wording opens the chooser rather than guessing
+        # which one they meant — in all three languages.
+        for index, raw in enumerate(["mutauro", "shandura mutauro", "change language"]):
+            conv = get_or_create_conversation(f"2637711400{index:02d}", "Chooser")
+            replies = intent_router.handle_inbound(conv, text_body=raw)
+            assert replies[0]["type"] == "list", raw
+            rows = [row["id"] for s in replies[0]["sections"] for row in s["rows"]]
+            assert "lang:sn" in rows
+
+
+def test_the_language_option_is_reachable_from_a_menu(app):
+    """m_lang was wired into the router but no menu ever offered it."""
+    with app.app_context():
+        conv = get_or_create_conversation("263771120004", "Reachability")
+        replies = intent_router.handle_inbound(conv, text_body="hours")
+        rows = [row["id"]
+                for r in replies if r.get("type") == "list"
+                for section in r.get("sections", [])
+                for row in section["rows"]]
+        assert "m_lang" in rows, f"no way to reach the language list: {rows}"
+
+        replies = intent_router.handle_inbound(conv, interactive_id="m_lang")
+        assert replies[0]["type"] == "list"
+        intent_router.handle_inbound(conv, interactive_id="lang:sn")
+        assert conv.ctx_get("lang") == "sn"
+
+
+def test_language_is_detected_from_how_the_customer_writes(app):
+    with app.app_context():
+        conv = get_or_create_conversation("263771120005", "Auto Detect")
+        intent_router.handle_inbound(
+            conv, text_body="ndapota ndinoda kuziva nezve mota yangu")
+        assert conv.ctx_get("lang") == "sn"
+
+
+def test_detection_defers_to_an_explicit_choice(app):
+    """A borrowed word must not override a language the customer actually picked."""
+    with app.app_context():
+        conv = get_or_create_conversation("263771120006", "Explicit Wins")
+        intent_router.handle_inbound(conv, text_body="English")
+        assert conv.ctx_get("lang") == "en"
+        intent_router.handle_inbound(
+            conv, text_body="ngicela ngifuna ukwazi ngemoto yami")
+        assert conv.ctx_get("lang") == "en", "auto-detect overrode an explicit choice"
+
+
+def test_a_single_stray_word_does_not_switch_language(app):
+    with app.app_context():
+        conv = get_or_create_conversation("263771120007", "One Marker")
+        intent_router.handle_inbound(conv, text_body="how much is the mari for a respray")
+        assert conv.ctx_get("lang") in (None, "en")
+
+
+# ── webhook authenticity ─────────────────────────────────────────────────────
+def test_webhook_signature_is_enforced_when_a_secret_is_configured():
+    """The webhook URL is public; without this anyone could post fake messages."""
+    from app import create_app
+    from config import TestConfig
+
+    class SignedConfig(TestConfig):
+        WA_APP_SECRET = "app-secret"
+
+    client = create_app(SignedConfig).test_client()
+    payload = b'{"object":"whatsapp_business_account","entry":[]}'
+
+    unsigned = client.post("/webhooks/whatsapp", data=payload,
+                           content_type="application/json")
+    assert unsigned.status_code == 403
+
+    digest = hmac.new(b"app-secret", payload, hashlib.sha256).hexdigest()
+    signed = client.post("/webhooks/whatsapp", data=payload,
+                         content_type="application/json",
+                         headers={"X-Hub-Signature-256": f"sha256={digest}"})
+    assert signed.status_code == 200

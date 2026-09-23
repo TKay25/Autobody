@@ -74,6 +74,11 @@ class Config:
     WA_PHONE_NUMBER_ID = os.getenv("WA_PHONE_NUMBER_ID", "")
     WA_BUSINESS_ACCOUNT_ID = os.getenv("WA_BUSINESS_ACCOUNT_ID", "")
     WA_ACCESS_TOKEN = os.getenv("WA_ACCESS_TOKEN", "")
+    # Meta app secret (Settings → Basic). When set, inbound webhook calls must
+    # carry a valid X-Hub-Signature-256 or they are rejected. Optional so that
+    # simulator installs keep working, but set it in production: the webhook URL
+    # is public, and without it anyone can post fake messages at the bot.
+    WA_APP_SECRET = os.getenv("WA_APP_SECRET", "")
     WA_VERIFY_TOKEN = os.getenv("WA_VERIFY_TOKEN", "topclass-verify-token")
     WA_GRAPH_URL = os.getenv("WA_GRAPH_URL", "https://graph.facebook.com")
     WA_SESSION_WINDOW_HOURS = 24

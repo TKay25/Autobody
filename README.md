@@ -81,8 +81,6 @@ Also included:
 
 - **Customer portal** — `/portal/<token>`, a no-login page showing repair progress,
   outstanding invoices and bookings.
-- **Public quote page** — `/quote`, embeddable from the marketing site (it writes a
-  real `Booking` through `POST /api/bookings`).
 
 ### The WhatsApp chatbot
 
@@ -371,7 +369,7 @@ Autobody/
 │   │   ├── documents.py       # ReportLab quotation/invoice/receipt PDFs
 │   │   └── notifications.py   # stage/quote/ready/payment + document triggers
 │   ├── views/
-│   │   ├── views.py           # SPA shell, portal, public quote
+│   │   ├── views.py           # SPA shell, portal
 │   │   ├── docs.py            # public token-gated customer documents
 │   │   ├── auth.py            # login/logout
 │   │   ├── api.py             # the whole JSON API

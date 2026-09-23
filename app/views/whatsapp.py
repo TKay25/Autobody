@@ -8,6 +8,8 @@ use ``WA_VERIFY_TOKEN`` as the verify token.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 
 from flask import Blueprint, current_app, jsonify, request
@@ -44,6 +46,13 @@ def verify():
 
 @bp.post("/whatsapp")
 def inbound():
+    # Read the raw body before parsing: the signature is computed over the exact
+    # bytes Meta sent, so re-serialising the JSON would break the comparison.
+    raw = request.get_data()
+    if not _signature_ok(raw):
+        log.warning("Rejected WhatsApp webhook: missing or invalid X-Hub-Signature-256.")
+        return jsonify({"error": "invalid_signature"}), 403
+
     body = request.get_json(silent=True) or {}
 
     # Always return 200 quickly; Meta retries aggressively on non-2xx.
@@ -53,6 +62,26 @@ def inbound():
         log.exception("WhatsApp webhook error: %s", exc)
         db.session.rollback()
     return jsonify({"received": True}), 200
+
+
+def _signature_ok(raw: bytes) -> bool:
+    """Verify Meta's ``X-Hub-Signature-256`` header.
+
+    Without this the webhook URL is an open door: anyone who learns it can POST a
+    hand-written payload and have the bot create bookings, customers and job
+    cards on their behalf. Only enforced when ``WA_APP_SECRET`` is configured, so
+    a simulator install with no Meta app still works.
+    """
+    secret = current_app.config.get("WA_APP_SECRET") or ""
+    if not secret:
+        return True                     # not configured — nothing to verify against
+
+    header = request.headers.get("X-Hub-Signature-256", "")
+    if not header.startswith("sha256="):
+        return False
+
+    expected = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(header[len("sha256="):], expected)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

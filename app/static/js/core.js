@@ -759,9 +759,16 @@
         return shell(f, iconWrap(input), { labelFor: common.id });
       });
 
-      const form = h('form.row.g-3', { novalidate: true }, rows);
+      const formId = `tca-form-${Math.random().toString(36).slice(2, 9)}`;
+      const form = h('form.row.g-3', { id: formId, novalidate: true }, rows);
       const submit = h('button.btn.btn-brand.btn-sm.fw-semibold', { type: 'submit' },
         [h('i.bi.bi-check2.me-1'), submitLabel]);
+      /* The footer sits outside the <form>, so a submit button there is orphaned
+         and clicking it does nothing at all — which made every formModal in the
+         app quietly unsubmittable. `form` is a read-only property on
+         HTMLButtonElement, so it has to be set as an attribute rather than
+         through h()'s property assignment. */
+      submit.setAttribute('form', formId);
 
       const m = modal({
         title,

@@ -38,6 +38,21 @@ def test_every_view_script_is_loaded():
     assert not stale, f"app.html references missing files: {sorted(stale)}"
 
 
+def test_form_modal_submit_button_is_associated_with_its_form():
+    """The footer sits outside the <form>, so the button has to name it.
+
+    Without that association the button is orphaned and clicking it does nothing
+    at all — every formModal in the app (payments, staff, customers, parts) was
+    silently unsubmittable, which no browser-free test would otherwise catch.
+    `form` is a read-only property on a button, so it must go on as an attribute.
+    """
+    src = (JS_DIR / "core.js").read_text(encoding="utf-8")
+    assert "submit.setAttribute('form', formId)" in src, (
+        "formModal's submit button is not associated with its form — "
+        "clicking Save will do nothing"
+    )
+
+
 def test_no_hardcoded_static_urls_in_templates():
     """Everything must go through static_url() so cache busting always applies."""
     for path in TEMPLATES.rglob("*.html"):

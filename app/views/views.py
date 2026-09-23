@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from flask import Blueprint, abort, current_app, render_template, request, send_from_directory
 from flask_login import current_user, login_required
 
-from ..constants import SERVICE_NAMES, STAGE_LABELS
+from ..constants import STAGE_LABELS
 from ..extensions import db
 from ..models import Booking, Customer, Invoice, JobCard, Vehicle
 
@@ -75,12 +75,6 @@ def portal(token: str):
         stage_labels=STAGE_LABELS,
         today=date.today(),
     )
-
-
-@bp.get("/quote")
-def public_quote():
-    """Marketing-site quick quote widget (can be iframed by topclass.co.zw)."""
-    return render_template("quote.html", services=SERVICE_NAMES)
 
 
 def _bootstrap_payload() -> dict:

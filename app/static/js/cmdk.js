@@ -25,7 +25,6 @@
     { id: 'export-claims', label: 'Export claims to CSV', hint: 'Download', icon: 'download', run: () => download('claims') },
     { id: 'export-parts', label: 'Export stock to CSV', hint: 'Download', icon: 'download', run: () => download('parts') },
     { id: 'simulator', label: 'Test the WhatsApp bot', hint: 'Comms', icon: 'robot', run: () => T.navigate('/inbox?sim=1') },
-    { id: 'public-quote', label: 'Open public quote page', hint: 'Website', icon: 'box-arrow-up-right', run: () => window.open('/quote', '_blank') },
   ];
 
   function download(dataset) {

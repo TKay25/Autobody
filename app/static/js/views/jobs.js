@@ -414,16 +414,46 @@
       otherLabel: 'Other colour (type it)', swatch: true,
     });
 
+    /* Customer type is only a question worth asking for someone who is not on file
+       yet. Once an existing customer is picked we show what was recorded when they
+       were first assisted, instead of making the operator answer something the
+       database already knows. The API ignores is_fleet for an existing customer. */
+    const fleetCheck = h('input.form-check-input', {
+      type: 'checkbox', name: 'is_fleet', id: 'isFleet',
+    });
+    const fleetChoice = h('div.form-check.pt-1', [
+      fleetCheck,
+      h('label.form-check-label.small', { for: 'isFleet' }, 'Fleet / corporate account'),
+    ]);
+    const customerTypeHost = h('div', fleetChoice);
+
+    function syncCustomerType() {
+      const select = form.querySelector('[name=customer_id]');
+      const picked = select && select.value
+        ? customersRes.items.find((c) => String(c.id) === String(select.value))
+        : null;
+      if (picked) {
+        fleetCheck.checked = !!picked.is_fleet;
+        T.mount(customerTypeHost, h('div.form-control.form-control-sm.d-flex.align-items-center.gap-2', [
+          T.icon(picked.is_fleet ? 'building' : 'person'),
+          h('span.text-truncate', picked.is_fleet ? 'Fleet / corporate' : 'Retail customer'),
+        ]));
+      } else {
+        T.mount(customerTypeHost, fleetChoice);
+      }
+    }
+
     form = h('form.row.g-3', { onsubmit: (e) => e.preventDefault() }, [
       /* customer */
       h('div.col-12', sectionHead(1, 'Customer & vehicle')),
       h('div.col-md-6', field('Customer', h('select.form-select.form-select-sm', {
         name: 'customer_id',
-        onchange: () => loadQuotations(''),
+        onchange: () => { loadQuotations(''); syncCustomerType(); },
       }, [h('option', { value: '' }, '— New customer —')].concat(
         customersRes.items.map((c) => h('option', { value: c.id },
           `${c.name}${c.phone ? ' · ' + c.phone : ''}`)))),
         { hint: 'Existing quotations for this customer are offered below.' })),
+      h('div.col-md-3', field('Customer type', customerTypeHost)),
       h('div.col-md-3', field('New customer name', h('input.form-control.form-control-sm', { name: 'customer_name', placeholder: 'Only if new' }))),
       h('div.col-md-3', field('Phone / WhatsApp', h('input.form-control.form-control-sm', { name: 'customer_phone', placeholder: '+263 77 000 0000' }))),
       h('div.col-md-3', field('Registration *', h('input.form-control.form-control-sm.text-uppercase', {
@@ -473,6 +503,7 @@
     refreshPreview();
     setMode('attach');
     loadQuotations('');
+    syncCustomerType();
 
     return new Promise((resolve) => {
       let settled = false;

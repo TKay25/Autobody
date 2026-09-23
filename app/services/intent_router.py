@@ -37,6 +37,43 @@ LANGUAGES = {
     "nd": "Ndebele",
 }
 
+# Ways a customer might ask for a language, or name one, in any of the three.
+# Used for the free-text switch, so a customer can change language by simply
+# writing the name of it — no menu required.
+LANGUAGE_NAMES = {
+    "en": {"english", "eng", "en", "chirungu", "isilungu"},
+    "sn": {"shona", "chishona", "sn", "sh"},
+    "nd": {"ndebele", "isindebele", "nd"},
+}
+LANGUAGE_WORDS = {
+    "language", "languages", "lang", "mutauro", "mitauro",
+    "ulimi", "izilimi", "translate",
+}
+LANGUAGE_PHRASES = {
+    "change language", "switch language", "select language", "choose language",
+    "shandura mutauro", "shintsha ulimi", "khetha ulimi", "sarudza mutauro",
+}
+
+# Words that give away which language somebody is writing in. Two or more are
+# required before the bot switches on its own, so a single borrowed word ("mari"
+# in an otherwise English sentence) does not flip the conversation.
+LANGUAGE_MARKERS = {
+    "sn": {"ndapota", "mhoro", "mangwanani", "masikati", "manheru", "ndinoda",
+           "ndiri", "mota", "mari", "zvakanaka", "ndatenda", "tinotenda",
+           "nhamba", "chaizvo", "unogona", "ndingakubatsira", "pano", "sei"},
+    "nd": {"ngicela", "sawubona", "ngiyabonga", "siyabonga", "ngifuna", "imoto",
+           "izimoto", "kanjani", "kuhle", "yebo", "lutho", "futhi", "kumbe",
+           "manje", "ngingakusiza", "lapha"},
+}
+
+# States that are waiting for an answer. Auto-detection stays out of these so it
+# cannot swallow the registration number or the damage description the customer
+# just typed; an explicit request ("Shona") still works from any of them.
+DATA_ENTRY_STATES = {
+    "QUOTE_REG", "QUOTE_SERVICE", "QUOTE_DESC", "QUOTE_CONTACT",
+    "TRACK_REF", "CLAIM_REF", "BOOK_SERVICE", "BOOK_DATE", "BOOK_CONTACT",
+}
+
 T = {
     "welcome": {
         "en": "Hello {name}! 👋 Welcome to {company}.\nWe are Masters of Restoration — panel beating, spray painting, detailing, ceramic coating and PPF.\n\nHow can we help you today?",
@@ -92,6 +129,34 @@ T = {
         "en": "Thank you for choosing {company}. Drive safely! 🚗",
         "sn": "Tinotenda nekusarudza {company}. Fambai zvakanaka! 🚗",
         "nd": "Siyabonga ngokukhetha {company}. Hamba kuhle! 🚗",
+    },
+    "lang_hint": {
+        "en": "🌐 Reply *Shona* or *Ndebele* at any time to switch language.",
+        "sn": "🌐 Pindurai *English* kana *Ndebele* chero nguva kushandura mutauro.",
+        "nd": "🌐 Phendula *English* kumbe *Shona* noma nini ukushintsha ulimi.",
+    },
+    "lang_set": {
+        "en": "Language set to English. ✅",
+        "sn": "Mutauro washandurwa kuShona. ✅",
+        "nd": "Ulimi lushintshiwe lwaba isiNdebele. ✅",
+    },
+    "lang_unknown": {
+        "en": "Please choose English, Shona or Ndebele.",
+        "sn": "Sarudzai English, Shona kana Ndebele.",
+        "nd": "Khetha English, Shona kumbe Ndebele.",
+    },
+    "ask_name": {
+        "en": "Thanks. Last thing — what name should we put on the job card? "
+              "Reply with your name (or type *skip* if you are already a customer).",
+        "sn": "Ndatenda. Chekupedzisira — nderipi zita rinouya pajob kadi? "
+              "Pindurai nezita renyu (kana kunyora *skip* kana muri mutengi wedu).",
+        "nd": "Ngiyabonga. Okokugcina — yiliphi ibizo elizafakwa kukadi lomsebenzi? "
+              "Phendula ngebizo lakho (kumbe bhala *skip* uma usuvele ungumthengi).",
+    },
+    "more_prompt": {
+        "en": "Anything else I can help with?",
+        "sn": "Pane zvimwe zvandingakubatsira nazvo?",
+        "nd": "Kukhona okunye engingakusiza ngakho?",
     },
 }
 
@@ -191,21 +256,46 @@ def buttons(body: str, options: list[tuple[str, str]], header: str | None = None
     }
 
 
-def main_menu_reply(company: str, lang: str) -> dict:
-    return buttons(
-        t("menu_prompt", lang),
-        [
-            ("m_quote", "Get a quote"),
-            ("m_track", "Track my repair"),
-            ("m_claim", "My claim"),
-        ],
-        header=company,
-    )
+def main_menu_reply(company: str, lang: str, prefix: str = "") -> dict:
+    """The greeting menu.
+
+    A list rather than buttons. WhatsApp caps buttons at three, and that cap is
+    exactly what kept "Book a service" off the greeting — the flow existed, but
+    customers could only find it by typing *book*. A list shows everything.
+    """
+    body = t("menu_prompt", lang) + "\n\n" + t("lang_hint", lang)
+    if prefix:
+        body = prefix + "\n\n" + body
+    return {
+        "type": "list",
+        "body": body,
+        "button": "Start",
+        "sections": [{"title": company, "rows": [
+            {"id": "m_quote", "title": "Get a quote",
+             "description": "Send damage photos, get a price"},
+            {"id": "m_book", "title": "Book a service",
+             "description": "Detailing, ceramic coating, PPF"},
+            {"id": "m_track", "title": "Track my repair",
+             "description": "Job number or registration"},
+            {"id": "m_claim", "title": "My claim",
+             "description": "Insurer, assessor and excess"},
+            {"id": "m_services", "title": "Our services & prices"},
+            {"id": "m_human", "title": "Talk to a person"},
+            {"id": "m_lang", "title": "🌐 Language"},
+            {"id": "m_info", "title": "Contact details"},
+        ]}],
+    }
 
 
-def service_list_reply(lang: str) -> dict:
+def service_list_reply(lang: str, id_prefix: str = "svc") -> dict:
+    """The service picker.
+
+    ``id_prefix`` exists because the booking flow needs its own ids: the quote
+    flow claimed ``svc:``, so tapping a service while booking was routed into the
+    quote flow instead and a booking could never actually be completed by tap.
+    """
     rows = [
-        {"id": f"svc:{name}", "title": name[:24],
+        {"id": f"{id_prefix}:{name}", "title": name[:24],
          "description": f"From USD {quick_quote(name)['from_price']:.0f}"}
         for name in SERVICE_NAMES
         if quick_quote(name)
@@ -218,15 +308,29 @@ def service_list_reply(lang: str) -> dict:
     }
 
 
-def more_menu_reply() -> dict:
-    return buttons(
-        "Anything else I can help with?",
-        [
-            ("m_quote", "Get a quote"),
-            ("m_track", "Track my repair"),
-            ("m_human", "Talk to a person"),
-        ],
-    )
+def more_menu_reply(lang: str = "en") -> dict:
+    """The catch-all "what next?" menu.
+
+    A list rather than buttons, because WhatsApp caps buttons at three — which is
+    exactly how the language option ended up unreachable: ``m_lang`` was wired up
+    in the router but no menu ever offered it.
+    """
+    return {
+        "type": "list",
+        "menu": "more",                  # re-rendered per language in handle()
+        "body": t("more_prompt", lang) + "\n\n" + t("lang_hint", lang),
+        "button": "Options",
+        "sections": [{"title": "What next?", "rows": [
+            {"id": "m_quote", "title": "Get a quote"},
+            {"id": "m_track", "title": "Track my repair"},
+            {"id": "m_claim", "title": "My claim"},
+            {"id": "m_book", "title": "Book a service"},
+            {"id": "m_services", "title": "Our services"},
+            {"id": "m_human", "title": "Talk to a person"},
+            {"id": "m_lang", "title": "🌐 Language"},
+            {"id": "m_info", "title": "Contact details"},
+        ]}],
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -267,7 +371,14 @@ class IntentRouter:
         if replies and self.reset_strikes:
             self.conv.ctx_set(strikes=0)
             db.session.commit()
-        return replies
+
+        # The catch-all menu comes from a module-level helper used at a dozen call
+        # sites, so its prompt is filled in here rather than threading the current
+        # language through every one of them.
+        return [
+            more_menu_reply(self.lang) if r.get("menu") == "more" else r
+            for r in replies
+        ]
 
     # ── media (damage photos) ────────────────────────────────────────────
     def _handle_media(self, media_url: str) -> list[dict]:
@@ -291,6 +402,8 @@ class IntentRouter:
     def _handle_choice(self, choice: str) -> list[dict]:
         if choice.startswith("svc:"):
             return self._start_quote_with_service(choice.split(":", 1)[1])
+        if choice.startswith("bsvc:"):
+            return self._input_book_service(choice.split(":", 1)[1])
         if choice.startswith("day:"):
             return self._input_book_date(choice.split(":", 1)[1])
         if choice.startswith("lang:"):
@@ -327,6 +440,13 @@ class IntentRouter:
     def _handle_text(self, raw: str) -> list[dict]:
         state = self.conv.state
 
+        # Language first, data-entry states included: answering the registration
+        # prompt with "Shona" has to switch the conversation over, not be
+        # rejected as a bad plate number.
+        switch = self._language_request(raw)
+        if switch is not None:
+            return switch
+
         # A state that is waiting for data consumes the message first.
         state_handler = {
             "QUOTE_REG": self._input_quote_reg,
@@ -348,6 +468,13 @@ class IntentRouter:
 
         if not raw:
             return self._fallback()
+
+        # Nobody has chosen a language and they are plainly writing in one: meet
+        # them where they are instead of making them ask for it. Kept out of the
+        # data-entry states above so it can never eat the answer they just typed.
+        detected = self._detect_language(raw)
+        if detected:
+            return self._apply_language(detected)
 
         intent = detect_intent(raw)
         if intent == "menu":
@@ -431,6 +558,10 @@ class IntentRouter:
         return [text("\n".join(lines)), main_menu_reply(self.company, self.lang)]
 
     def _menu_lang(self) -> list[dict]:
+        # Remember where we were, so choosing a language resumes that step rather
+        # than dumping the customer back at the main menu and losing their answers.
+        if self.conv.state != "LANG":
+            self.conv.ctx_set(lang_return_state=self.conv.state)
         self.conv.state = "LANG"
         db.session.commit()
         return [{"type": "list", "body": "Choose your language / Sarudza mutauro / Khetha ulimi",
@@ -441,17 +572,99 @@ class IntentRouter:
                  ]}]}]
 
     def _input_lang(self, raw: str) -> list[dict]:
-        low = raw.strip().lower()
-        code = {"english": "en", "shona": "sn", "ndebele": "nd"}.get(low)
+        code = self._language_code(raw)
         if not code:
-            for candidate in LANGUAGES:
-                if low.startswith(candidate):
-                    code = candidate
-                    break
-        if not code:
-            return [text("Please choose English, Shona or Ndebele.")]
+            return [text(t("lang_unknown", self.lang))]
+        return self._apply_language(code)
+
+    @staticmethod
+    def _language_code(raw: str) -> str | None:
+        """Map "Shona", "chishona", "sn" … onto a language code."""
+        words = re.findall(r"[a-z]+", (raw or "").strip().lower())
+        for code, names in LANGUAGE_NAMES.items():
+            if any(word in names for word in words):
+                return code
+        return None
+
+    def _language_request(self, raw: str) -> list[dict] | None:
+        """Reply to a spoken language request, or None if it is not one.
+
+        Runs before the state handlers, which is what makes the switch available at
+        any point in a conversation rather than only from a menu.
+        """
+        low = re.sub(r"[^a-z\s]", " ", (raw or "").strip().lower())
+        low = re.sub(r"\s+", " ", low).strip()
+        if not low or len(low) > 40:
+            return None                      # too long to be "just change language"
+
+        words = low.split()
+        if low in LANGUAGE_PHRASES or set(words) & LANGUAGE_WORDS:
+            return self._menu_lang()
+
+        # A short message that only names a language: "Shona", "in shona", "chishona".
+        named = {code for code, names in LANGUAGE_NAMES.items() if set(words) & names}
+        if len(named) == 1 and len(words) <= 3:
+            return self._apply_language(named.pop())
+        return None
+
+    def _detect_language(self, raw: str) -> str | None:
+        """Guess the language from how the customer wrote, or None.
+
+        Needs two markers before acting, and never runs once the customer has made
+        an explicit choice — a borrowed word like "mari" in an English sentence
+        must not flip the whole conversation.
+        """
+        if self.conv.ctx_get("lang_chosen"):
+            return None
+        words = set(re.findall(r"[a-z]+", (raw or "").lower()))
+        for code, markers in LANGUAGE_MARKERS.items():
+            if code != self.lang and len(words & markers) >= 2:
+                return code
+        return None
+
+    def _apply_language(self, code: str) -> list[dict]:
+        """Persist the language and carry on where the customer was.
+
+        Reached from the language list, the ``lang:<code>`` ids and free text, so a
+        customer can switch at any point.
+        """
+        if code not in LANGUAGES:
+            return [text(t("lang_unknown", self.lang))]
+
+        previous = self.conv.ctx_get("lang_return_state") or self.conv.state
         self.lang = code
-        self.conv.ctx_set(lang=code)
+        self.conv.ctx_set(lang=code, lang_chosen=True)
+        self.conv.ctx_clear("lang_return_state")
+
+        # Mid-flow: confirm, then re-ask the pending question in their language.
+        # Without this, switching language while entering a registration number
+        # would silently discard the quote they had already started.
+        if previous in DATA_ENTRY_STATES:
+            self.conv.state = previous
+            db.session.commit()
+            return [text(t("lang_set", code))] + self._resume_in_language(previous)
+
+        # Otherwise fold the confirmation into the menu, so they get something
+        # tappable rather than a bare acknowledgement.
+        db.session.commit()
+        return [main_menu_reply(self.company, code, prefix=t("lang_set", code))]
+
+    def _resume_in_language(self, previous: str) -> list[dict]:
+        """Re-ask the question the customer was answering, now translated."""
+        if previous == "QUOTE_REG":
+            return [text(t("ask_reg", self.lang))]
+        if previous == "QUOTE_SERVICE":
+            return [service_list_reply(self.lang)]
+        if previous == "QUOTE_DESC":
+            return [text(t("ask_desc", self.lang))]
+        if previous == "QUOTE_CONTACT":
+            return [text(t("ask_name", self.lang))]
+        if previous == "TRACK_REF":
+            return [text(t("ask_ref", self.lang))]
+        if previous == "CLAIM_REF":
+            return [text(t("ask_claim", self.lang))]
+        if previous == "BOOK_SERVICE":
+            return self._menu_book()
         return self._go_main_menu()
 
     # ── quotation approval (WhatsApp buttons) ────────────────────────────
@@ -576,10 +789,7 @@ class IntentRouter:
         self.conv.ctx_set(damage=raw.strip()[:600])
         self.conv.state = "QUOTE_CONTACT"
         db.session.commit()
-        return [text(
-            "Thanks. Last thing — what name should we put on the job card? "
-            "Reply with your name (or type *skip* if you are already a customer)."
-        )]
+        return [text(t("ask_name", self.lang))]
 
     def _input_quote_contact(self, raw: str) -> list[dict]:
         name = raw.strip()[:120]
@@ -588,11 +798,28 @@ class IntentRouter:
             name = customer.name if customer else f"WhatsApp +{self.conv.wa_id}"
         return self._create_lead(name)
 
+    @staticmethod
+    def _parse_book_date(raw: str | None) -> date | None:
+        """Read the day the customer tapped in the booking flow, if any."""
+        if not raw:
+            return None
+        match = re.search(r"\d{4}-\d{2}-\d{2}", str(raw))
+        if not match:
+            return None
+        try:
+            parsed = date.fromisoformat(match.group(0))
+        except ValueError:
+            return None
+        return parsed if parsed >= date.today() else None
+
     def _create_lead(self, name: str) -> list[dict]:
         ctx = self.conv.context
         reg = ctx.get("reg") or "TBC"
         service = ctx.get("service") or "Panel Beating & Spray Painting"
         damage = ctx.get("damage") or "See WhatsApp conversation"
+        # The booking flow asks which day suits the customer. That answer used to be
+        # collected and then discarded, so every WhatsApp booking landed on tomorrow.
+        booked_for = self._parse_book_date(ctx.get("book_date"))
 
         customer = self.conv.customer or self._customer_by_wa()
         if not customer:
@@ -606,6 +833,10 @@ class IntentRouter:
         elif name and customer.name.startswith("WhatsApp +"):
             customer.name = name
 
+        notes = f"Auto-created from WhatsApp.\n{damage}"
+        if booked_for:
+            notes += f"\nPreferred day: {booked_for.isoformat()}"
+
         vehicle = Vehicle.query.filter_by(customer_id=customer.id, reg_no=reg).first()
         if not vehicle:
             vehicle = Vehicle(customer_id=customer.id, reg_no=reg)
@@ -616,28 +847,31 @@ class IntentRouter:
             customer_id=customer.id,
             vehicle_id=vehicle.id,
             service=service,
-            slot_date=date.today() + timedelta(days=1),
+            slot_date=booked_for or (date.today() + timedelta(days=1)),
             slot_time=None,
             status="REQUESTED",
             source="whatsapp",
-            notes=f"Auto-created from WhatsApp.\n{damage}",
+            notes=notes,
             quoted_from=Decimal(str(quick_quote(service)["from_price"])),
         )
         db.session.add(booking)
         self.conv.state = "MAIN_MENU"
-        self.conv.ctx_clear("reg", "service", "damage")
+        self.conv.ctx_clear("reg", "service", "damage", "book_date")
         db.session.commit()
 
         estimate_note = ""
         if service in {"Car Detailing", "Ceramic Coating", "Paint Protection Film",
                        "Car Vinyl Wrapping"}:
             estimate_note = f"\nIndicative price: *from USD {booking.quoted_from:.0f}*."
+        day_note = (f"*Preferred day:* {booked_for.strftime('%a %d %b %Y')}\n"
+                    if booked_for else "")
         return [
             text(
                 f"✅ Request logged, {customer.name.split()[0]}.\n\n"
                 f"*Reference:* {booking.reference}\n"
                 f"*Vehicle:* {reg}\n"
-                f"*Service:* {service}{estimate_note}\n\n"
+                f"*Service:* {service}{estimate_note}\n"
+                f"{day_note}\n"
                 "Our front desk will confirm your booking and send the firm quotation during "
                 f"business hours ({self.cfg['COMPANY_HOURS']}).\n\n"
                 "If it is an insurance claim, reply *claim* and we will guide you."
@@ -773,7 +1007,7 @@ class IntentRouter:
     def _menu_book(self) -> list[dict]:
         self.conv.state = "BOOK_SERVICE"
         db.session.commit()
-        return [service_list_reply(self.lang)]
+        return [service_list_reply(self.lang, "bsvc")]
 
     def _input_book_service(self, raw: str) -> list[dict]:
         service = match_service(raw)
@@ -785,7 +1019,7 @@ class IntentRouter:
             except ValueError:
                 service = None
         if not service:
-            return [service_list_reply(self.lang)]
+            return [service_list_reply(self.lang, "bsvc")]
         self.conv.ctx_set(service=service)
         self.conv.state = "BOOK_DATE"
         db.session.commit()

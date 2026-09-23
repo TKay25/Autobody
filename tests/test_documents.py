@@ -345,3 +345,92 @@ def test_button_tap_on_a_missing_quotation_is_handled(app):
         replies = intent_router.handle_inbound(conv, interactive_id="a_approve:987654")
         assert replies
         assert "could not find" in replies[0]["body"].lower()
+
+
+# ── raising an invoice straight from the desk ────────────────────────────────
+def _walk_in_customer(app, name="Walk-in Wendy", phone="+263771200001") -> int:
+    """A customer with no job card behind them, for desk-raised invoices."""
+    from app.models import Customer
+
+    with app.app_context():
+        customer = Customer(name=name, phone=phone, whatsapp=phone)
+        db.session.add(customer)
+        db.session.commit()
+        return customer.id
+
+
+def test_an_invoice_can_be_raised_without_a_job_card(app, auth_client):
+    """Front desk must be able to bill a walk-in: Invoice.job_id is nullable."""
+    customer_id = _walk_in_customer(app)
+
+    res = auth_client.post("/api/invoices", json={
+        "customer_id": customer_id,
+        "description": "Full respray — Toyota Hilux",
+        "subtotal": 500,
+        "issue": True,
+    })
+    assert res.status_code == 201, res.get_data(as_text=True)
+    invoice = res.get_json()["invoice"]
+
+    assert invoice["job_id"] is None, "a desk invoice must not need a job card"
+    assert invoice["invoice_no"].startswith("INV-")
+    assert invoice["subtotal"] == 500
+    assert invoice["vat"] == 75, "VAT is derived from VAT_RATE, never trusted from the client"
+    assert invoice["total"] == 575
+    assert invoice["status"] == "ISSUED"
+
+
+def test_a_desk_invoice_can_be_left_as_a_draft(app, auth_client):
+    customer_id = _walk_in_customer(app, "Draft Dale")
+
+    invoice = auth_client.post("/api/invoices", json={
+        "customer_id": customer_id,
+        "description": "Wheel refurbishment",
+        "subtotal": 100,
+        "issue": False,
+    }).get_json()["invoice"]
+
+    assert invoice["status"] == "DRAFT"
+    assert invoice["issued_at"] is None
+
+
+def test_a_desk_invoice_prints_its_particulars(app, auth_client):
+    """With no estimate behind it, the invoice's own wording is the line item.
+
+    Otherwise the PDF is a totals block with nothing above it.
+    """
+    from app.models import Invoice
+
+    customer_id = _walk_in_customer(app, "Pdf Petra")
+    created = auth_client.post("/api/invoices", json={
+        "customer_id": customer_id,
+        "description": "Full respray — Toyota Hilux, 2 panels plus paint materials",
+        "subtotal": 500,
+        "issue": True,
+    }).get_json()["invoice"]
+
+    with app.app_context():
+        invoice = db.session.get(Invoice, created["id"])
+        pdf, filename = documents.build_for("invoice", invoice)
+
+    assert pdf.startswith(b"%PDF")
+    assert len(pdf) > 1500
+    assert filename == f"Invoice-{created['invoice_no']}.pdf"
+
+
+def test_desk_invoice_creation_is_validated(app, auth_client):
+    from app.models import Invoice
+
+    customer_id = _walk_in_customer(app, "Strict Sue")
+
+    assert auth_client.post("/api/invoices", json={
+        "description": "No customer", "subtotal": 10}).status_code == 400
+    assert auth_client.post("/api/invoices", json={
+        "customer_id": customer_id, "subtotal": 10}).status_code == 400
+    assert auth_client.post("/api/invoices", json={
+        "customer_id": customer_id, "description": "Free work", "subtotal": 0}).status_code == 400
+    assert auth_client.post("/api/invoices", json={
+        "customer_id": 999999, "description": "Ghost", "subtotal": 10}).status_code == 400
+
+    with app.app_context():
+        assert Invoice.query.count() == 0, "a rejected request must not leave a row behind"

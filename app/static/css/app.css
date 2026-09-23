@@ -1181,16 +1181,43 @@ body.app-body .toast-host { top: calc(var(--tc-topbar-h) + .7rem); }
 a { color: var(--tc-navy-600); text-decoration-thickness: 1px; text-underline-offset: 2px; }
 a:hover { color: var(--tc-crimson-500); }
 
-/* Slim, on-brand scrollbars for the board and chat panes. */
-.kanban-body, .chat-list, .chat-log, .cmdk-list, .tc-nav { scrollbar-width: thin; }
-.kanban-body::-webkit-scrollbar, .chat-list::-webkit-scrollbar,
-.chat-log::-webkit-scrollbar, .cmdk-list::-webkit-scrollbar,
-.tc-nav::-webkit-scrollbar { width: 8px; height: 8px; }
-.kanban::-webkit-scrollbar { height: 9px; }
-.kanban-body::-webkit-scrollbar-thumb, .chat-list::-webkit-scrollbar-thumb,
-.chat-log::-webkit-scrollbar-thumb, .cmdk-list::-webkit-scrollbar-thumb,
-.tc-nav::-webkit-scrollbar-thumb, .kanban::-webkit-scrollbar-thumb {
-  background: #c3ccdb; border-radius: 999px;
+/* ── Scrollbars — crimson, on every surface ──────────────────────────
+   One global rule rather than a list of named panes: a scrollable area added
+   later can never fall back to a default grey bar. The thumb is inset with a
+   transparent border so it floats clear of rounded corners. */
+:root {
+  --tc-scroll-thumb: rgba(194, 16, 46, .6);          /* crimson-500 at 60% */
+  --tc-scroll-thumb-hover: var(--tc-crimson-500);
+  --tc-scroll-thumb-on-dark: rgba(194, 16, 46, .85);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tc-scroll-thumb) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--tc-scroll-thumb);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--tc-scroll-thumb-hover);
+  background-clip: padding-box;
+}
+
+/* The navy chrome swallows a 60% crimson, so the sidebar carries a denser thumb
+   that still reads as red against #08142c. */
+.tc-sidebar, .tc-topbar, .tc-sidebar .tc-nav {
+  scrollbar-color: var(--tc-scroll-thumb-on-dark) transparent;
+}
+.tc-sidebar::-webkit-scrollbar-thumb,
+.tc-topbar::-webkit-scrollbar-thumb,
+.tc-sidebar .tc-nav::-webkit-scrollbar-thumb {
+  background: var(--tc-scroll-thumb-on-dark);
+  background-clip: padding-box;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
