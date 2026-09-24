@@ -6,15 +6,19 @@
 
   const ACTIONS = [
     { id: 'new-job', label: 'New job card', hint: 'Intake', icon: 'plus-square', run: () => T.newJobCard() },
+    { id: 'new-quotation', label: 'New quotation', hint: 'Workshop', icon: 'calculator',
+      run: () => T.newJobCard({ focus: 'estimate' }) },
     { id: 'new-customer', label: 'New customer', hint: 'CRM', icon: 'person-plus', run: () => T.navigate('/customers?new=1') },
     { id: 'board', label: 'WIP board', hint: 'Workshop', icon: 'kanban', run: () => T.navigate('/board') },
     { id: 'dashboard', label: 'Dashboard', hint: 'Workshop', icon: 'speedometer2', run: () => T.navigate('/dashboard') },
     { id: 'jobs', label: 'Job cards', hint: 'Workshop', icon: 'clipboard-check', run: () => T.navigate('/jobs') },
+    { id: 'todo', label: 'To-do', hint: 'Workshop', icon: 'list-check', run: () => T.navigate('/todo') },
     { id: 'bookings', label: 'Bookings', hint: 'Workshop', icon: 'calendar-check', run: () => T.navigate('/bookings') },
     { id: 'customers', label: 'Customers', hint: 'CRM', icon: 'people', run: () => T.navigate('/customers') },
     { id: 'vehicles', label: 'Vehicles', hint: 'CRM', icon: 'car-front', run: () => T.navigate('/vehicles') },
     { id: 'inbox', label: 'WhatsApp inbox', hint: 'Comms', icon: 'whatsapp', run: () => T.navigate('/inbox') },
-    { id: 'claims', label: 'Insurance claims', hint: 'Money', icon: 'shield-check', run: () => T.navigate('/claims') },
+    { id: 'payments', label: 'Payments', hint: 'Money', icon: 'cash-coin',
+      run: () => T.navigate('/payments') },
     { id: 'invoices', label: 'Invoices', hint: 'Money', icon: 'receipt', run: () => T.navigate('/invoices') },
     { id: 'reports', label: 'Reports', hint: 'Money', icon: 'graph-up-arrow', run: () => T.navigate('/reports') },
     { id: 'parts', label: 'Parts & stock', hint: 'Resources', icon: 'box-seam', run: () => T.navigate('/parts') },
@@ -22,7 +26,6 @@
     { id: 'staff', label: 'Staff & settings', hint: 'Resources', icon: 'gear', run: () => T.navigate('/staff') },
     { id: 'export-jobs', label: 'Export job cards to CSV', hint: 'Download', icon: 'download', run: () => download('jobs') },
     { id: 'export-invoices', label: 'Export invoices to CSV', hint: 'Download', icon: 'download', run: () => download('invoices') },
-    { id: 'export-claims', label: 'Export claims to CSV', hint: 'Download', icon: 'download', run: () => download('claims') },
     { id: 'export-parts', label: 'Export stock to CSV', hint: 'Download', icon: 'download', run: () => download('parts') },
     { id: 'simulator', label: 'Test the WhatsApp bot', hint: 'Comms', icon: 'robot', run: () => T.navigate('/inbox?sim=1') },
   ];

@@ -1,7 +1,10 @@
 """Quotation / invoice / receipt documents and WhatsApp delivery."""
 from __future__ import annotations
 
+import base64
 import re
+import zlib
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -17,7 +20,7 @@ from app.models import (
     Vehicle,
     WaMessage,
 )
-from app.services import documents, intent_router, notifications
+from app.services import documents, intent_router, notifications, reporting
 from app.services.whatsapp_client import get_or_create_conversation
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -30,13 +33,12 @@ def _simulator(monkeypatch):
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
-def _job_with_estimate(client, *, reg="DOC111", insurance=False):
+def _job_with_estimate(client, *, reg="DOC111"):
     res = client.post("/api/jobs", json={
         "customer_name": "Doc Tester",
         "customer_phone": "+263771234567",
         "reg_no": reg,
         "panels": ["Front Bumper", "Bonnet"],
-        "is_insurance": insurance,
     })
     assert res.status_code == 201, res.get_json()
     return res.get_json()["job"]
@@ -118,6 +120,189 @@ def test_pdf_endpoints_are_protected_and_typed(auth_client):
         assert "filename=" in res.headers.get("Content-Disposition", "")
 
     assert auth_client.get("/api/estimates/999999/pdf").status_code == 404
+
+
+# ── paper size ───────────────────────────────────────────────────────────────
+def _page_size(pdf: bytes) -> tuple[float, float]:
+    match = re.search(rb"/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]", pdf)
+    assert match, "the PDF declares no MediaBox"
+    return float(match.group(1)), float(match.group(2))
+
+
+def _pdf_text(pdf: bytes) -> str:
+    """Readable text out of a Platypus PDF.
+
+    ReportLab writes each page stream as ASCII85 *around* Flate, so the strings
+    are not greppable in the raw bytes — both layers have to come off first.
+    Without this a test can only assert that "a PDF came back", which would pass
+    just as happily on an empty page.
+    """
+    out = []
+    for chunk in re.findall(rb"stream(.*?)endstream", pdf, re.S):
+        body = re.sub(rb"\s", b"", chunk.strip(b"\r\n")).rstrip(b"~>")
+        try:
+            out.append(zlib.decompress(base64.a85decode(body, adobe=False)))
+        except Exception:      # a stream that is not encoded this way
+            out.append(chunk)
+    return b"\n".join(out).decode("latin-1", "replace")
+
+
+def _receipt_payment(auth_client, *, reg="A5REC"):
+    job = _job_with_estimate(auth_client, reg=reg)
+    invoice = _ensure_invoice(auth_client, job["id"])
+    auth_client.post(f"/api/invoices/{invoice['id']}/payment", json={"amount": 5})
+
+
+def test_the_receipt_prints_on_a5(app, auth_client):
+    """A receipt is handed to the customer, so it is cut down to A5.
+
+    An A4 receipt is mostly white space and does not fit a glovebox or a pocket.
+    """
+    from reportlab.lib.pagesizes import A5
+
+    _receipt_payment(auth_client)
+    with app.app_context():
+        receipt = documents.build_receipt_pdf(Payment.query.first())
+
+    width, height = _page_size(receipt)
+    assert abs(width - A5[0]) < 1, (width, height)
+    assert abs(height - A5[1]) < 1, (width, height)
+
+
+def test_the_receipt_fits_its_narrower_sheet(app, auth_client):
+    """The shared blocks were drawn to A4's 174mm body.
+
+    A5 leaves 124mm, so anything that assumed the wider frame used to run off
+    the paper. Every column must now add up to the frame or less.
+    """
+    from reportlab.lib.pagesizes import A5
+    from reportlab.lib.units import mm
+
+    geometry = documents._page(A5)
+    assert geometry["width"] < 130 * mm
+
+    # The wide blocks are told the frame width and must scale into it.
+    letterhead = documents._letterhead([("Receipt", "RCT-1")], width=geometry["width"])
+    assert abs(sum(letterhead._argW) - geometry["width"]) < 0.5
+    # Two pairs, as the real receipt passes — a single cell collapses the table
+    # to one column and would prove nothing about the split.
+    parties = documents._party_block(
+        [("Payment", [("Method", "Cash")]), ("Against", [("Invoice", "INV-1")])],
+        width=geometry["width"],
+    )
+    assert abs(sum(parties._argW) - geometry["width"]) < 0.5
+
+
+def _ink_extent(pdf: bytes) -> tuple[float, float]:
+    """Left- and right-most x that anything is drawn at, in points.
+
+    The failure this exists to catch: a block laid out against A4's 174mm body
+    keeps drawing past the edge of a narrower sheet. ReportLab does not complain
+    about that — it just puts ink on the paper.
+    """
+    low, high = float("inf"), -float("inf")
+    for chunk in re.findall(rb"stream(.*?)endstream", pdf, re.S):
+        body = re.sub(rb"\s", b"", chunk.strip(b"\r\n")).rstrip(b"~>")
+        try:
+            src = zlib.decompress(base64.a85decode(body, adobe=False)).decode("latin-1")
+        except Exception:
+            continue
+        for pattern in (r"([\d.]+)\s+([\d.]+)\s+(?:l|m)\b",
+                        r"1 0 0 1 ([\d.]+) ([\d.]+) (?:cm|Tm)"):
+            for match in re.finditer(pattern, src):
+                x = float(match.group(1))
+                low, high = min(low, x), max(high, x)
+    return low, high
+
+
+def test_the_receipt_draws_nothing_past_the_edge_of_the_sheet(app, auth_client):
+    """The A5 body is 124mm against A4's 174mm, so the shared blocks had to learn
+    to scale. Anything that did not would still draw, just off the paper.
+    """
+    from reportlab.lib.units import mm
+
+    _receipt_payment(auth_client, reg="EDGE1")
+    with app.app_context():
+        receipt = documents.build_receipt_pdf(Payment.query.first())
+
+    width, _height = _page_size(receipt)
+    low, high = _ink_extent(receipt)
+    assert low >= 0, f"ink starts off the left edge at {low}"
+    assert high <= width, f"ink runs to {high} on a {width:.1f}pt page"
+    # And it actually uses the sheet rather than collapsing into a narrow column.
+    assert high > width - 30 * mm, f"the receipt only draws out to {high}"
+
+
+def test_quotations_and_invoices_stay_on_a4(app, auth_client):
+    """Only the receipt changes paper — the filed documents stay A4."""
+    from reportlab.lib.pagesizes import A4, A5
+
+    from app.models import Invoice
+
+    _receipt_payment(auth_client, reg="A4STAY")
+    with app.app_context():
+        quote = documents.build_quotation_pdf(Estimate.query.first())
+        invoice = documents.build_invoice_pdf(Invoice.query.first())
+
+    for pdf in (quote, invoice):
+        width, height = _page_size(pdf)
+        assert abs(width - A4[0]) < 1, (width, height)
+        assert abs(height - A4[1]) < 1, (width, height)
+        assert (width, height) != (A5[0], A5[1])
+
+
+def test_the_closing_sheet_carries_the_day_book(app, auth_client):
+    """The end-of-day sheet is a handover document.
+
+    The work nobody has finished yet matters as much as the money, so the to-do
+    list, its statuses and who is carrying them all belong on the paper.
+    """
+    auth_client.post("/api/tasks", json={
+        "title": "Chase the bumper supplier", "category": "Parts",
+        "due_date": date.today().isoformat(),
+    })
+
+    with app.app_context():
+        sheet = documents.build_end_of_day_pdf(reporting.end_of_day())
+
+    text = _pdf_text(sheet)
+    for heading in ("TO-DO", "THE DAY BOOK", "Open work by status",
+                    "Who is carrying what", "Open to-do list"):
+        assert heading in text, f"the closing sheet is missing {heading!r}"
+    # And the work itself, not just the headings.
+    assert "Chase the bumper supplier" in text
+    assert "Parts" in text
+
+
+def test_the_closing_sheet_hides_an_empty_day_book(app, auth_client):
+    """With nothing on the list the tables are dropped, not printed empty."""
+    with app.app_context():
+        sheet = documents.build_end_of_day_pdf(reporting.end_of_day())
+
+    text = _pdf_text(sheet)
+    assert "TO-DO" in text              # the status breakdown always shows
+    assert "Open work by status" in text
+    assert "Open to-do list" not in text
+    assert "To-do completed today" not in text
+
+
+def test_finished_work_is_listed_under_its_own_heading(app, auth_client):
+    """The job card block already says "Completed today" for vehicles.
+
+    The to-do table needs its own wording or the closing sheet reads as though
+    the same figure appears twice.
+    """
+    task = auth_client.post("/api/tasks", json={"title": "Chase the bumper supplier"})
+    task_id = task.get_json()["task"]["id"]
+    auth_client.patch(f"/api/tasks/{task_id}", json={"status": "DONE"})
+
+    with app.app_context():
+        sheet = documents.build_end_of_day_pdf(reporting.end_of_day())
+
+    text = _pdf_text(sheet)
+    assert "To-do completed today" in text
+    assert "Chase the bumper supplier" in text   # listed as finished, not open
+    assert "Open to-do list" not in text
 
 
 def test_the_letterhead_carries_no_shouted_title(app):

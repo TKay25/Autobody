@@ -1,9 +1,8 @@
 """Estimating engine.
 
 Turns "which panels are damaged" into a priced, VAT-inclusive estimate using the
-labour matrix in :mod:`app.constants`. Insurers get a different rate card than
-walk-in retail customers, which is the single biggest source of margin leakage in
-a panel shop.
+labour matrix in :mod:`app.constants`. Every job is priced off the same retail
+rate card — there is no second set of rates for anyone.
 """
 from __future__ import annotations
 
@@ -13,8 +12,6 @@ from ..constants import (
     CONSUMABLES_PCT,
     DEFAULT_PARTS_MARKUP,
     DETAIL_RATE,
-    INSURER_LABOUR_DISCOUNT,
-    INSURER_PARTS_MARKUP,
     LABOUR_MATRIX,
     METAL_CONSUMABLE_PER_HOUR,
     METAL_RATE,
@@ -48,14 +45,12 @@ def available_panels() -> list[str]:
     return list(LABOUR_MATRIX.keys())
 
 
-def labour_line(panel: str, operation: str, is_insurance: bool = False) -> dict | None:
+def labour_line(panel: str, operation: str) -> dict | None:
     """Build one labour estimate line for a panel + operation."""
     hours = panel_hours(panel).get(operation.lower(), 0.0)
     if not hours:
         return None
     rate = OPERATION_RATES.get(operation.upper(), PANEL_RATE)
-    if is_insurance and operation.upper() in {"PANEL", "PAINT", "METAL"}:
-        rate = _money(rate * (Decimal("1") - INSURER_LABOUR_DISCOUNT))
     label = {
         "PANEL": f"Panel beating — {panel}",
         "PAINT": f"Spray painting — {panel}",
@@ -115,7 +110,6 @@ def metal_consumables_line(metal_hours: Decimal) -> dict:
 
 def build_lines(
     panels: list[str],
-    is_insurance: bool = False,
     include_paint: bool = True,
     parts: list[dict] | None = None,
     extra_labour: list[dict] | None = None,
@@ -143,11 +137,11 @@ def build_lines(
             op = "METAL" if "Chassis" in panel or "Weld" in panel else "PANEL"
             if op == "METAL":
                 metal_hours_total += panel_h
-            line = labour_line(panel, op, is_insurance)
+            line = labour_line(panel, op)
             if line:
                 lines.append(line)
         if paint_h and include_paint:
-            line = labour_line(panel, "PAINT", is_insurance)
+            line = labour_line(panel, "PAINT")
             if line:
                 lines.append(line)
             lines.append(material_line(panel))
@@ -164,7 +158,6 @@ def build_lines(
             "markup_pct": Decimal("0"),
         })
 
-    markup = INSURER_PARTS_MARKUP if is_insurance else DEFAULT_PARTS_MARKUP
     for part in parts or []:
         lines.append({
             "kind": "PART",
@@ -174,7 +167,7 @@ def build_lines(
             "quantity": _dec(part.get("quantity", 1)),
             "unit": part.get("unit", "ea"),
             "unit_price": _dec(part.get("unit_price", 0)),
-            "markup_pct": _dec(part.get("markup_pct", markup)),
+            "markup_pct": _dec(part.get("markup_pct", DEFAULT_PARTS_MARKUP)),
         })
 
     if include_consumables:
@@ -190,8 +183,8 @@ def build_lines(
     return lines
 
 
-def summarise(lines: list[dict], is_insurance: bool, vat_rate: Decimal) -> dict:
-    """Price up a set of lines. Labour/materials VAT-able, insurers exempt at source."""
+def summarise(lines: list[dict], vat_rate: Decimal) -> dict:
+    """Price up a set of lines. VAT is charged on the whole subtotal."""
     labour = sum(
         (_dec(l["quantity"]) * _dec(l["unit_price"]) for l in lines if l["kind"] == "LABOUR"),
         Decimal("0"),
@@ -209,7 +202,7 @@ def summarise(lines: list[dict], is_insurance: bool, vat_rate: Decimal) -> dict:
         Decimal("0"),
     )
     subtotal = labour + materials + parts
-    vat = Decimal("0") if is_insurance else subtotal * vat_rate
+    vat = subtotal * vat_rate
     return {
         "labour_total": _money(labour),
         "materials_total": _money(materials),
@@ -231,14 +224,4 @@ def quick_quote(service: str) -> dict:
         "from_price": float(_money(base)),
         "currency": "USD",
         "note": "Indicative only. A firm quotation follows a physical assessment.",
-    }
-
-
-def insurer_vs_customer(estimate_total: Decimal, excess: Decimal) -> dict:
-    """Split the bill between insurer and customer."""
-    total = _dec(estimate_total)
-    excess = _dec(excess)
-    return {
-        "insurer_pays": float(_money(total - excess)),
-        "customer_pays": float(_money(excess)),
     }

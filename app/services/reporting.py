@@ -16,8 +16,10 @@ from ..constants import (
     BOOKING_STATUSES,
     STAGE_LABELS,
     STAGES,
+    TASK_STATUSES,
+    TASK_STATUS_LABELS,
 )
-from ..models import Booking, Invoice, JobCard, Payment, User, utcnow
+from ..models import Booking, Invoice, JobCard, Payment, Task, User, utcnow
 
 
 def _dec(value) -> Decimal:
@@ -84,6 +86,23 @@ def _payment_row(payment: Payment) -> dict:
         "method": payment.method,
         "received_by": payment.user.full_name if payment.user else None,
         "created_at": payment.created_at.isoformat() if payment.created_at else None,
+    }
+
+
+def _task_row(task: Task) -> dict:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "detail": task.detail,
+        "category": task.category,
+        "status": task.status,
+        "status_label": TASK_STATUS_LABELS.get(task.status, task.status),
+        "priority": task.priority,
+        "due_date": task.due_date.isoformat() if task.due_date else None,
+        "custodian": task.custodian.full_name if task.custodian else None,
+        "job_no": task.job.job_no if task.job else None,
+        "is_overdue": task.is_overdue,
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
     }
 
 
@@ -195,13 +214,72 @@ def end_of_day(day: date | None = None) -> dict:
         "settled_today": [_invoice_row(i) for i in settled_today],
     }
 
+    # ── The day book (tasks) ─────────────────────────────────────────────
+    # The sheet is a handover document, so the work nobody has done yet matters
+    # as much as the money. `DONE` is counted for the day being reported on, not
+    # for all time — otherwise the board's fourth status always reads as the
+    # lifetime total and tells the foreman nothing.
+    #
+    # `open` is as-at-now, matching the job card and booking figures on this same
+    # sheet: the report is the day's events plus what is still outstanding, not a
+    # historical reconstruction. Asking for a past date therefore shows that day's
+    # completions and today's backlog, which is the useful reading for a review.
+    tasks = Task.query.all()
+    open_tasks = [t for t in tasks if t.is_open]
+    done_today = [t for t in tasks if _in_window(t.completed_at, start, end)]
+
+    task_status_counts = {code: 0 for code in TASK_STATUSES}
+    for task in open_tasks:
+        if task.status in task_status_counts:
+            task_status_counts[task.status] += 1
+    task_status_counts["DONE"] = len(done_today)
+
+    # Who is carrying what, so the sheet can be handed over by name.
+    custodian_counts: dict[str, dict] = {}
+    for task in open_tasks + done_today:
+        name = task.custodian.full_name if task.custodian else "Unassigned"
+        bucket = custodian_counts.setdefault(name, {"open": 0, "done": 0, "overdue": 0})
+        if task.is_open:
+            bucket["open"] += 1
+            if task.is_overdue:
+                bucket["overdue"] += 1
+        else:
+            bucket["done"] += 1
+
+    task_rows = sorted(open_tasks, key=lambda t: (t.due_date or date.max, t.id))
+    tasks_section = {
+        "open": len(open_tasks),
+        "doing": task_status_counts.get("DOING", 0),
+        "blocked": task_status_counts.get("BLOCKED", 0),
+        "overdue": len([t for t in open_tasks if t.is_overdue]),
+        "due_today": len([t for t in open_tasks if t.due_date == day]),
+        "undated": len([t for t in open_tasks if not t.due_date]),
+        "done_today": len(done_today),
+        "by_status": [
+            {"code": code, "label": TASK_STATUS_LABELS.get(code, code),
+             "count": task_status_counts.get(code, 0)}
+            for code in TASK_STATUSES
+        ],
+        "by_custodian": [
+            {"name": name, **values}
+            for name, values in sorted(custodian_counts.items(),
+                                       key=lambda kv: (-kv[1]["open"], kv[0]))
+        ],
+        "list": [_task_row(t) for t in task_rows],
+        "done": [_task_row(t) for t in sorted(done_today, key=lambda t: t.id)],
+    }
+
     # ── Staff ────────────────────────────────────────────────────────────
     staff_section = []
     for user in User.query.order_by(User.id.asc()).all():
         confirmed = len([b for b in bookings if b.confirmed_by_id == user.id])
         attended = len([b for b in bookings if b.attended_by_id == user.id])
         owned = len([j for j in open_jobs if j.technician_id == user.id])
-        if not (confirmed or attended or owned):
+        carried = len([t for t in open_tasks if t.custodian_id == user.id])
+        finished = len([t for t in done_today if t.custodian_id == user.id])
+        # Somebody who only ever appears in the day book still belongs on the
+        # sheet — a storeman with three parts to chase has done a day's work.
+        if not (confirmed or attended or owned or carried or finished):
             continue
         staff_section.append({
             "name": user.full_name,
@@ -209,6 +287,8 @@ def end_of_day(day: date | None = None) -> dict:
             "confirmed": confirmed,
             "attended": attended,
             "open_jobs": owned,
+            "open_tasks": len([t for t in open_tasks if t.custodian_id == user.id]),
+            "done_tasks": len([t for t in done_today if t.custodian_id == user.id]),
         })
 
     return {
@@ -217,6 +297,7 @@ def end_of_day(day: date | None = None) -> dict:
         "generated_at": utcnow().isoformat(),
         "jobs": jobs_section,
         "bookings": bookings_section,
+        "tasks": tasks_section,
         "money": money_section,
         "staff": staff_section,
     }

@@ -14,12 +14,10 @@ from .constants import (
     BOOKING_SLOTS,
     BOOKING_STATUS_LABELS,
     BOOKING_STATUSES,
-    CLAIM_STATUSES,
-    CLAIM_STATUS_LABELS,
-    INSURERS,
     INVOICE_STATUSES,
     PART_CATEGORIES,
     PART_STATUSES,
+    PAYMENT_METHOD_LABELS,
     PAYMENT_METHODS,
     PRIORITIES,
     PRIORITY_COLOURS,
@@ -33,6 +31,9 @@ from .constants import (
     STAGE_PROGRESS,
     STAGES,
     SUPPLIERS,
+    TASK_STATUS_COLOURS,
+    TASK_STATUS_LABELS,
+    TASK_STATUSES,
     VEHICLE_COLOURS,
     VEHICLE_MAKES,
     VEHICLE_MODELS,
@@ -96,14 +97,21 @@ def _init_extensions(app: Flask) -> None:
 
 
 def _ensure_schema(app: Flask) -> None:
-    """Add columns to tables that already exist.
+    """Add new columns, and retire ones the models have dropped.
 
     ``create_all`` builds missing tables but never alters a table that is
-    already there, so a database provisioned before a model grew a new column
-    would fail on every query touching it. The columns listed here are purely
-    additive, so applying them to a populated production database is safe.
+    already there, so a database provisioned before a model changed is left a
+    step behind. Two directions are handled here:
+
+    * new columns the model declares but the database lacks are added;
+    * columns and tables the models have stopped declaring are dropped.
+
+    The second part matters as much as the first. ``is_insurance`` was declared
+    ``NOT NULL`` with only a Python-side default, so it had no server default:
+    the moment SQLAlchemy stopped sending it, every ``INSERT`` on that table
+    failed. Retiring a field therefore means removing the physical column too.
     """
-    from .schema import ensure_columns
+    from .schema import drop_columns, drop_tables, ensure_columns
 
     try:
         # Purely additive, so this is safe against a populated database. No
@@ -120,6 +128,14 @@ def _ensure_schema(app: Flask) -> None:
             "outcome": "VARCHAR(20)",
             "rescheduled_count": "INTEGER DEFAULT 0",
         })
+
+        # Insurance claims are no longer part of the product: every job is
+        # priced and paid as retail, so the claim record and the insurer
+        # columns it hung off have been retired.
+        drop_tables(db.engine, ["claims"])
+        drop_columns(db.engine, "job_cards", ["is_insurance"])
+        drop_columns(db.engine, "estimates", ["is_insurance", "excess"])
+        drop_columns(db.engine, "invoices", ["is_insurance", "insurer_code"])
     except Exception:  # a schema nicety must never stop the app from booting
         db.session.rollback()
         app.logger.warning("Schema guard failed.", exc_info=True)
@@ -352,15 +368,17 @@ def reference_meta() -> dict:
         "stage_progress": STAGE_PROGRESS,
         "services": SERVICES,
         "service_names": SERVICE_NAMES,
-        "insurers": INSURERS,
-        "claim_statuses": [{"code": c, "label": CLAIM_STATUS_LABELS[c]} for c in CLAIM_STATUSES],
         "booking_statuses": BOOKING_STATUSES,
         "booking_status_labels": BOOKING_STATUS_LABELS,
         "booking_outcomes": [{"code": code, "label": label}
                              for code, label in BOOKING_OUTCOMES.items()],
         "booking_slots": BOOKING_SLOTS,
+        "task_statuses": TASK_STATUSES,
+        "task_status_labels": TASK_STATUS_LABELS,
+        "task_status_colours": TASK_STATUS_COLOURS,
         "invoice_statuses": INVOICE_STATUSES,
         "payment_methods": PAYMENT_METHODS,
+        "payment_method_labels": PAYMENT_METHOD_LABELS,
         "part_categories": PART_CATEGORIES,
         "part_statuses": PART_STATUSES,
         "suppliers": SUPPLIERS,

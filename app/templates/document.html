@@ -132,12 +132,6 @@
           <tr><td>VAT ({{ company.vat }}%)</td><td class="num">{{ currency }} {{ estimate.vat | money }}</td></tr>
           <tr class="row-strong"><td>Total</td>
             <td class="num">{{ currency }} {{ estimate.total | money }}</td></tr>
-          {% if estimate.is_insurance %}
-            <tr><td>Insurer portion</td>
-              <td class="num">{{ currency }} {{ (estimate.total - estimate.excess) | money }}</td></tr>
-            <tr class="row-strong"><td>Excess payable by you</td>
-              <td class="num">{{ currency }} {{ estimate.excess | money }}</td></tr>
-          {% endif %}
         {% else %}
           <tr><td>Subtotal</td><td class="num">{{ currency }} {{ invoice.subtotal | money }}</td></tr>
           <tr><td>VAT ({{ company.vat }}%)</td><td class="num">{{ currency }} {{ invoice.vat | money }}</td></tr>
@@ -149,14 +143,6 @@
         {% endif %}
       </tbody>
     </table>
-
-    {% if kind == 'quote' and claim %}
-      <p class="doc-lead">
-        <strong>Insurance repair.</strong> Insurer <strong>{{ claim.insurer_name }}</strong>,
-        claim <strong>{{ claim.claim_no or '—' }}</strong>.
-        Excess of <strong>{{ currency }} {{ claim.excess | money }}</strong> is payable by the customer.
-      </p>
-    {% endif %}
 
     {% if kind == 'invoice' and payments %}
       <h2 class="doc-sub">Payments received</h2>

@@ -1,7 +1,7 @@
 """SQLAlchemy domain models for the Topclass Auto Body Workshop OS.
 
-The job card is the centre of the universe: everything else (estimates, claims,
-parts, invoices, WhatsApp threads) hangs off it.
+The job card is the centre of the universe: everything else (estimates, parts,
+invoices, WhatsApp threads) hangs off it.
 """
 from __future__ import annotations
 
@@ -11,12 +11,10 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from flask_login import UserMixin
-from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .constants import (
     BOOKING_OUTCOMES,
-    CLAIM_STATUS_LABELS,
     ENQUIRY_REF_PREFIX,
     STAGE_LABELS,
     STAGE_PROGRESS,
@@ -241,7 +239,6 @@ class JobCard(TimestampMixin, db.Model):
     service = db.Column(db.String(80), default="Panel Beating & Spray Painting")
     stage = db.Column(db.String(30), default="INTAKE", nullable=False, index=True)
     priority = db.Column(db.String(20), default="NORMAL", nullable=False)
-    is_insurance = db.Column(db.Boolean, default=False, nullable=False)
 
     description = db.Column(db.Text)
     damage_summary = db.Column(db.Text)
@@ -272,7 +269,6 @@ class JobCard(TimestampMixin, db.Model):
         "Estimate", back_populates="job", cascade="all, delete-orphan",
         order_by="Estimate.id.desc()",
     )
-    claims = db.relationship("Claim", back_populates="job", cascade="all, delete-orphan")
     job_parts = db.relationship("JobPart", back_populates="job", cascade="all, delete-orphan")
     invoices = db.relationship("Invoice", back_populates="job", cascade="all, delete-orphan")
     qc_results = db.relationship("QcResult", back_populates="job", cascade="all, delete-orphan")
@@ -306,10 +302,6 @@ class JobCard(TimestampMixin, db.Model):
     @property
     def latest_estimate(self):
         return self.estimates[0] if self.estimates else None
-
-    @property
-    def active_claim(self):
-        return self.claims[0] if self.claims else None
 
     @property
     def outstanding_invoice(self):
@@ -349,7 +341,6 @@ class JobCard(TimestampMixin, db.Model):
             "stage_label": self.stage_label,
             "progress": self.progress,
             "priority": self.priority,
-            "is_insurance": self.is_insurance,
             "bay": self.bay,
             "technician": self.technician.full_name if self.technician else None,
             "technician_id": self.technician_id,
@@ -364,7 +355,6 @@ class JobCard(TimestampMixin, db.Model):
         if brief:
             return data
         est = self.latest_estimate
-        claim = self.active_claim
         inv = self.outstanding_invoice
         data.update({
             "damage_summary": self.damage_summary,
@@ -376,7 +366,6 @@ class JobCard(TimestampMixin, db.Model):
             "vehicle": self.vehicle.to_dict() if self.vehicle else None,
             "customer": self.customer.to_dict() if self.customer else None,
             "estimate": est.to_dict() if est else None,
-            "claim": claim.to_dict() if claim else None,
             "invoice": inv.to_dict() if inv else None,
             "parts": [p.to_dict() for p in self.job_parts],
             "photos": [p.to_dict() for p in self.photos],
@@ -455,7 +444,6 @@ class Estimate(TimestampMixin, db.Model):
     version = db.Column(db.Integer, default=1, nullable=False)
     status = db.Column(db.String(20), default="DRAFT", nullable=False)  # DRAFT|SENT|APPROVED|DECLINED
     currency = db.Column(db.String(8), default="USD")
-    is_insurance = db.Column(db.Boolean, default=False, nullable=False)
     valid_days = db.Column(db.Integer, default=14, nullable=False)
 
     labour_total = db.Column(db.Numeric(12, 2), default=0)
@@ -464,7 +452,6 @@ class Estimate(TimestampMixin, db.Model):
     subtotal = db.Column(db.Numeric(12, 2), default=0)
     vat = db.Column(db.Numeric(12, 2), default=0)
     total = db.Column(db.Numeric(12, 2), default=0)
-    excess = db.Column(db.Numeric(12, 2), default=0)
 
     notes = db.Column(db.Text)
     approved_by = db.Column(db.String(120))
@@ -479,9 +466,7 @@ class Estimate(TimestampMixin, db.Model):
 
     @property
     def customer_payable(self) -> Decimal:
-        """What the customer owes out of pocket."""
-        if self.is_insurance:
-            return _money(self.excess)
+        """What the customer owes."""
         return _money(self.total)
 
     @property
@@ -499,7 +484,7 @@ class Estimate(TimestampMixin, db.Model):
             sum((i.line_total for i in self.items if i.kind in {"MATERIAL", "CONSUMABLE"}), Decimal("0"))
         )
         self.subtotal = _money(self.labour_total + self.materials_total + self.parts_total)
-        self.vat = _money(self.subtotal * (Decimal("1") if self.is_insurance else vat_rate))
+        self.vat = _money(self.subtotal * vat_rate)
         self.total = _money(self.subtotal + self.vat)
 
     def to_dict(self, deep: bool = True) -> dict:
@@ -510,14 +495,12 @@ class Estimate(TimestampMixin, db.Model):
             "version": self.version,
             "status": self.status,
             "currency": self.currency,
-            "is_insurance": self.is_insurance,
             "labour_total": float(_money(self.labour_total)),
             "materials_total": float(_money(self.materials_total)),
             "parts_total": float(_money(self.parts_total)),
             "subtotal": float(_money(self.subtotal)),
             "vat": float(_money(self.vat)),
             "total": float(_money(self.total)),
-            "excess": float(_money(self.excess)),
             "customer_payable": float(self.customer_payable),
             "notes": self.notes,
             "approved_by": self.approved_by,
@@ -568,76 +551,6 @@ class EstimateItem(db.Model):
             "unit_price": float(_money(self.unit_price)),
             "markup_pct": float(self.markup_pct or 0),
             "line_total": float(self.line_total),
-        }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Insurance claims
-# ─────────────────────────────────────────────────────────────────────────────
-class Claim(TimestampMixin, db.Model):
-    __tablename__ = "claims"
-
-    id = db.Column(db.Integer, primary_key=True)
-    job_id = db.Column(db.Integer, db.ForeignKey("job_cards.id"), nullable=False, index=True)
-    insurer_code = db.Column(db.String(20), nullable=False, index=True)
-    policy_no = db.Column(db.String(60))
-    claim_no = db.Column(db.String(60), index=True)
-    assessor_name = db.Column(db.String(120))
-    assessor_phone = db.Column(db.String(40))
-    assessor_date = db.Column(db.Date)
-    status = db.Column(db.String(30), default="DRAFT", nullable=False, index=True)
-    claimed_amount = db.Column(db.Numeric(12, 2), default=0)
-    approved_amount = db.Column(db.Numeric(12, 2), default=0)
-    excess = db.Column(db.Numeric(12, 2), default=0)
-    excess_paid = db.Column(db.Boolean, default=False, nullable=False)
-    submitted_at = db.Column(db.DateTime)
-    decision_at = db.Column(db.DateTime)
-    repudiation_reason = db.Column(db.Text)
-    notes = db.Column(db.Text)
-
-    job = db.relationship("JobCard", back_populates="claims")
-
-    @property
-    def insurer_name(self) -> str:
-        from .constants import INSURER_BY_CODE
-
-        return INSURER_BY_CODE.get(self.insurer_code, self.insurer_code)
-
-    @property
-    def status_label(self) -> str:
-        return CLAIM_STATUS_LABELS.get(self.status, self.status)
-
-    @property
-    def shortfall(self) -> Decimal:
-        return _money(Decimal(str(self.claimed_amount or 0)) - Decimal(str(self.approved_amount or 0)))
-
-    @property
-    def aging_days(self) -> int:
-        start = self.submitted_at or self.created_at
-        end = self.decision_at or _now()
-        return max(0, (end - start).days) if start else 0
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "job_id": self.job_id,
-            "insurer_code": self.insurer_code,
-            "insurer_name": self.insurer_name,
-            "policy_no": self.policy_no,
-            "claim_no": self.claim_no,
-            "assessor_name": self.assessor_name,
-            "assessor_phone": self.assessor_phone,
-            "assessor_date": self.assessor_date.isoformat() if self.assessor_date else None,
-            "status": self.status,
-            "status_label": self.status_label,
-            "claimed_amount": float(_money(self.claimed_amount)),
-            "approved_amount": float(_money(self.approved_amount)),
-            "excess": float(_money(self.excess)),
-            "excess_paid": self.excess_paid,
-            "shortfall": float(self.shortfall),
-            "aging_days": self.aging_days,
-            "repudiation_reason": self.repudiation_reason,
-            "notes": self.notes,
         }
 
 
@@ -809,8 +722,6 @@ class Invoice(TimestampMixin, db.Model):
     total = db.Column(db.Numeric(12, 2), default=0)
     amount_paid = db.Column(db.Numeric(12, 2), default=0)
     status = db.Column(db.String(20), default="DRAFT", nullable=False, index=True)
-    is_insurance = db.Column(db.Boolean, default=False, nullable=False)
-    insurer_code = db.Column(db.String(20))
     due_date = db.Column(db.Date)
     issued_at = db.Column(db.DateTime)
     paid_at = db.Column(db.DateTime)
@@ -850,8 +761,6 @@ class Invoice(TimestampMixin, db.Model):
             "amount_paid": float(_money(self.amount_paid)),
             "balance": float(self.balance),
             "status": self.status,
-            "is_insurance": self.is_insurance,
-            "insurer_code": self.insurer_code,
             "due_date": self.due_date.isoformat() if self.due_date else None,
             "is_overdue": self.is_overdue,
             "issued_at": self.issued_at.isoformat() if self.issued_at else None,
@@ -916,6 +825,8 @@ class Payment(db.Model):
             "received_by": self.user.full_name if self.user else None,
             "created_at": self.created_at.isoformat(),
             "public_token": self.public_token,
+            # Exposed so a register row round-trips back into `?invoice_id=`.
+            "invoice_id": self.invoice_id,
             "invoice_no": self.invoice.invoice_no if self.invoice else None,
             "payer_name": self.payer_name,
             "balance_after": float(self.balance_after),
@@ -1000,6 +911,72 @@ class Booking(TimestampMixin, db.Model):
             "outcome_label": BOOKING_OUTCOMES.get(self.outcome or ""),
             "rescheduled_count": self.rescheduled_count or 0,
             "created_at": self.created_at.isoformat(),
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tasks — the day book
+# ─────────────────────────────────────────────────────────────────────────────
+class Task(TimestampMixin, db.Model):
+    """One piece of work somebody has to do.
+
+    Deliberately smaller than a job card: an activity, a custodian, a status and
+    an optional day. That is what a foreman needs to run a shift, and it means
+    chasing a part or calling a customer back does not need a job card.
+    """
+    __tablename__ = "tasks"
+
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    detail = db.Column(db.Text)
+    # Where the work sits ("Parts", "Front desk", "Admin") so the board can
+    # be filtered by area without inventing a taxonomy.
+    category = db.Column(db.String(60), index=True)
+    status = db.Column(db.String(20), default="OPEN", nullable=False, index=True)
+    priority = db.Column(db.String(20), default="NORMAL", nullable=False)
+    due_date = db.Column(db.Date, index=True)
+
+    custodian_id = db.Column(db.Integer, db.ForeignKey("users.id"), index=True)
+    job_id = db.Column(db.Integer, db.ForeignKey("job_cards.id"))
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    completed_at = db.Column(db.DateTime)
+
+    custodian = db.relationship("User", foreign_keys=[custodian_id])
+    created_by = db.relationship("User", foreign_keys=[created_by_id])
+    job = db.relationship("JobCard")
+
+    @property
+    def is_open(self) -> bool:
+        return self.status != "DONE"
+
+    @property
+    def is_overdue(self) -> bool:
+        return bool(self.due_date and self.is_open and self.due_date < date.today())
+
+    @property
+    def status_label(self) -> str:
+        from .constants import TASK_STATUS_LABELS
+
+        return TASK_STATUS_LABELS.get(self.status, self.status)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "detail": self.detail,
+            "category": self.category,
+            "status": self.status,
+            "status_label": self.status_label,
+            "priority": self.priority,
+            "due_date": self.due_date.isoformat() if self.due_date else None,
+            "is_overdue": self.is_overdue,
+            "custodian_id": self.custodian_id,
+            "custodian": self.custodian.full_name if self.custodian else None,
+            "job_id": self.job_id,
+            "job_no": self.job.job_no if self.job else None,
+            "created_by": self.created_by.full_name if self.created_by else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
 
@@ -1202,7 +1179,6 @@ class ActivityLog(db.Model):
     def icon(self) -> str:
         return {
             "job.": "clipboard-check",
-            "claim.": "shield-check",
             "estimate.": "calculator",
             "invoice.": "receipt",
             "payment.": "cash-coin",
@@ -1242,7 +1218,7 @@ class ActivityLog(db.Model):
 
 __all__ = [
     "User", "Customer", "Vehicle", "JobCard", "JobStageEvent", "JobPhoto",
-    "Estimate", "EstimateItem", "Claim", "Part", "StockMovement", "JobPart",
+    "Estimate", "EstimateItem", "Part", "StockMovement", "JobPart",
     "QcResult", "Invoice", "Payment", "Booking", "WaConversation", "WaMessage",
     "NotificationLog", "ActivityLog", "gen_ref", "utcnow",
 ]

@@ -11,7 +11,6 @@
       q: ctx.query.q || '',
       status: ctx.query.status || 'open',
       stage: ctx.query.stage || '',
-      insurance: ctx.query.insurance || '',
     };
 
     const tbodyHost = h('div');
@@ -23,7 +22,6 @@
       if (state.q) params.set('q', state.q);
       if (state.status && state.status !== 'all') params.set('status', state.status);
       if (state.stage) params.set('stage', state.stage);
-      if (state.insurance) params.set('insurance', state.insurance);
       const data = await api.get(`/api/jobs?${params.toString()}`);
       countLabel.textContent = `${data.count} job card${data.count === 1 ? '' : 's'}`;
 
@@ -46,7 +44,6 @@
           { label: 'Promised', render: (r) => h('span', { class: r.is_overdue ? 'text-danger fw-semibold' : '' },
               dateShort(r.promised_date)) },
           { label: '', class: 'text-end', render: (r) => h('div.d-flex.gap-1.justify-content-end',
-              r.is_insurance ? h('span.chip', T.icon('shield-check')) : null,
               T.priorityBadge(r.priority)) },
         ],
         rows: data.items,
@@ -75,8 +72,6 @@
       ], 'funnel'),
       select('stage', [{ value: '', label: 'All stages' }]
         .concat((meta.stages || []).map((s) => ({ value: s.code, label: s.label }))), 'diagram-3'),
-      select('insurance', [{ value: '', label: 'Insurance + cash' },
-        { value: '1', label: 'Insurance only' }], 'shield-check'),
       h('div.tc-toolbar-spacer'),
       search,
     ]);
@@ -106,17 +101,14 @@
    */
   async function newJobCard({ onCreated, focus } = {}) {
     const meta = T.store.get('meta');
-    const [panelsRes, customersRes, usersRes] = await Promise.all([
-      api.get('/api/estimating/panels'), api.get('/api/customers'), api.get('/api/users'),
+    const [customersRes, usersRes] = await Promise.all([
+      api.get('/api/customers'), api.get('/api/users'),
     ]);
-    const panels = panelsRes.panels;
     const technicians = usersRes.items.filter((u) => ['technician', 'manager', 'owner'].includes(u.role));
 
-    const selectedPanels = new Set();
-    const preview = {
-      lines: [], summary: null, split: null, loading: false,
-    };
-    const previewHost = h('div');
+    /* Intake books the vehicle in; it does not price the job. Panels are
+       measured on the job card afterwards, at /estimates/new/<id>, because
+       that is where the estimate actually lives. */
     const totalValue = h('span.tc-footer-total-value', '—');
     let form;
 
@@ -125,75 +117,8 @@
       h('span.idx', n), h('span', label),
     ]);
 
-    async function refreshPreview() {
-      const insurance = form.querySelector('[name=is_insurance]').checked;
-      const parts = JSON.parse(form.dataset.parts || '[]');
-      T.mount(previewHost, T.spinner('Pricing…'));
-      try {
-        const res = await api.post('/api/estimating/preview', {
-          panels: [...selectedPanels], is_insurance: insurance,
-          parts, excess: Number(form.querySelector('[name=excess]').value || 0),
-        });
-        preview.lines = res.lines; preview.summary = res.summary; preview.split = res.split;
-        renderPreview();
-      } catch (err) {
-        T.mount(previewHost, h('div.alert.alert-danger.small', err.message));
-      }
-    }
-
-    function renderPreview() {
-      const s = preview.summary || {};
-      const rows = preview.lines.length
-        ? preview.lines.map((l) => h('tr', [
-            h('td', l.description),
-            h('td', h('span.chip', l.kind)),
-            h('td.text-end', `${l.quantity} ${l.unit || ''}`),
-            h('td.text-end', money(l.unit_price)),
-            h('td.text-end', money(l.line_total)),
-          ]))
-        : [h('tr', h('td', { colspan: 5 },
-            h('div.small.text-secondary', 'Nothing selected — pick panels above.')))];
-
-      T.mount(previewHost, [
-        h('div.table-responsive', h('table.table.table-sm.table-tc.mb-2',
-          h('thead', h('tr', [h('th', 'Description'), h('th', 'Type'), h('th.text-end', 'Qty'),
-            h('th.text-end', 'Rate'), h('th.text-end', 'Amount')])),
-          h('tbody', rows))),
-        preview.lines.length ? h('div.row.g-2.small', [
-          summaryCell('Labour', s.labour_total), summaryCell('Materials', s.materials_total),
-          summaryCell('Parts', s.parts_total), summaryCell('Subtotal', s.subtotal),
-          summaryCell('VAT', s.vat), summaryCell('Total', s.total, true),
-        ]) : null,
-        preview.split ? h('div.d-flex.gap-2.mt-2.flex-wrap', [
-          h('span.chip', T.icon('shield-check'), ` Insurer pays ${money(preview.split.insurer_pays)}`),
-          h('span.chip', T.icon('person'), ` Customer pays ${money(preview.split.customer_pays)}`),
-        ]) : null,
-      ]);
-
-      if (source.mode === 'build') {
-        totalValue.textContent = preview.lines.length ? money(s.total) : '—';
-        updateModeHint();
-      }
-    }
-    function summaryCell(label, value, strong) {
-      return h('div.col-6.col-md-2',
-        h('div.text-secondary', label),
-        h('div', { class: strong ? 'fw-bold' : 'fw-semibold' }, money(value)));
-    }
-
-    const panelChips = h('div.d-flex.flex-wrap.gap-2',
-      panels.map((p) => {
-        const chip = h('button.btn.btn-sm.btn-outline-secondary', { type: 'button' }, p);
-        chip.addEventListener('click', () => {
-          if (selectedPanels.has(p)) { selectedPanels.delete(p); chip.className = 'btn btn-sm btn-outline-secondary'; }
-          else { selectedPanels.add(p); chip.className = 'btn btn-sm btn-brand'; }
-          refreshPreview();
-        });
-        return chip;
-      }));
-
-    /* ── estimate source: attach a quotation, or build one here ───────── */
-    const source = { mode: 'attach', pinned: false, estimate: null, file: null, items: [] };
+    /* ── the quotation the customer already has, if any ───────────────── */
+    const source = { pinned: false, estimate: null, file: null, items: [] };
     const quoteSearch = T.searchInput({
       placeholder: 'Search quotation, job card, customer or reg…', width: 300,
       oninput: T.debounce((e) => loadQuotations(e.target.value), 350),
@@ -211,21 +136,6 @@
         : 'No file chosen — the line items above are still recorded.';
     });
 
-    const modeButtons = [
-      { id: 'attach', label: 'Attach a quotation', icon: 'file-earmark-text' },
-      { id: 'build', label: 'Build it here', icon: 'rulers' },
-    ].map((m) => {
-      const btn = h('button', {
-        type: 'button', value: m.id,
-        onclick: () => { source.pinned = true; setMode(m.id); },
-      }, [T.icon(m.icon), ` ${m.label}`]);
-      return btn;
-    });
-    const modeSwitch = h('div.d-flex.align-items-center.gap-2.flex-wrap', [
-      h('div.tc-segmented', { role: 'group', 'aria-label': 'How to price this job card' }, modeButtons),
-      h('div.tc-hint.tc-estimate-hint'),
-    ]);
-
     const attachPane = h('div.tc-attach-pane', [
       h('div.d-flex.align-items-center.gap-2.mb-2.flex-wrap', [
         quoteSearch,
@@ -233,7 +143,7 @@
           type: 'button', onclick: () => loadQuotations(''),
         }, T.icon('arrow-clockwise'), ' Refresh'),
       ]),
-      h('div.tc-hint.mb-2', 'Pick the quotation the customer already has — its lines are copied onto this job card, so nothing gets re-typed.'),
+      h('div.tc-hint.mb-2', 'Pick a quotation the customer already has and its lines are copied onto this job card — or leave it blank and measure the panels on the job card afterwards.'),
       quoteListHost,
       quotePreview,
       h('div.tc-field.mt-3', [
@@ -244,37 +154,6 @@
       ]),
     ]);
     docInput.id = 'quotationDoc';
-
-    const buildPane = h('div.tc-build-pane', { hidden: true }, [
-      h('div.tc-hint.mb-2', 'Tap the damaged panels to build the estimate — the total updates as you go.'),
-      panelChips,
-      h('div.card.bg-body-tertiary.border-0.mt-3', h('div.card-body', previewHost)),
-    ]);
-
-    function updateModeHint() {
-      const hint = modeSwitch.querySelector('.tc-estimate-hint');
-      if (source.mode === 'attach') {
-        hint.textContent = source.estimate
-          ? `Quotation ${source.estimate.reference} will be copied.`
-          : 'Nothing is re-typed: the quotation supplies every line and amount.';
-        return;
-      }
-      const n = selectedPanels.size;
-      if (n) hint.textContent = `${n} panel${n === 1 ? '' : 's'} selected — the total updates as you go.`;
-      else if (!source.items.length) hint.textContent = 'No quotation on file — build the lines manually.';
-      else hint.textContent = 'Tap the damaged panels to build the estimate.';
-    }
-
-    function setMode(mode) {
-      source.mode = mode;
-      modeButtons.forEach((b) => b.classList.toggle('is-active', b.value === mode));
-      attachPane.hidden = mode !== 'attach';
-      buildPane.hidden = mode !== 'build';
-
-      updateModeHint();
-      if (mode === 'attach') renderQuotePreview();
-      else refreshPreview();
-    }
 
     async function loadQuotations(q) {
       const params = new URLSearchParams();
@@ -291,7 +170,7 @@
         renderQuotations();
       } catch (err) {
         source.items = [];
-        T.mount(quoteListHost, h('div.tc-hint', 'Quotations could not be loaded — you can still build the estimate here.'));
+        T.mount(quoteListHost, h('div.tc-hint', 'Quotations could not be loaded.'));
       }
     }
 
@@ -299,9 +178,8 @@
       if (!source.items.length) {
         T.mount(quoteListHost, T.emptyState(
           'No quotations found',
-          'Nothing on file for this vehicle or customer. Build the estimate instead.',
+          'Nothing on file for this vehicle or customer — you can still create the job card.',
           'file-earmark-text'));
-        if (!source.pinned && !source.estimate) setMode('build');
         return;
       }
       T.mount(quoteListHost, source.items.map((q) => h('button.tc-quote', {
@@ -314,7 +192,6 @@
             h('span.fw-semibold', q.reference),
             T.badge(q.status, q.status === 'APPROVED' ? 'success'
               : q.status === 'DECLINED' ? 'danger' : 'secondary'),
-            q.is_insurance ? h('span.badge.text-bg-dark', 'Insurance') : null,
           ]),
           h('div.tc-quote-meta',
             `${q.reg_no || '—'} · ${q.customer_name || '—'} · job card ${q.job_no || '—'} · ${q.item_count} lines`),
@@ -336,16 +213,8 @@
         return;
       }
 
-      // The quotation decides whether this is an insurance job and what the
-      // excess is — otherwise the copied total would not match the paperwork.
-      const insBox = form.querySelector('[name=is_insurance]');
-      const excessInput = form.querySelector('[name=excess]');
-      if (insBox) insBox.checked = !!source.estimate.is_insurance;
-      if (excessInput) excessInput.value = Number(source.estimate.excess || 0).toFixed(2);
-
       renderQuotations();
       renderQuotePreview();
-      setMode('attach');
     }
 
     function clearQuotation() {
@@ -358,10 +227,7 @@
       const est = source.estimate;
       if (!est) {
         T.mount(quotePreview, null);
-        if (source.mode === 'attach') {
-          totalValue.textContent = '—';
-          updateModeHint();
-        }
+        totalValue.textContent = '—';
         return;
       }
       T.mount(quotePreview, h('div.tc-quote-picked', [
@@ -373,9 +239,7 @@
           }, 'Remove'),
         ]),
         h('div.tc-hint.mb-2',
-          `${est.items.length} line${est.items.length === 1 ? '' : 's'} will be copied onto this job card`
-          + (est.is_insurance
-            ? ` as an insurance repair, excess ${money(est.excess, est.currency)}.` : '.')),
+          `${est.items.length} line${est.items.length === 1 ? '' : 's'} will be copied onto this job card.`),
         h('div.table-responsive', h('table.table.table-sm.table-tc.mb-2',
           h('thead', h('tr', [h('th', 'Description'), h('th', 'Type'),
             h('th.text-end', 'Qty'), h('th.text-end', 'Rate'), h('th.text-end', 'Amount')])),
@@ -394,10 +258,8 @@
           h('span', label), h('strong', money(value, est.currency)),
         ]))),
       ]));
-      if (source.mode === 'attach') totalValue.textContent = money(est.total, est.currency);
-      updateModeHint();
+      totalValue.textContent = money(est.total, est.currency);
     }
-
     const veh = T.vehicleOptions();
     /* Make drives Model, so picking "Toyota" narrows the next list. */
     const makeCombo = T.comboField({
@@ -482,26 +344,15 @@
       h('div.col-12', field('Notes / description', h('textarea.form-control.form-control-sm', { name: 'description', rows: 2 }))),
       h('div.col-md-6', field('Valuables in vehicle', h('input.form-control.form-control-sm', { name: 'valuables', placeholder: 'Spare wheel, jack, baby seat' }))),
       h('div.col-md-6.d-flex.align-items-end.gap-4.pb-1', [
-        h('div.form-check', h('input.form-check-input', { type: 'checkbox', name: 'is_insurance', id: 'isIns', onchange: refreshPreview }),
-          h('label.form-check-label.small', { for: 'isIns' }, 'Insurance claim')),
         h('div.form-check', h('input.form-check-input', { type: 'checkbox', name: 'keys_received', id: 'keysRec', checked: true }),
           h('label.form-check-label.small', { for: 'keysRec' }, 'Keys received')),
       ]),
-      h('div.col-md-3', field('Excess (USD)', h('input.form-control.form-control-sm', {
-        name: 'excess', type: 'number', step: '0.01', value: '0', oninput: T.debounce(refreshPreview, 500),
-      }))),
 
-      /* estimate source — attach a quotation, or build one from scratch */
-      h('div.col-12', sectionHead(3, 'Estimate')),
-      h('div.col-12', { id: 'jd-estimate' }, [
-        modeSwitch,
-        h('div.mt-3', attachPane),
-        buildPane,
-      ]),
+      /* the quotation the customer already has, if any */
+      h('div.col-12', sectionHead(3, 'Existing quotation')),
+      h('div.col-12', { id: 'jd-estimate' }, attachPane),
     ]);
 
-    refreshPreview();
-    setMode('attach');
     loadQuotations('');
     syncCustomerType();
 
@@ -520,7 +371,7 @@
         size: 'xl',
         body: h('div', form),
         footer: [
-          h('div.tc-footer-total', [h('span.tc-footer-total-label', 'Estimate'), totalValue]),
+          h('div.tc-footer-total', [h('span.tc-footer-total-label', 'Quotation'), totalValue]),
           h('button.btn.btn-outline-secondary.btn-sm', {
             type: 'button', 'data-bs-dismiss': 'modal',
           }, 'Cancel'),
@@ -532,7 +383,6 @@
          exists inside a job card — but lands on the estimate section with "build it
          here" already chosen, so it does not just duplicate New job card. */
       if (focus === 'estimate') {
-        setMode('build');
         setTimeout(() => {
           form.querySelector('#jd-estimate')
             ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -544,10 +394,8 @@
 
       createBtn.addEventListener('click', async () => {
         const data = T.formData(form);
-        data.is_insurance = form.querySelector('[name=is_insurance]').checked;
         data.keys_received = form.querySelector('[name=keys_received]').checked;
         data.parts = JSON.parse(form.dataset.parts || '[]');
-        data.excess = Number(data.excess || 0);
 
         const missing = [];
         if (!data.reg_no) {
@@ -564,21 +412,10 @@
           return;
         }
 
-        // Either copy an attached quotation, or send the panels we picked.
-        if (source.mode === 'attach') {
-          if (!source.estimate) {
-            T.toast('Choose a quotation to attach, or switch to "Build it here".', 'warning');
-            setMode('attach');
-            return;
-          }
-          data.source_estimate_id = source.estimate.id;
-        } else {
-          if (!selectedPanels.size) {
-            T.toast('Tap at least one damaged panel, or attach a quotation.', 'warning');
-            return;
-          }
-          data.panels = [...selectedPanels];
-        }
+        // A quotation the customer already has is copied across. Opening a job
+        // card with no estimate is fine — the panels get measured on the job
+        // card afterwards.
+        if (source.estimate) data.source_estimate_id = source.estimate.id;
 
         createBtn.disabled = true;
         T.mount(createBtn, [h('span.spinner-border.spinner-border-sm.me-1'), ' Saving…']);

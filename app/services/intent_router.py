@@ -19,7 +19,6 @@ from decimal import Decimal
 from flask import current_app
 
 from ..constants import (
-    INSURER_ALIASES,
     SERVICE_BY_CODE,
     SERVICE_NAMES,
     STAGE_CUSTOMER_TEXT,
@@ -27,7 +26,7 @@ from ..constants import (
     STAGE_PROGRESS,
 )
 from ..extensions import db
-from ..models import Booking, Customer, JobCard, Vehicle, WaConversation, utcnow
+from ..models import Booking, Customer, JobCard, Vehicle, WaConversation
 from .pricing import quick_quote
 
 # ── tiny i18n table (English / Shona / Ndebele) ──────────────────────────────
@@ -71,7 +70,7 @@ LANGUAGE_MARKERS = {
 # just typed; an explicit request ("Shona") still works from any of them.
 DATA_ENTRY_STATES = {
     "QUOTE_REG", "QUOTE_SERVICE", "QUOTE_DESC", "QUOTE_CONTACT",
-    "TRACK_REF", "CLAIM_REF", "BOOK_SERVICE", "BOOK_DATE", "BOOK_CONTACT",
+    "TRACK_REF", "BOOK_SERVICE", "BOOK_DATE", "BOOK_CONTACT",
 }
 
 T = {
@@ -105,13 +104,7 @@ T = {
         "sn": "Tumirai nhamba yejobi (semuenzaniso TC-2026-0007) kana nhamba yemota.",
         "nd": "Thumela inombolo yomsebenzi (isb. TC-2026-0007) kumbe inombolo yemota.",
     },
-    "ask_claim": {
-        "en": "Please send your claim number, or the vehicle registration on the claim.",
-        "sn": "Tumirai nhamba yeklemu, kana nhamba yemota iri paklemu.",
-        "nd": "Thumela inombolo yesicelo, kumbe inombolo yemota.",
-    },
-    "not_found": {
-        "en": "I could not find anything with that reference. Please check and try again, or type *menu*.",
+    "not_found": {        "en": "I could not find anything with that reference. Please check and try again, or type *menu*.",
         "sn": "Handina kuwana chinhu neiyo nhamba. Edzai zvakare, kana kunyora *menu*.",
         "nd": "Angitholanga lutho ngaleyo inombolo. Zama futhi, kumbe bhala *menu*.",
     },
@@ -171,7 +164,6 @@ def t(key: str, lang: str, **kwargs) -> str:
 INTENT_PATTERNS = [
     ("book", r"\b(book|booking|appointment|slot|schedule|bhuka)\b"),
     ("track", r"\b(track|status|progress|where is|how far|ready|collection|kupi)\b"),
-    ("claim", r"\b(claim|insurance|assessor|excess|insurer|inishuwarenzi)\b"),
     ("quote", r"\b(quote|quotation|estimate|price|cost|how much|charge|mari)\b"),
     ("hours", r"\b(hours|open|opening|closing|time|what time)\b"),
     ("location", r"\b(where|location|address|directions|find you|kupi)\b"),
@@ -229,17 +221,11 @@ def match_service(text: str) -> str | None:
     return None
 
 
-def match_insurer(text: str) -> str | None:
-    low = (text or "").strip().lower()
-    for alias, code in INSURER_ALIASES.items():
-        if alias in low:
-            return code
     return None
 
 
 REG_PATTERN = re.compile(r"\b([A-Z]{2,3}[ -]?\d{2,5}[A-Z]?)\b", re.I)
 JOB_PATTERN = re.compile(r"\b(TC-\d{4}-\d{3,5})\b", re.I)
-CLAIM_PATTERN = re.compile(r"\b([A-Z]{2,6}[\/-]?\d{4,10})\b", re.I)
 
 
 # ── reply builders ───────────────────────────────────────────────────────────
@@ -277,8 +263,6 @@ def main_menu_reply(company: str, lang: str, prefix: str = "") -> dict:
              "description": "Detailing, ceramic coating, PPF"},
             {"id": "m_track", "title": "Track my repair",
              "description": "Job number or registration"},
-            {"id": "m_claim", "title": "My claim",
-             "description": "Insurer, assessor and excess"},
             {"id": "m_services", "title": "Our services & prices"},
             {"id": "m_human", "title": "Talk to a person"},
             {"id": "m_lang", "title": "🌐 Language"},
@@ -323,7 +307,6 @@ def more_menu_reply(lang: str = "en") -> dict:
         "sections": [{"title": "What next?", "rows": [
             {"id": "m_quote", "title": "Get a quote"},
             {"id": "m_track", "title": "Track my repair"},
-            {"id": "m_claim", "title": "My claim"},
             {"id": "m_book", "title": "Book a service"},
             {"id": "m_services", "title": "Our services"},
             {"id": "m_human", "title": "Talk to a person"},
@@ -416,7 +399,6 @@ class IntentRouter:
         handlers = {
             "m_quote": self._menu_quote,
             "m_track": self._menu_track,
-            "m_claim": self._menu_claim,
             "m_book": self._menu_book,
             "m_human": self._menu_human,
             "m_info": self._menu_info,
@@ -454,7 +436,6 @@ class IntentRouter:
             "QUOTE_DESC": self._input_quote_desc,
             "QUOTE_CONTACT": self._input_quote_contact,
             "TRACK_REF": self._input_track_ref,
-            "CLAIM_REF": self._input_claim_ref,
             "BOOK_SERVICE": self._input_book_service,
             "BOOK_DATE": self._input_book_date,
             "BOOK_CONTACT": self._input_book_contact,
@@ -483,8 +464,6 @@ class IntentRouter:
             return self._menu_quote()
         if intent == "track":
             return self._menu_track()
-        if intent == "claim":
-            return self._menu_claim()
         if intent == "book":
             return self._menu_book()
         if intent == "human":
@@ -544,8 +523,7 @@ class IntentRouter:
             f"🕐 {self.cfg['COMPANY_HOURS']}\n"
             f"📞 {self.cfg['COMPANY_TEL']} / {self.cfg['COMPANY_MOBILE']}\n"
             f"✉️ {self.cfg['COMPANY_EMAIL']}\n"
-            f"🌐 {self.cfg['COMPANY_WEBSITE']}\n\n"
-            "We are on the insurance panel for Old Mutual, AIC, NDI, FBC, Zimnat, CBZ and First Mutual."
+            f"🌐 {self.cfg['COMPANY_WEBSITE']}"
         ), more_menu_reply()]
 
     def _menu_services(self) -> list[dict]:
@@ -661,8 +639,6 @@ class IntentRouter:
             return [text(t("ask_name", self.lang))]
         if previous == "TRACK_REF":
             return [text(t("ask_ref", self.lang))]
-        if previous == "CLAIM_REF":
-            return [text(t("ask_claim", self.lang))]
         if previous == "BOOK_SERVICE":
             return self._menu_book()
         return self._go_main_menu()
@@ -706,8 +682,6 @@ class IntentRouter:
                     f"🎉 Thank you, {name} — quotation *{estimate.reference}* is approved.\n\n"
                     f"We will order the parts, book the vehicle into the workshop and keep you "
                     f"updated at every stage."
-                    + (f"\n\nExcess payable: *{currency} "
-                       f"{Decimal(str(estimate.excess)):,.2f}*" if estimate.is_insurance else "")
                 )
         else:
             estimate.status = "DECLINED"
@@ -880,8 +854,7 @@ class IntentRouter:
                 f"*Service:* {service}{estimate_note}\n"
                 f"{day_note}\n"
                 "Our front desk will confirm your booking and send the firm quotation during "
-                f"business hours ({self.cfg['COMPANY_HOURS']}).\n\n"
-                "If it is an insurance claim, reply *claim* and we will guide you."
+                f"business hours ({self.cfg['COMPANY_HOURS']})."
             ),
             more_menu_reply(),
         ]
@@ -927,89 +900,10 @@ class IntentRouter:
             if invoice and invoice.balance > 0:
                 lines += ["", f"💰 Balance due: *{invoice.currency} {invoice.balance:,.2f}*"]
             lines += ["", "Please bring your collection slip and ID."]
-        claim = job.active_claim
-        if claim and job.is_insurance:
-            lines += ["", f"🛡️ Claim ({claim.insurer_name}): {claim.status_label}"]
-            if claim.excess and not claim.excess_paid:
-                lines += [f"Excess payable: *USD {Decimal(str(claim.excess)):,.2f}*"]
 
         self.conv.ctx_set(last_job_no=job.job_no)
         db.session.commit()
         return [text("\n".join(lines)), more_menu_reply()]
-
-    # ── claim flow ───────────────────────────────────────────────────────
-    def _menu_claim(self) -> list[dict]:
-        job = self._find_job()
-        if job and job.active_claim:
-            return self._claim_status_reply(job)
-        if job:
-            return [text(
-                f"Job card {job.job_no} is not flagged as an insurance claim. "
-                "If you are claiming, send us your insurer name and claim number and our "
-                "estimator will link it."
-            ), more_menu_reply()]
-        self.conv.state = "CLAIM_REF"
-        db.session.commit()
-        return [text(t("ask_claim", self.lang))]
-
-    def _input_claim_ref(self, raw: str) -> list[dict]:
-        text_low = raw.strip().lower()
-        job = self._lookup_job(raw)
-        if not job:
-            insurer = match_insurer(text_low)
-            match = CLAIM_PATTERN.search(raw.upper())
-            self.conv.ctx_set(
-                claim_insurer=insurer, claim_no=match.group(1) if match else raw.strip()[:40]
-            )
-            self.conv.state = "MAIN_MENU"
-            db.session.commit()
-            insurer_label = insurer or "your insurer"
-            return [
-                text(
-                    f"🛡️ Noted — claim *{self.conv.ctx_get('claim_no')}* with {insurer_label}.\n\n"
-                    "Please send us:\n"
-                    "1️⃣ The accident report / police report (if any)\n"
-                    "2️⃣ Photos of the damage\n"
-                    "3️⃣ Your policy number\n\n"
-                    "Our estimator will book the assessor and confirm the excess amount."
-                ),
-                more_menu_reply(),
-            ]
-        self.conv.state = "MAIN_MENU"
-        db.session.commit()
-        if job.active_claim:
-            return self._claim_status_reply(job)
-        return [text(f"Job card {job.job_no} has no claim linked yet. "
-                     "Our estimator will add it."),
-                more_menu_reply()]
-
-    def _claim_status_reply(self, job: JobCard) -> list[dict]:
-        claim = job.active_claim
-        lines = [
-            f"🛡️ *Claim {claim.claim_no or claim.id}* — {claim.insurer_name}",
-            f"🚗 {job.vehicle.reg_no if job.vehicle else '-'} (job {job.job_no})",
-            "",
-            f"*Status:* {claim.status_label}",
-        ]
-        if claim.assessor_name:
-            lines += ["", f"Assessor: {claim.assessor_name}"]
-            if claim.assessor_date:
-                lines.append(f"Assessment booked: {claim.assessor_date.strftime('%d %b %Y')}")
-        if claim.status in {"APPROVED", "PARTIAL", "SETTLED"} and claim.approved_amount:
-            lines += ["", f"✅ Approved: *USD {Decimal(str(claim.approved_amount)):,.2f}*"]
-            if claim.status == "PARTIAL":
-                lines.append(f"⚠️ Shortfall: USD {claim.shortfall:,.2f} (we will contact you)")
-        if claim.status == "REPUDIATED":
-            lines += ["", "❌ The insurer repudiated this claim."]
-            if claim.repudiation_reason:
-                lines.append(f"Reason: {claim.repudiation_reason}")
-        if claim.excess:
-            paid = "paid ✅" if claim.excess_paid else "outstanding ⏳"
-            lines += ["", f"Excess: *USD {Decimal(str(claim.excess)):,.2f}* — {paid}"]
-        if claim.status in {"SUBMITTED", "ASSESSOR_BOOKED"}:
-            lines += ["", f"⏳ Waiting {claim.aging_days} day(s) for the insurer's decision."]
-        lines += ["", "Reply *menu* for other options."]
-        return [text("\n".join(lines))]
 
     # ── booking flow ─────────────────────────────────────────────────────
     def _menu_book(self) -> list[dict]:
@@ -1143,6 +1037,6 @@ class _ServiceIds:
 
 
 __all__ = [
-    "IntentRouter", "handle_inbound", "detect_intent", "match_service", "match_insurer",
+    "IntentRouter", "handle_inbound", "detect_intent", "match_service",
     "main_menu_reply", "service_list_reply", "SERVICE_BY_CODE",
 ]

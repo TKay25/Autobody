@@ -9,6 +9,8 @@
     { route: '/dashboard', label: 'Dashboard', icon: 'speedometer2', hint: 'Overview of today' },
     { route: '/board', label: 'WIP board', icon: 'kanban', hint: 'Drag job cards through the shop' },
     { route: '/jobs', label: 'Job cards', icon: 'clipboard-check', badge: 'jobs', hint: 'Every vehicle in the shop' },
+    { route: '/todo', label: 'To-do', icon: 'list-check', badge: 'tasks',
+      hint: 'What has to happen today and this week' },
     { route: '/bookings', label: 'Enquiries & Bookings', icon: 'calendar-check', badge: 'bookings',
       hint: 'Enquiries, bookings and confirmations' },
     { section: 'Customers' },
@@ -16,7 +18,8 @@
     { route: '/vehicles', label: 'Vehicles', icon: 'car-front', hint: 'Registration register' },
     { route: '/inbox', label: 'WhatsApp', icon: 'whatsapp', badge: 'whatsapp', hint: 'Chat with customers' },
     { section: 'Money' },
-    { route: '/claims', label: 'Insurance claims', icon: 'shield-check', badge: 'claims', hint: 'Insurer panel and assessors' },
+    { route: '/payments', label: 'Payments', icon: 'cash-coin',
+      hint: 'Receipts, methods and takings' },
     { route: '/invoices', label: 'Invoices', icon: 'receipt', badge: 'invoices', hint: 'Billing and payments' },
     { route: '/reports', label: 'Reports', icon: 'graph-up-arrow', hint: 'Performance and margins' },
     { section: 'Resources' },
@@ -31,7 +34,7 @@
   const QUICK_ACTIONS = [
     { label: 'New job card', hint: 'Book a vehicle in and estimate it',
       icon: 'clipboard-plus', tone: 'brand', run: () => T.newJobCard() },
-    { label: 'New quotation', hint: 'Build or attach an estimate',
+    { label: 'New quotation', hint: 'Price a job card that is already open',
       icon: 'calculator', run: () => T.newJobCard({ focus: 'estimate' }) },
     { label: 'Add stock item', hint: 'Parts, paint and consumables',
       icon: 'box-seam', href: '#/parts?new=1' },
@@ -160,68 +163,99 @@
 
     const userWrap = h('div.tc-user', [userBtn, userMenu]);
 
-    /* Enquiry bell -----------------------------------------------------
-       Modelled on ConnectLink's floating panel: it overlays the page rather
-       than pushing it around, opens from the bell, and closes the moment you
-       click anywhere else. */
-    let enqOpen = false;
+    /* Attention panel ---------------------------------------------------
+       One bell, two lists: the enquiries that still need a person, and the
+       day's to-do. Both mean "something needs somebody", so they share one
+       surface instead of competing as two bells in the same corner. Modelled
+       on ConnectLink's floating panel — it overlays the page, opens from the
+       bell, and closes the moment you click anywhere else. */
+    let attnOpen = false;
+    let attnTab = 'enquiries';
+    const attnCount = { enquiries: 0, tasks: 0 };
 
-    const enqCount = h('span.tc-bell-count', { hidden: true });
-    const enqBell = h('button.tc-bell', {
+    const attnBadge = h('span.tc-bell-count', { hidden: true });
+    const attnBell = h('button.tc-bell', {
       type: 'button',
       'aria-haspopup': 'dialog',
       'aria-expanded': 'false',
-      title: 'Enquiries waiting to be confirmed',
-      onclick: (e) => { e.stopPropagation(); toggleEnqFloat(); },
-    }, [T.icon('bell'), enqCount]);
+      title: 'Enquiries and today’s to-do',
+      onclick: (e) => { e.stopPropagation(); toggleAttn(); },
+    }, [T.icon('bell'), attnBadge]);
 
-    const enqBody = h('div.tc-bell-body', h('div.tc-bell-note', 'Checking…'));
-    const enqPill = h('span.tc-bell-pill', { hidden: true });
+    const enqBody = h('div.tc-bell-body');
+    const todoBody = h('div.tc-bell-body', { hidden: true });
+    const enqTabCount = h('span.tc-bell-tabcount', { hidden: true });
+    const todoTabCount = h('span.tc-bell-tabcount', { hidden: true });
 
-    const enqPanel = h('div.tc-bell-panel', {
-      role: 'dialog', 'aria-label': 'Enquiries and bookings', hidden: true,
+    const attnTabs = {
+      enquiries: h('button.tc-bell-tab', {
+        type: 'button', onclick: () => setAttnTab('enquiries'),
+      }, [T.icon('calendar-check'), h('span', 'Enquiries'), enqTabCount]),
+      todo: h('button.tc-bell-tab', {
+        type: 'button', onclick: () => setAttnTab('todo'),
+      }, [T.icon('list-check'), h('span', 'To-do'), todoTabCount]),
+    };
+
+    const attnPanel = h('div.tc-bell-panel', {
+      role: 'dialog', 'aria-label': 'Enquiries and to-do', hidden: true,
     }, [
       h('div.tc-bell-head', [
-        T.icon('bell'),
-        h('span.tc-bell-title', 'Enquiries & bookings'),
-        enqPill,
+        h('div.tc-bell-tabs', [attnTabs.enquiries, attnTabs.todo]),
         h('span.flex-fill'),
         h('button.tc-bell-act', {
-          type: 'button', title: 'Open the bookings screen',
-          onclick: () => { toggleEnqFloat(false); T.navigate('/bookings'); },
+          type: 'button', title: 'Open the full screen',
+          onclick: () => {
+            toggleAttn(false);
+            T.navigate(attnTab === 'todo' ? '/todo' : '/bookings');
+          },
         }, T.icon('box-arrow-up-right')),
         h('button.tc-bell-act', {
           type: 'button', title: 'Collapse',
-          onclick: () => setEnqMin(true),
+          onclick: () => setAttnMin(true),
         }, T.icon('dash')),
         h('button.tc-bell-x', {
           type: 'button', title: 'Close',
-          onclick: () => toggleEnqFloat(false),
+          onclick: () => toggleAttn(false),
         }, '\u00d7'),
       ]),
       enqBody,
+      todoBody,
     ]);
 
-    const ENQ_MIN_KEY = 'topclass.bell.min';
+    const ATT_MIN_KEY = 'topclass.bell.min';
 
-    function setEnqMin(min) {
-      enqPanel.classList.toggle('is-min', !!min);
-      try { localStorage.setItem(ENQ_MIN_KEY, min ? '1' : '0'); } catch (e) { /* ignore */ }
+    function setAttnMin(min) {
+      attnPanel.classList.toggle('is-min', !!min);
+      try { localStorage.setItem(ATT_MIN_KEY, min ? '1' : '0'); } catch (e) { /* ignore */ }
     }
-    try { setEnqMin(localStorage.getItem(ENQ_MIN_KEY) === '1'); } catch (e) { /* ignore */ }
+    try { setAttnMin(localStorage.getItem(ATT_MIN_KEY) === '1'); } catch (e) { /* ignore */ }
 
-    function toggleEnqFloat(force) {
-      enqOpen = force === undefined ? !enqOpen : force;
-      enqPanel.hidden = !enqOpen;
-      enqBell.classList.toggle('is-open', enqOpen);
-      enqBell.setAttribute('aria-expanded', String(enqOpen));
-      if (enqOpen) loadEnquiries();
+    function setAttnTab(tab) {
+      attnTab = tab;
+      Object.entries(attnTabs).forEach(([id, el]) =>
+        el.classList.toggle('is-active', id === tab));
+      enqBody.hidden = tab !== 'enquiries';
+      todoBody.hidden = tab !== 'todo';
+      if (!attnOpen) return;
+      if (tab === 'todo') loadTodo();
+      else loadEnquiries();
     }
 
-    function setBellCount(count) {
-      enqCount.textContent = count > 9 ? '9+' : String(count);
-      enqCount.hidden = !count;
-      enqBell.classList.toggle('has-items', !!count);
+    function toggleAttn(force) {
+      attnOpen = force === undefined ? !attnOpen : force;
+      attnPanel.hidden = !attnOpen;
+      attnBell.classList.toggle('is-open', attnOpen);
+      attnBell.setAttribute('aria-expanded', String(attnOpen));
+      if (attnOpen) setAttnTab(attnTab);
+    }
+
+    /* The badge is the sum of both lists: either one alone would hide the
+       other's work, which is the whole reason they share a bell. */
+    function setBellCount() {
+      const total = (attnCount.enquiries || 0) + (attnCount.tasks || 0);
+      attnBadge.textContent = total > 9 ? '9+' : String(total);
+      attnBadge.hidden = !total;
+      attnBell.classList.toggle('has-items', !!total);
     }
 
     async function loadEnquiries() {
@@ -237,9 +271,10 @@
     /* An enquiry is not a booking until somebody confirms it — hence
        "Confirm" here and "Attend" for recording who dealt with it. */
     function renderEnquiries(items) {
-      setBellCount(items.length);
-      enqPill.textContent = String(items.length);
-      enqPill.hidden = !items.length;
+      attnCount.enquiries = items.length;
+      enqTabCount.textContent = String(items.length);
+      enqTabCount.hidden = !items.length;
+      setBellCount();
 
       if (!items.length) {
         T.mount(enqBody, h('div.tc-bell-note.is-clear', [
@@ -280,6 +315,76 @@
       loadEnquiries();
     }
 
+    /* ── to-do tab ──────────────────────────────────────────────────── */
+    async function loadTodo() {
+      T.mount(todoBody, T.spinner('Loading the list…'));
+      try {
+        const [day, week] = await Promise.all([
+          api.get('/api/tasks?window=day&status=open', { silent: true }),
+          api.get('/api/tasks?window=week&status=open', { silent: true }),
+        ]);
+        renderTodo(day, week);
+      } catch (err) {
+        T.mount(todoBody, h('div.tc-bell-note', 'Could not load the to-do list.'));
+      }
+    }
+
+    function renderTodo(day, week) {
+      const items = day.items || [];
+      const laterThisWeek = Math.max(0, (week.count || 0) - (day.count || 0));
+
+      attnCount.tasks = items.length;
+      todoTabCount.textContent = String(items.length);
+      todoTabCount.hidden = !items.length;
+      setBellCount();
+
+      // The foot is always rendered, so there is still a way to add the next
+      // thing when the list happens to be empty.
+      T.mount(todoBody, [
+        items.length
+          ? h('div.tc-bell-rows', items.map((t) => h('label.tc-bell-row.tc-bell-todo', [
+              h('input.form-check-input', {
+                type: 'checkbox', onchange: () => completeTask(t),
+              }),
+              h('div.tc-bell-row-main', [
+                h('span.tc-bell-name', t.title),
+                h('span.tc-bell-meta', [
+                  t.custodian || 'Unassigned',
+                  t.is_overdue ? ' · overdue' : '',
+                  t.category ? ` · ${t.category}` : '',
+                ].join('')),
+              ]),
+            ])))
+          : h('div.tc-bell-note.is-clear', [
+              h('span.tc-bell-ok', T.icon('check2-circle')),
+              ' Nothing outstanding for today.',
+            ]),
+        laterThisWeek
+          ? h('div.tc-bell-more', `${laterThisWeek} more due later this week`)
+          : null,
+        h('div.tc-bell-foot', [
+          h('button.btn.btn-sm.btn-outline-secondary', {
+            type: 'button', onclick: addTask,
+          }, T.icon('plus-lg'), ' Add task'),
+          h('span.flex-fill'),
+          h('a.small', { href: '#/todo', onclick: () => toggleAttn(false) },
+            'Open the board'),
+        ]),
+      ]);
+    }
+
+    async function completeTask(task) {
+      await api.patch(`/api/tasks/${task.id}`, { status: 'DONE' });
+      T.toast('Task done.', 'success');
+      loadTodo();
+    }
+
+    async function addTask() {
+      if (!T.newTask) return;
+      await T.newTask();
+      loadTodo();
+    }
+
     /* Topbar --------------------------------------------------------- */
     const paletteBtn = h('button.tc-search-trigger', {
       type: 'button',
@@ -318,7 +423,7 @@
           href: '#/inbox', title: 'WhatsApp inbox', 'aria-label': 'WhatsApp inbox',
         }, T.icon('whatsapp')),
         h('span.tc-topbar-sep.d-none.d-sm-block'),
-        enqBell,
+        attnBell,
         userWrap,
       ]),
     ]);
@@ -366,8 +471,13 @@
         });
         const t = document.querySelector('.tc-topbar') || topbar;
         t.classList.toggle('has-attention', (data.attention || 0) > 0);
-        // Keep the bell badge live even while the panel is shut.
-        if (!enqOpen) setBellCount(data.bookings || 0);
+        // Keep the badge live even while the panel is shut. Two cheap counts
+        // beat polling two list endpoints on every tick.
+        if (!attnOpen) {
+          attnCount.enquiries = data.bookings || 0;
+          attnCount.tasks = data.tasks || 0;
+          setBellCount();
+        }
       } catch (e) { /* silent — badges are a nicety */ }
       setTimeout(pollBadges, 30000);
     }
@@ -385,17 +495,17 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { closeSidebar(); toggleUserMenu(false); toggleEnqFloat(false); }
+      if (e.key === 'Escape') { closeSidebar(); toggleUserMenu(false); toggleAttn(false); }
     });
 
     document.addEventListener('click', (e) => {
       if (userOpen && !userWrap.contains(e.target)) toggleUserMenu(false);
-      if (enqOpen && !enqPanel.contains(e.target) && !enqBell.contains(e.target)) {
-        toggleEnqFloat(false);
+      if (attnOpen && !attnPanel.contains(e.target) && !attnBell.contains(e.target)) {
+        toggleAttn(false);
       }
     });
 
-    return h('div', [sidebar, h('div.tc-main', [topbar, quickbar, outlet]), enqPanel]);
+    return h('div', [sidebar, h('div.tc-main', [topbar, quickbar, outlet]), attnPanel]);
   }
 
   /* ── booking actions ──────────────────────────────────────────────────

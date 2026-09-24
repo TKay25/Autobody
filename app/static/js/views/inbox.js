@@ -34,6 +34,10 @@
 
   const isTap = (message) => /^\[button:/.test((message.body || '').trim());
 
+  const initialsOf = (name) => (name || '?')
+    .split(/\s+/).filter(Boolean).slice(0, 2)
+    .map((part) => part[0].toUpperCase()).join('') || '?';
+
   /* A raw payload id makes a useless one-line preview in the rail. */
   function snippetOf(lastMessage) {
     const raw = (lastMessage || '').trim();
@@ -66,20 +70,23 @@
     function renderList() {
       T.mount(listHost, conversations.items.length
         ? conversations.items.map((c) => {
-            const el = h('div.chat-item', { class: c.id === activeId ? 'chat-item active' : 'chat-item' }, [
-              h('div.d-flex.justify-content-between.align-items-start.gap-2', [
-                h('div.flex-fill', [
-                  h('div.name', c.display_name),
-                  h('div.snippet', snippetOf(c.last_message)),
+            const el = h('div.chat-item', {
+              class: `chat-item${c.id === activeId ? ' active' : ''}${c.unread ? ' is-unread' : ''}`,
+            }, [
+              h('span.tc-avatar.chat-avatar', initialsOf(c.display_name)),
+              h('div.chat-item-body', [
+                h('div.d-flex.justify-content-between.align-items-baseline.gap-2', [
+                  h('div.name.text-truncate', c.display_name),
+                  h('div.chat-time', T.relTime(c.last_message_at)),
                 ]),
-                h('div.text-end', [
-                  h('div.small.text-secondary', { style: 'font-size:.68rem' }, T.relTime(c.last_message_at)),
-                  c.unread ? h('span.badge.text-bg-success', c.unread) : null,
+                h('div.snippet', snippetOf(c.last_message)),
+                h('div.chat-tags', [
+                  c.human_takeover ? h('span.chip.is-human', 'You') : h('span.chip', 'Bot'),
+                  c.is_session_open
+                    ? h('span.chip', 'Session open')
+                    : h('span.chip.is-warn', 'Needs template'),
+                  c.unread ? h('span.chat-dot', { title: `${c.unread} unread` }) : null,
                 ]),
-              ]),
-              h('div.d-flex.gap-1.mt-1', [
-                c.human_takeover ? h('span.badge.text-bg-dark', 'Human') : h('span.chip', c.state),
-                c.is_session_open ? h('span.chip', 'session open') : h('span.chip', 'needs template'),
               ]),
             ]);
             el.addEventListener('click', () => { activeId = c.id; T.navigate(`/inbox?id=${c.id}`); });
@@ -175,11 +182,14 @@
       });
 
       T.mount(panelHost, [
-        h('div.d-flex.align-items-center.gap-2.p-3.border-bottom.bg-white', [
-          h('div.flex-fill', [
-            h('div.fw-bold', c.display_name),
-            h('div.small.text-secondary', `+${c.wa_id} · state ${c.state}${c.assigned_to ? ' · ' + c.assigned_to : ''}`),
+        h('div.chat-head', [
+          h('span.tc-avatar.chat-avatar', initialsOf(c.display_name)),
+          h('div.flex-fill.min-w-0', [
+            h('div.fw-bold.text-truncate', c.display_name),
+            h('div.chat-head-meta', `+${c.wa_id}`),
           ]),
+          c.human_takeover ? h('span.chip.is-human', 'You have it') : h('span.chip', 'Bot answering'),
+          c.is_session_open ? h('span.chip', 'Session open') : h('span.chip.is-warn', 'Needs template'),
           c.human_takeover
             ? h('button.btn.btn-sm.btn-outline-secondary', {
                 onclick: async () => {
@@ -187,7 +197,7 @@
                   T.toast('Bot resumed for this conversation.');
                   loadThread(c.id); refreshList();
                 },
-              }, T.icon('robot'), ' Hand back to bot')
+              }, T.icon('robot'), ' Hand back')
             : h('button.btn.btn-sm.btn-brand', {
                 onclick: async () => {
                   await api.post(`/api/whatsapp/conversations/${c.id}/takeover`, { human_takeover: true });
@@ -195,11 +205,13 @@
                   loadThread(c.id); refreshList();
                 },
               }, T.icon('person'), ' Take over'),
-          h('a.btn.btn-sm.btn-outline-success', { href: `https://wa.me/${c.wa_id}`, target: '_blank' },
-            T.icon('box-arrow-up-right')),
+          h('a.btn.btn-sm.btn-outline-success', {
+            href: `https://wa.me/${c.wa_id}`, target: '_blank',
+            title: 'Open in WhatsApp',
+          }, T.icon('box-arrow-up-right')),
         ]),
         log,
-        h('div.p-3.border-top.bg-white', h('div.d-flex.gap-2', [replyBox, sendBtn])),
+        h('div.tc-composer', [replyBox, sendBtn]),
       ]);
 
       /* Scroll after mounting — before that the log has no height to scroll. */
@@ -250,7 +262,7 @@
         ]),
         h('div.d-flex.gap-1.flex-wrap.mt-2',
           [['Main menu', 'm_menu'], ['Get a quote', 'm_quote'], ['Track repair', 'm_track'],
-           ['My claim', 'm_claim'], ['Talk to a person', 'm_human']]
+           ['Book a service', 'm_book'], ['Talk to a person', 'm_human']]
             .map(([label, id]) => h('button.btn.btn-sm.btn-outline-secondary', {
               onclick: () => simulate(id),
             }, label))),
@@ -258,6 +270,9 @@
       ]),
     });
 
+    /* The day book is not repeated here — it lives in the attention panel in
+       the top bar, so it is available from every screen rather than only this
+       one. See T.newTask / the bell in app.js. */
     renderList();
     await loadThread(activeId);
 

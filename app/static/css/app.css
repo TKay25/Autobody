@@ -792,11 +792,58 @@ html.sidebar-rail { --tc-sidebar: 74px; }
 /* ── Chat ──────────────────────────────────────────────────────────── */
 .chat-wrap { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; height: calc(100vh - 150px); }
 @media (max-width: 860px) { .chat-wrap { grid-template-columns: 1fr; height: auto; } }
+
+/* Tabs inside the attention panel — one bell, two lists. */
+.tc-bell-tabs { display: flex; gap: .2rem; }
+.tc-bell-tab {
+  display: inline-flex; align-items: center; gap: .35rem;
+  border: 1px solid transparent; background: none; cursor: pointer;
+  padding: .16rem .5rem; border-radius: .45rem;
+  font-size: .76rem; font-weight: 700; color: var(--tc-ink-muted);
+  transition: background var(--tc-fast), color var(--tc-fast), border-color var(--tc-fast);
+}
+.tc-bell-tab:hover { background: rgba(255, 255, 255, .7); color: var(--tc-crimson-600); }
+.tc-bell-tab.is-active {
+  background: #fff; border-color: rgba(194, 16, 46, .28); color: var(--tc-crimson-600);
+  box-shadow: var(--tc-shadow-1);
+}
+.tc-bell-tabcount {
+  background: var(--tc-crimson-500); color: #fff; border-radius: 999px;
+  padding: 0 .34rem; font-size: .6rem; font-weight: 800;
+}
+/* A to-do row is a checkbox plus its text, so the whole row is the target. */
+.tc-bell-todo { cursor: pointer; margin: 0; }
+.tc-bell-todo .form-check-input { margin: .1rem 0 0; flex: none; }
+.tc-bell-more {
+  padding: .45rem .9rem; font-size: .75rem; color: var(--tc-ink-faint);
+  border-bottom: 1px solid var(--tc-line);
+}
+.tc-bell-foot {
+  display: flex; align-items: center; gap: .5rem;
+  padding: .55rem .9rem; font-size: .78rem;
+}
+.tc-bell-foot a { color: var(--tc-crimson-600); text-decoration: none; }
+.tc-bell-foot a:hover { text-decoration: underline; }
 .chat-list { overflow-y: auto; height: 100%; }
-.chat-item { padding: .7rem .85rem; border-bottom: 1px solid #eef1f5; cursor: pointer; }
-.chat-item:hover { background: #f8f9fb; }
-.chat-item.active { background: #fbe4e8; border-left: 3px solid var(--tc-crimson-500); }
-.chat-item .name { font-weight: 600; font-size: .9rem; }
+.chat-item {
+  display: flex; gap: .65rem; align-items: flex-start;
+  padding: .7rem .8rem; border-bottom: 1px solid var(--tc-line);
+  cursor: pointer; transition: background var(--tc-fast), box-shadow var(--tc-fast);
+}
+.chat-item:hover { background: #f7f9fd; }
+.chat-item.active { background: #fdecef; box-shadow: inset 3px 0 0 var(--tc-crimson-500); }
+.chat-item-body { min-width: 0; flex: 1; }
+.chat-item .name { font-weight: 600; font-size: .88rem; line-height: 1.2; color: var(--tc-navy-900); }
+.chat-item.is-unread .name { font-weight: 750; }
+.chat-time { font-size: .66rem; color: var(--tc-ink-faint); flex: none; }
+.chat-item.is-unread .chat-time { color: var(--tc-crimson-600); font-weight: 650; }
+.chat-avatar { width: 34px; height: 34px; border-radius: 10px; flex: none; font-size: .72rem; }
+.chat-tags { display: flex; align-items: center; gap: .3rem; margin-top: .3rem; }
+.chat-tags .chip { font-size: .62rem; padding: .05rem .4rem; }
+.chat-dot {
+  width: 8px; height: 8px; border-radius: 50%; margin-left: auto;
+  background: var(--tc-crimson-500); box-shadow: 0 0 0 3px rgba(194, 16, 46, .14);
+}
 .chat-item .snippet {
   font-size: .78rem; color: #6a7381;
   display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
@@ -808,7 +855,12 @@ html.sidebar-rail { --tc-sidebar: 74px; }
   margin-bottom: .5rem; font-size: .875rem; white-space: pre-wrap; word-wrap: break-word;
 }
 .bubble.inbound { background: #fff; border-top-left-radius: .2rem; }
-.bubble.outbound { background: #d6f5e3; margin-left: auto; border-top-right-radius: .2rem; }
+/* Outbound is the shop talking, so it wears the house colour rather than
+   WhatsApp green — otherwise the console looks like two apps stitched up. */
+.bubble.outbound {
+  background: #e8eefb; border: 1px solid #d6e0f5;
+  margin-left: auto; border-top-right-radius: .2rem;
+}
 .bubble.bot::after {
   content: "bot"; font-size: .62rem; color: #6a7381; margin-left: .5rem;
   border: 1px solid #cfd6de; border-radius: 4px; padding: 0 .25rem; vertical-align: middle;
@@ -984,8 +1036,9 @@ h1.h4, .page-title { font-weight: 700; letter-spacing: -.015em; }
 .chat-panel { border: 1px solid var(--tc-line); box-shadow: var(--tc-shadow-1); }
 .chat-log {
   background:
-    radial-gradient(circle at 20% 10%, rgba(255,255,255,.6), transparent 55%),
-    #eef1f7;
+    radial-gradient(circle at 18% 8%, rgba(255, 255, 255, .7), transparent 55%),
+    linear-gradient(180deg, #f2f5fa, #e9eef7);
+  padding: 1.1rem;
 }
 .bubble { box-shadow: var(--tc-shadow-1); line-height: 1.45; }
 .bubble.inbound { border: 1px solid var(--tc-line); }
@@ -995,6 +1048,25 @@ h1.h4, .page-title { font-weight: 700; letter-spacing: -.015em; }
   border-radius: 4px; padding: 0 .25rem; margin-left: .5rem; vertical-align: middle;
 }
 .chat-item { transition: background-color var(--tc-fast); }
+
+/* ── Inbox chrome: header + composer ───────────────────────────────── */
+.chat-head {
+  display: flex; align-items: center; gap: .55rem;
+  padding: .7rem .9rem; border-bottom: 1px solid var(--tc-line); background: #fff;
+}
+.chat-head .chip { font-size: .64rem; }
+.chat-head-meta { font-size: .72rem; color: var(--tc-ink-faint); }
+/* The field and its send button read as one control. */
+.tc-composer {
+  display: flex; gap: .5rem; align-items: flex-end;
+  padding: .7rem .9rem; border-top: 1px solid var(--tc-line); background: #fff;
+}
+.tc-composer textarea { border-radius: .85rem; }
+.chip.is-human { background: var(--tc-navy-800); color: #fff; border-color: transparent; }
+.chip.is-warn {
+  background: rgba(232, 163, 23, .16); color: #8a6109;
+  border-color: rgba(232, 163, 23, .35);
+}
 
 /* ── Timeline / activity ───────────────────────────────────────────── */
 .timeline-v2 { position: relative; padding-left: 1.6rem; }

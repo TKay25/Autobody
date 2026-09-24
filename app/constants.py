@@ -76,7 +76,7 @@ STAGE_COLOURS = {
 STAGE_CUSTOMER_TEXT = {
     "INTAKE": "Your vehicle has been booked in and the job card is open.",
     "ASSESSMENT": "Our estimator is assessing the damage and preparing the quote.",
-    "AWAITING_APPROVAL": "We are waiting for quotation / insurance approval.",
+    "AWAITING_APPROVAL": "We are waiting for the customer to approve the quotation.",
     "PARTS_ORDER": "We are waiting for parts to be delivered.",
     "STRIP": "The vehicle has been stripped down for repair.",
     "PANEL": "Panel beating is in progress.",
@@ -124,34 +124,6 @@ SERVICE_FROM_PRICE = {
     "Rebuilds & Performance Upgrades": Decimal("900"),
 }
 
-# ── Insurers on the Topclass panel ───────────────────────────────────────────
-INSURERS = [
-    {"code": "OLD", "name": "Old Mutual"},
-    {"code": "AIC", "name": "AIC"},
-    {"code": "NDI", "name": "NDI"},
-    {"code": "FBC", "name": "FBC"},
-    {"code": "ZIMNAT", "name": "Zimnat"},
-    {"code": "CBZ", "name": "CBZ Insurance"},
-    {"code": "FIRST", "name": "First Mutual"},
-]
-INSURER_BY_CODE = {i["code"]: i["name"] for i in INSURERS}
-INSURER_ALIASES = {
-    "old mutual": "OLD", "old": "OLD", "om": "OLD",
-    "aic": "AIC", "ndi": "NDI", "fbc": "FBC", "zimnat": "ZIMNAT",
-    "cbz": "CBZ", "first mutual": "FIRST", "first": "FIRST", "fm": "FIRST",
-}
-
-CLAIM_STATUSES = ["DRAFT", "ASSESSOR_BOOKED", "SUBMITTED", "APPROVED", "PARTIAL", "REPUDIATED", "SETTLED"]
-CLAIM_STATUS_LABELS = {
-    "DRAFT": "Draft",
-    "ASSESSOR_BOOKED": "Assessor Booked",
-    "SUBMITTED": "Submitted to Insurer",
-    "APPROVED": "Approved",
-    "PARTIAL": "Partially Approved",
-    "REPUDIATED": "Repudiated",
-    "SETTLED": "Settled",
-}
-
 # ── Estimator: labour matrix (hours per panel / operation) ───────────────────
 # Derived from typical Zimbabwean panel shop norm times. Tune per workshop.
 LABOUR_MATRIX = {
@@ -185,10 +157,8 @@ PAINT_MATERIAL_PER_PANEL = Decimal("18.00")   # paint + thinners + clear coat
 CONSUMABLES_PCT = Decimal("0.08")              # % of labour, shop rags/tape/etc.
 METAL_CONSUMABLE_PER_HOUR = Decimal("4.50")    # gas, wire, grinding discs
 
+# Every job is priced the same way. There is no second rate card.
 DEFAULT_PARTS_MARKUP = Decimal("0.25")         # 25% on parts
-INSURER_PARTS_MARKUP = Decimal("0.15")         # insurers pay a tighter markup
-INSURER_LABOUR_DISCOUNT = Decimal("0.10")      # 10% off retail labour on panel rates
-EXCESS_DEFAULT = Decimal("150.00")
 
 # ── Parts ────────────────────────────────────────────────────────────────────
 PART_CATEGORIES = ["Body Panels", "Lights & Lamps", "Trim & Interior", "Paint & Consumables",
@@ -201,7 +171,16 @@ SUPPLIERS = [
 
 # ── Invoicing ────────────────────────────────────────────────────────────────
 INVOICE_STATUSES = ["DRAFT", "ISSUED", "PART_PAID", "PAID", "OVERDUE", "CANCELLED"]
-PAYMENT_METHODS = ["CASH", "ECOCASH", "INNBUCKS", "BANK_TRANSFER", "CARD", "INSURER_SETTLEMENT"]
+# How the shop actually takes money. There is no insurer settlement: the shop is
+# paid by the customer, one way or another.
+PAYMENT_METHODS = ["CASH", "ECOCASH", "INNBUCKS", "BANK_TRANSFER", "CARD"]
+PAYMENT_METHOD_LABELS = {
+    "CASH": "Cash",
+    "ECOCASH": "EcoCash",
+    "INNBUCKS": "InnBucks",
+    "BANK_TRANSFER": "Bank transfer / RTGS",
+    "CARD": "Card",
+}
 
 # An enquiry and a booking are the same record at two different stages. A new
 # enquiry is just that — an enquiry, and a staff member attends to it. It only
@@ -241,6 +220,26 @@ BOOKING_SLOTS = [
     "08:00", "09:00", "10:00", "11:00", "12:00",
     "13:00", "14:00", "15:00", "16:00",
 ]
+
+# ── Tasks (the day book) ─────────────────────────────────────────────────────
+# The work the shop has taken on that is not (yet) a job card: chase a part,
+# call a customer back, follow up a quote. Deliberately lightweight — a task has
+# an activity, a custodian and a status, which is all a foreman needs to run a day.
+TASK_STATUSES = ["OPEN", "DOING", "BLOCKED", "DONE"]
+TASK_STATUS_LABELS = {
+    "OPEN": "Not started",
+    "DOING": "In progress",
+    "BLOCKED": "Blocked",
+    "DONE": "Done",
+}
+TASK_STATUS_COLOURS = {
+    "OPEN": "secondary",
+    "DOING": "warning",
+    "BLOCKED": "danger",
+    "DONE": "success",
+}
+# Open statuses — a task in any of these still needs somebody.
+TASK_OPEN_STATUSES = ["OPEN", "DOING", "BLOCKED"]
 
 QC_CHECKLIST = [
     "Panel gaps and alignment within tolerance",

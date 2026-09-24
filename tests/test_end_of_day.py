@@ -1,13 +1,13 @@
-"""End-of-day report, booking attribution and the additive schema guard."""
+"""End-of-day report, booking attribution and the schema guard."""
 from __future__ import annotations
 
 from datetime import date, timedelta
 
 from sqlalchemy import create_engine, inspect, text
 
-from app.constants import BOOKING_STATUSES
+from app.constants import BOOKING_STATUSES, TASK_STATUSES
 from app.models import User
-from app.schema import ensure_columns
+from app.schema import drop_columns, drop_tables, ensure_columns
 
 
 def _booking(auth_client, phone="+263772100100", name="Report Lead"):
@@ -220,3 +220,136 @@ def test_ensure_columns_adds_only_what_is_missing(tmp_path):
 def test_ensure_columns_ignores_unknown_tables(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'empty.db'}")
     assert ensure_columns(engine, "nope", {"x": "INTEGER"}) == []
+
+
+# A retired model field is not gone until the *column* is gone. ``is_insurance``
+# was NOT NULL with only a Python-side default, so once SQLAlchemy stopped
+# sending it every INSERT failed. These pin the other half of the guard.
+def test_drop_columns_removes_a_retired_field(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'retire.db'}")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE job_cards (id INTEGER PRIMARY KEY, job_no TEXT, "
+            "is_insurance BOOLEAN NOT NULL DEFAULT 0)"
+        ))
+        conn.execute(text("INSERT INTO job_cards (job_no, is_insurance) VALUES ('TC-1', 1)"))
+
+    assert drop_columns(engine, "job_cards", ["is_insurance"]) == ["is_insurance"]
+
+    columns = {c["name"] for c in inspect(engine).get_columns("job_cards")}
+    assert "is_insurance" not in columns
+    # Idempotent, and the rows survived.
+    assert drop_columns(engine, "job_cards", ["is_insurance"]) == []
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT job_no FROM job_cards")).scalar() == "TC-1"
+    assert drop_columns(engine, "nope", ["x"]) == []
+
+
+def test_drop_tables_removes_a_retired_table(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'retire2.db'}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE claims (id INTEGER PRIMARY KEY)"))
+        conn.execute(text("CREATE TABLE job_cards (id INTEGER PRIMARY KEY)"))
+
+    assert drop_tables(engine, ["claims"]) == ["claims"]
+
+    remaining = set(inspect(engine).get_table_names())
+    assert "claims" not in remaining
+    assert "job_cards" in remaining
+    # Idempotent: nothing left to drop.
+    assert drop_tables(engine, ["claims"]) == []
+
+
+# ── the day book on the closing sheet ───────────────────────────────────────
+def _task(auth_client, **overrides):
+    body = {"title": "Chase the bumper supplier", "category": "Parts", **overrides}
+    res = auth_client.post("/api/tasks", json=body)
+    assert res.status_code == 201, res.get_data(as_text=True)
+    return res.get_json()["task"]
+
+
+def test_the_report_carries_the_day_book(auth_client):
+    """The closing sheet is a handover document.
+
+    What nobody has finished yet matters as much as the money, so the to-do list
+    and its statuses belong in the same report — not on a separate screen the
+    foreman has to remember to open.
+    """
+    _task(auth_client, title="Order the front bumper",
+          due_date=date.today().isoformat())
+    _task(auth_client, title="Call Mrs Moyo back", category="Customer call")
+
+    tasks = auth_client.get("/api/reports/end-of-day").get_json()["tasks"]
+
+    assert tasks["open"] == 2
+    assert tasks["due_today"] == 1
+    assert tasks["undated"] == 1
+    # Every status is published even at zero, so the sheet reads as a full board
+    # rather than only the columns somebody happened to use.
+    assert [row["code"] for row in tasks["by_status"]] == TASK_STATUSES
+    counts = {row["code"]: row["count"] for row in tasks["by_status"]}
+    assert counts["OPEN"] == 2
+    assert counts["BLOCKED"] == 0
+
+    # Dated work first, undated last — the same order the board uses.
+    assert [row["title"] for row in tasks["list"]] == [
+        "Order the front bumper", "Call Mrs Moyo back"
+    ]
+
+
+def test_every_task_on_the_sheet_names_a_custodian(auth_client):
+    """A list of work with nobody's name against it is not a handover."""
+    _task(auth_client)
+    tasks = auth_client.get("/api/reports/end-of-day").get_json()["tasks"]
+
+    assert tasks["by_custodian"], "somebody has to be carrying it"
+    assert tasks["by_custodian"][0]["open"] == 1
+    assert tasks["by_custodian"][0]["name"]
+    assert tasks["list"][0]["custodian"]
+
+
+def test_completed_work_is_counted_for_the_day_not_for_ever(auth_client):
+    """`DONE` on the sheet means done *today*.
+
+    A lifetime count would make the board's fourth status a running total, which
+    tells a foreman nothing about the shift he is closing out.
+    """
+    task = _task(auth_client)
+    auth_client.patch(f"/api/tasks/{task['id']}", json={"status": "DONE"})
+
+    today = auth_client.get("/api/reports/end-of-day").get_json()["tasks"]
+    assert today["done_today"] == 1
+    assert {r["code"]: r["count"] for r in today["by_status"]}["DONE"] == 1
+    assert today["open"] == 0
+    assert [r["title"] for r in today["done"]] == ["Chase the bumper supplier"]
+
+    # Three days ago it was not finished, so it must not be counted as finished.
+    earlier = (date.today() - timedelta(days=3)).isoformat()
+    other = auth_client.get(f"/api/reports/end-of-day?date={earlier}").get_json()["tasks"]
+    assert other["done_today"] == 0
+    assert {r["code"]: r["count"] for r in other["by_status"]}["DONE"] == 0
+
+
+def test_overdue_work_is_flagged_on_the_sheet(auth_client):
+    _task(auth_client, title="Late chase",
+          due_date=(date.today() - timedelta(days=2)).isoformat())
+
+    tasks = auth_client.get("/api/reports/end-of-day").get_json()["tasks"]
+    assert tasks["overdue"] == 1
+    assert tasks["list"][0]["is_overdue"] is True
+    assert tasks["by_custodian"][0]["overdue"] == 1
+
+
+def test_a_custodian_with_no_job_cards_still_appears_on_the_sheet(auth_client):
+    """The staff table used to key off job cards and bookings alone.
+
+    A storeman — or the owner — with three things on the list and no job card to
+    their name would have been dropped from the closing sheet entirely.
+    """
+    _task(auth_client)
+
+    sheet = auth_client.get("/api/reports/end-of-day").get_json()
+    carriers = [row for row in sheet["staff"] if row["open_tasks"]]
+    assert carriers, "the custodian of the only task is missing from the staff table"
+    assert carriers[0]["open_jobs"] == 0
+    assert carriers[0]["done_tasks"] == 0

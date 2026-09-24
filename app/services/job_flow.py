@@ -8,7 +8,6 @@ from sqlalchemy import func
 
 from ..constants import (
     CLOSED_STAGES,
-    INSURER_BY_CODE,
     QC_CHECKLIST,
     STAGES,
 )
@@ -132,7 +131,6 @@ def open_job_card(
     service: str,
     description: str | None = None,
     damage_summary: str | None = None,
-    is_insurance: bool = False,
     priority: str = "NORMAL",
     promised_date: date | None = None,
     bay: str | None = None,
@@ -149,7 +147,6 @@ def open_job_card(
         service=service,
         description=description,
         damage_summary=damage_summary,
-        is_insurance=is_insurance,
         priority=priority,
         promised_date=promised_date or (date.today() + timedelta(days=7)),
         bay=bay,
@@ -192,11 +189,7 @@ def can_advance(job: JobCard) -> tuple[bool, str]:
 
     if job.stage == "AWAITING_APPROVAL":
         est = job.latest_estimate
-        claim = job.active_claim
-        if job.is_insurance:
-            if claim is None or claim.status in {"DRAFT", "ASSESSOR_BOOKED", "SUBMITTED"}:
-                return False, "Waiting on insurer approval for this claim."
-        elif est is None or est.status != "APPROVED":
+        if est is None or est.status != "APPROVED":
             return False, "Waiting on customer approval of the estimate."
 
     if job.stage == "PARTS_ORDER":
@@ -306,19 +299,15 @@ def receive_job_part(job_part, *, user_id: int | None = None) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Estimating bridge
 # ─────────────────────────────────────────────────────────────────────────────
-def save_estimate(job: JobCard, lines: list[dict], *, is_insurance: bool | None = None,
-                  vat_rate: Decimal = Decimal("0.15"), excess: Decimal | None = None,
+def save_estimate(job: JobCard, lines: list[dict], *, vat_rate: Decimal = Decimal("0.15"),
                   notes: str | None = None, mark_sent: bool = True) -> Estimate:
     """Persist a new estimate version for a job."""
     from .pricing import summarise
 
-    insurance = job.is_insurance if is_insurance is None else is_insurance
     existing = job.estimates or []
     estimate = Estimate(
         job_id=job.id,
         version=len(existing) + 1,
-        is_insurance=insurance,
-        excess=Decimal(str(excess if excess is not None else 0)),
         notes=notes,
         status="SENT" if mark_sent else "DRAFT",
         sent_at=utcnow() if mark_sent else None,
@@ -345,7 +334,7 @@ def save_estimate(job: JobCard, lines: list[dict], *, is_insurance: bool | None 
     db.session.flush()
 
     # Price the header from the lines we were given (single source of truth).
-    summary = summarise(lines, insurance, vat_rate)
+    summary = summarise(lines, vat_rate)
     estimate.labour_total = summary["labour_total"]
     estimate.materials_total = summary["materials_total"]
     estimate.parts_total = summary["parts_total"]
@@ -388,26 +377,14 @@ def ensure_invoice(job: JobCard, *, user_id: int | None = None) -> Invoice | Non
     if not estimate:
         return None
 
-    excess = _dec(estimate.excess)
-    if job.is_insurance:
-        subtotal = _dec(estimate.subtotal) - excess
-        total = subtotal
-        vat = Decimal("0")
-    else:
-        subtotal = _dec(estimate.subtotal)
-        vat = _dec(estimate.vat)
-        total = _dec(estimate.total)
-
     invoice = Invoice(
         invoice_no=next_invoice_no(),
         job=job,
         customer_id=job.customer_id,
         currency=estimate.currency,
-        subtotal=subtotal,
-        vat=vat,
-        total=total,
-        is_insurance=job.is_insurance,
-        insurer_code=job.active_claim.insurer_code if job.active_claim else None,
+        subtotal=_dec(estimate.subtotal),
+        vat=_dec(estimate.vat),
+        total=_dec(estimate.total),
         status="DRAFT",
         due_date=date.today() + timedelta(days=14),
     )
@@ -459,13 +436,6 @@ def workshop_metrics() -> dict:
         Decimal("0"),
     )
 
-    from ..models import Claim
-
-    claims = Claim.query.all()
-    claim_aging = sum(
-        (c.aging_days for c in claims if c.status in {"SUBMITTED", "ASSESSOR_BOOKED"}), 0
-    ) / max(1, len([c for c in claims if c.status in {"SUBMITTED", "ASSESSOR_BOOKED"}]))
-
     return {
         "open_jobs": len(open_jobs),
         "ready_for_collection": len(ready),
@@ -481,8 +451,6 @@ def workshop_metrics() -> dict:
         "outstanding_receivables": float(outstanding.quantize(Decimal("0.01"))),
         "outstanding_count": len([i for i in invoices if i.status not in {"PAID", "CANCELLED"}]),
         "overdue_invoices": len([i for i in invoices if i.is_overdue]),
-        "active_claims": len([c for c in claims if c.status not in {"SETTLED", "REPUDIATED"}]),
-        "avg_claim_aging_days": round(claim_aging, 1),
         "stage_breakdown": {
             stage: len([j for j in open_jobs if j.stage == stage]) for stage in STAGES
         },

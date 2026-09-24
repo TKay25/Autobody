@@ -10,14 +10,13 @@ PDF = b"%PDF-1.4\n% test quotation\n%%EOF\n"
 
 
 def _job(client, *, reg="QTE111", customer="Quote Tester", panels=("Front Bumper", "Bonnet"),
-         insurance=False, phone=None):
+         phone=None):
     res = client.post("/api/jobs", json={
         "customer_name": customer,
         # Distinct numbers keep customers apart — the API matches on phone too.
         "customer_phone": phone or f"+26377{abs(hash(customer)) % 10_000_000:07d}",
         "reg_no": reg,
         "panels": list(panels),
-        "is_insurance": insurance,
     })
     assert res.status_code == 201, res.get_json()
     return res.get_json()["job"]
@@ -117,20 +116,6 @@ def test_copied_lines_keep_their_kind_and_price(auth_client):
         assert after["quantity"] == before["quantity"]
         assert after["unit_price"] == before["unit_price"]
         assert after["line_total"] == before["line_total"]
-
-
-def test_copied_estimate_inherits_the_excess_sent_by_the_form(auth_client):
-    source_job = _job(auth_client, reg="EXC333", insurance=True)
-    source_id = _estimate_id(auth_client, source_job["id"])
-
-    new_job = auth_client.post("/api/jobs", json={
-        "customer_name": "Excess Check", "reg_no": "EXC333",
-        "source_estimate_id": source_id, "is_insurance": True, "excess": 250,
-    }).get_json()["job"]
-
-    copied = auth_client.get(f"/api/jobs/{new_job['id']}").get_json()["job"]["estimate"]
-    assert copied["excess"] == 250.0
-    assert copied["is_insurance"] is True
 
 
 def test_job_card_records_where_the_estimate_came_from(auth_client, app):

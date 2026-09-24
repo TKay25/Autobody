@@ -7,7 +7,6 @@
     { value: '', label: 'Everything' },
     { value: 'job', label: 'Job cards' },
     { value: 'estimate', label: 'Estimates' },
-    { value: 'claim', label: 'Claims' },
     { value: 'invoice', label: 'Invoices' },
     { value: 'part', label: 'Stock' },
     { value: 'customer', label: 'Customers' },

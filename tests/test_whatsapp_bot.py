@@ -28,7 +28,7 @@ def test_greeting_returns_main_menu(app):
         ids = [row["id"] for s in replies[0]["sections"] for row in s["rows"]]
         assert "m_quote" in ids
         # Booking used to be unreachable from the greeting: WhatsApp caps buttons
-        # at three and the menu spent all three on quote/track/claim.
+        # at three, and the old menu spent all three on quote/track/claim.
         assert "m_book" in ids
 
 
@@ -82,11 +82,6 @@ def test_service_matching_is_fuzzy():
     assert intent_router.match_service("ceramic") == "Ceramic Coating"
     assert intent_router.match_service("ppf") == "Paint Protection Film"
     assert intent_router.match_service("nonsense") is None
-
-
-def test_insurer_matching():
-    assert intent_router.match_insurer("it is an old mutual claim") == "OLD"
-    assert intent_router.match_insurer("cbz") == "CBZ"
 
 
 def test_quote_flow_creates_booking_and_customer(app):

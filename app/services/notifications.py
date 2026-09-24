@@ -116,8 +116,6 @@ def send_quotation(job: JobCard, estimate, *, with_buttons: bool = True) -> dict
         f"Total: {currency} {_money(estimate.total)}\n"
         f"Valid until {estimate.expires_on.strftime('%d %b %Y')}"
     )
-    if estimate.is_insurance:
-        caption += f"\nExcess payable by you: {currency} {_money(estimate.excess)}"
 
     delivered = _dispatch(
         job, caption, template=TEMPLATE_DOCUMENT, use_template=True,
@@ -277,8 +275,6 @@ def notify_quote_ready(job: JobCard) -> bool:
         f"Reference: {estimate.reference}\n"
         f"Total: *{estimate.currency} {_money(estimate.total)}*"
     )
-    if estimate.is_insurance:
-        body += f"\nExcess payable by you: *USD {_money(estimate.excess)}*"
     body += (
         "\n\nReply *approve* to authorise the repair, or *decline* and our team will call you."
     )

@@ -86,7 +86,8 @@ def _styles():
     }
 
 
-def _letterhead(meta: list[tuple[str, str]], accent: str = CRIMSON, doc_title: str = ""):
+def _letterhead(meta: list[tuple[str, str]], accent: str = CRIMSON, doc_title: str = "",
+                width: float | None = None):
     from reportlab.lib import colors
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, Table, TableStyle
@@ -105,7 +106,7 @@ def _letterhead(meta: list[tuple[str, str]], accent: str = CRIMSON, doc_title: s
     right = [Paragraph(doc_title, styles["title"])] if doc_title else []
     right += [Paragraph(f"<b>{label}</b> {value}", styles["subtitle"]) for label, value in meta]
 
-    table = Table([[left, right]], colWidths=[100 * mm, 70 * mm])
+    table = Table([[left, right]], colWidths=_fit([100 * mm, 70 * mm], width))
     table.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -116,13 +117,15 @@ def _letterhead(meta: list[tuple[str, str]], accent: str = CRIMSON, doc_title: s
     return table
 
 
-def _party_block(pairs: list[tuple[str, str, str]], ):
+def _party_block(pairs: list[tuple[str, str, str]], width: float | None = None):
     """pairs: [(heading, label, value)] rendered as labelled mini-tables."""
     from reportlab.lib import colors
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, Table, TableStyle
 
     styles = _styles()
+    outer_widths = _fit([85 * mm, 85 * mm], width)
+    inner_width = outer_widths[0] - 5 * mm
     cells = []
     for heading, rows in pairs:
         inner = [[Paragraph(heading.upper(), styles["h2"])]]
@@ -131,7 +134,7 @@ def _party_block(pairs: list[tuple[str, str, str]], ):
                 Paragraph(f"<font color='{GREY}'>{label}</font><br/><b>{value or '—'}</b>",
                           styles["cell"])
             ])
-        table = Table(inner, colWidths=[80 * mm])
+        table = Table(inner, colWidths=[inner_width])
         table.setStyle(TableStyle([
             ("LEFTPADDING", (0, 0), (-1, -1), 0),
             ("RIGHTPADDING", (0, 0), (-1, -1), 0),
@@ -140,7 +143,7 @@ def _party_block(pairs: list[tuple[str, str, str]], ):
         ]))
         cells.append(table)
 
-    outer = Table([cells], colWidths=[85 * mm, 85 * mm])
+    outer = Table([cells], colWidths=outer_widths)
     outer.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
@@ -225,18 +228,63 @@ def _footer(text: str):
     return [Spacer(1, 6 * mm), Paragraph(text, styles["small"])]
 
 
-def _render(story: list, title: str, accent: str = CRIMSON) -> bytes:
-    from reportlab.lib import colors
+def _fit(widths: list[float], width: float | None) -> list[float]:
+    """Scale fixed column widths to ``width``.
+
+    The blocks below were drawn against A4 and carry literal millimetre widths,
+    which is fine until a document is rendered on a smaller sheet — an A5 receipt
+    is 124mm of body against A4's 174mm, so anything that assumes the wider frame
+    runs off the paper. Passing the frame width in rescales the columns
+    proportionally; passing ``None`` leaves the A4 originals untouched.
+    """
+    if not width:
+        return widths
+    used = sum(widths)
+    if not used:
+        return widths
+    factor = width / used
+    return [value * factor for value in widths]
+
+
+def _page(pagesize=None) -> dict:
+    """Page size plus the insets and chrome sizes that suit it.
+
+    A5 is a bit over a third of A4's area, so the A4 margins would swallow the
+    body. Along with tighter edges the footer rule and the corner tab come in a
+    little, which is what makes an A5 receipt read like a till slip rather than
+    a shrunk A4 page.
+    """
     from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+
+    size = pagesize or A4
+    narrow = size[0] < 160 * mm
+    side = 12 * mm if narrow else 18 * mm
+    return {
+        "size": size,
+        "narrow": narrow,
+        "side": side,
+        "width": size[0] - 2 * side,
+        "top": 11 * mm if narrow else 15 * mm,
+        "bottom": 12 * mm if narrow else 16 * mm,
+        "foot_y": 9 * mm if narrow else 13 * mm,
+        "tab": 3 * mm if narrow else 4 * mm,
+    }
+
+
+def _render(story: list, title: str, accent: str = CRIMSON, pagesize=None) -> bytes:
+    from reportlab.lib import colors
     from reportlab.lib.units import mm
     from reportlab.platypus import BaseDocTemplate, Frame, PageTemplate
 
     buffer = io.BytesIO()
     company = _company()
+    page = _page(pagesize)
 
     doc = BaseDocTemplate(
-        buffer, pagesize=A4,
-        leftMargin=18 * mm, rightMargin=18 * mm, topMargin=15 * mm, bottomMargin=16 * mm,
+        buffer, pagesize=page["size"],
+        leftMargin=page["side"], rightMargin=page["side"],
+        topMargin=page["top"], bottomMargin=page["bottom"],
         title=title, author=company["name"], subject=title,
         creator=f"{company['name']} Workshop OS",
     )
@@ -246,7 +294,7 @@ def _render(story: list, title: str, accent: str = CRIMSON) -> bytes:
         canvas.saveState()
         canvas.setStrokeColor(colors.HexColor(LINE))
         canvas.setLineWidth(0.5)
-        y = 13 * mm
+        y = page["foot_y"]
         canvas.line(doc.leftMargin, y + 4 * mm, doc.leftMargin + doc.width, y + 4 * mm)
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(colors.HexColor(GREY))
@@ -256,7 +304,8 @@ def _render(story: list, title: str, accent: str = CRIMSON) -> bytes:
         )
         # Accent tab in the corner.
         canvas.setFillColor(colors.HexColor(accent))
-        canvas.rect(0, A4[1] - 4 * mm, A4[0], 4 * mm, stroke=0, fill=1)
+        canvas.rect(0, page["size"][1] - page["tab"], page["size"][0], page["tab"],
+                    stroke=0, fill=1)
         canvas.restoreState()
 
     doc.addPageTemplates([PageTemplate(id="main", frames=[frame], onPage=decorate)])
@@ -316,29 +365,6 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
             (f"Total ({currency})", _money(estimate.total), True),
         ]),
     ]
-
-    if estimate.is_insurance:
-        story += [
-            Spacer(1, 3 * mm),
-            Paragraph(
-                f"<b>Insurance repair.</b> The insurer settles "
-                f"{currency} {_money(Decimal(str(estimate.total)) - Decimal(str(estimate.excess)))}. "
-                f"The excess of <b>{currency} {_money(estimate.excess)}</b> is payable by the customer.",
-                styles["body"],
-            ),
-        ]
-
-    if estimate.is_insurance and job and job.active_claim:
-        claim = job.active_claim
-        story += [
-            Spacer(1, 2 * mm),
-            Paragraph(
-                f"<font color='{GREY}'>Insurer:</font> <b>{claim.insurer_name}</b> &nbsp; "
-                f"<font color='{GREY}'>Claim:</font> <b>{claim.claim_no or '—'}</b> &nbsp; "
-                f"<font color='{GREY}'>Excess:</font> <b>{currency} {_money(claim.excess)}</b>",
-                styles["cell"],
-            ),
-        ]
 
     story += _footer(
         "<b>Terms</b> — This quotation is valid for "
@@ -405,7 +431,7 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
             ("Billed to", [
                 ("Customer", customer.name if customer else "—"),
                 ("Phone", customer.phone if customer else "—"),
-                ("Account", "Insurance claim" if invoice.is_insurance else "Walk-in / cash"),
+                ("Account", "Walk-in / cash"),
             ]),
             ("Vehicle", [
                 ("Registration", vehicle.reg_no if vehicle else "—"),
@@ -489,6 +515,7 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
 # ─────────────────────────────────────────────────────────────────────────────
 def build_receipt_pdf(payment: Payment) -> bytes:
     from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A5
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, Spacer
 
@@ -502,6 +529,12 @@ def build_receipt_pdf(payment: Payment) -> bytes:
     currency = (invoice.currency if invoice else "USD") or "USD"
     settled = payment.is_fully_settled
 
+    # A receipt is handed to the customer, not filed — so it prints on A5, which
+    # slips into a glovebox or a jacket pocket. Every block that was drawn to A4's
+    # 174mm body has to be told the narrower frame or it runs off the sheet.
+    page = _page(A5)
+    width = page["width"]
+
     meta = [
         ("Official receipt", payment.receipt_no or f"#{payment.id}"),
         ("Date", payment.created_at.strftime("%d %b %Y")),
@@ -510,7 +543,7 @@ def build_receipt_pdf(payment: Payment) -> bytes:
     ]
 
     story = [
-        _letterhead(meta, accent=GREEN),
+        _letterhead(meta, accent=GREEN, width=width),
         Spacer(1, 6 * mm),
         Paragraph(
             f"Received with thanks from <b>{customer.name if customer else '—'}</b> "
@@ -529,7 +562,7 @@ def build_receipt_pdf(payment: Payment) -> bytes:
                 ("Job card", job.job_no if job else "—"),
                 ("Vehicle", job.vehicle.reg_no if job and job.vehicle else "—"),
             ]),
-        ]),
+        ], width=width),
         Spacer(1, 2 * mm),
         _totals_block([
             (f"Invoice total ({currency})", _money(invoice.total if invoice else 0), False),
@@ -549,7 +582,8 @@ def build_receipt_pdf(payment: Payment) -> bytes:
         "This is a computer-generated receipt. Retain it for your records and warranty claims. "
         f"<br/>{_company()['name']} · {_company()['address']} · {_company()['tel']}"
     )
-    return _render(story, f"Receipt {payment.receipt_no or payment.id}", accent=GREEN)
+    return _render(story, f"Receipt {payment.receipt_no or payment.id}", accent=GREEN,
+                   pagesize=A5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -583,13 +617,14 @@ def _sheet_table(header: list[str], rows: list[list[str]], widths: list[float]):
 
 
 def build_end_of_day_pdf(report: dict) -> bytes:
-    """The closing sheet: job card statuses, enquiries/bookings and the money."""
+    """The closing sheet: job card statuses, bookings, the day book and the money."""
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, Spacer
 
     styles = _styles()
     jobs = report["jobs"]
     bookings = report["bookings"]
+    tasks = report["tasks"]
     money = report["money"]
 
     story = [
@@ -685,6 +720,71 @@ def build_end_of_day_pdf(report: dict) -> bytes:
 
     story += [
         Spacer(1, 7 * mm),
+        Paragraph("TO-DO · THE DAY BOOK", styles["h2"]),
+        _totals_block([
+            ("Open", str(tasks["open"]), False),
+            ("In progress", str(tasks["doing"]), False),
+            ("Blocked", str(tasks["blocked"]), False),
+            ("Due today", str(tasks["due_today"]), False),
+            ("Past due", str(tasks["overdue"]), True),
+        ]),
+        Spacer(1, 5 * mm),
+        Paragraph("Open work by status", styles["body"]),
+        Spacer(1, 2 * mm),
+        _sheet_table(
+            ["Status", "Tasks"],
+            [[row["label"], row["count"]] for row in tasks["by_status"]],
+            [60, 20],
+        ),
+    ]
+
+    if tasks["by_custodian"]:
+        story += [
+            Spacer(1, 6 * mm),
+            Paragraph("Who is carrying what", styles["body"]),
+            Spacer(1, 2 * mm),
+            _sheet_table(
+                ["Custodian", "Open", "Done today", "Past due"],
+                [[row["name"], row["open"], row["done"], row["overdue"]]
+                 for row in tasks["by_custodian"][:40]],
+                [86, 22, 28, 24],
+            ),
+        ]
+
+    if tasks["list"]:
+        story += [
+            Spacer(1, 6 * mm),
+            Paragraph("Open to-do list", styles["body"]),
+            Spacer(1, 2 * mm),
+            _sheet_table(
+                ["Activity", "Area", "Custodian", "Status", "Due", "Job card"],
+                [[row["title"], row["category"] or "—", row["custodian"] or "Unassigned",
+                  row["status_label"],
+                  (f"Past due — {row['due_date']}") if row["is_overdue"]
+                  else (row["due_date"] or "No date"),
+                  row["job_no"] or "—"]
+                 for row in tasks["list"][:60]],
+                [50, 20, 28, 22, 24, 24],
+            ),
+        ]
+
+    if tasks["done"]:
+        story += [
+            Spacer(1, 6 * mm),
+            # Deliberately not just "Completed today" — the job card block above
+            # already uses that wording for vehicles finished.
+            Paragraph("To-do completed today", styles["body"]),
+            Spacer(1, 2 * mm),
+            _sheet_table(
+                ["Activity", "Custodian", "Area"],
+                [[row["title"], row["custodian"] or "Unassigned", row["category"] or "—"]
+                 for row in tasks["done"][:60]],
+                [90, 40, 40],
+            ),
+        ]
+
+    story += [
+        Spacer(1, 7 * mm),
         Paragraph("MONEY", styles["h2"]),
         _totals_block([
             ("Invoiced today", _money(money["invoiced"]), False),
@@ -743,11 +843,11 @@ def build_end_of_day_pdf(report: dict) -> bytes:
             Spacer(1, 7 * mm),
             Paragraph("STAFF", styles["h2"]),
             _sheet_table(
-                ["Name", "Role", "Confirmed", "Attended", "Open jobs"],
+                ["Name", "Role", "Confirmed", "Attended", "Open jobs", "To-do", "Done today"],
                 [[row["name"], (row["role"] or "").title(), row["confirmed"],
-                  row["attended"], row["open_jobs"]]
+                  row["attended"], row["open_jobs"], row["open_tasks"], row["done_tasks"]]
                  for row in report["staff"]],
-                [46, 30, 26, 24, 24],
+                [40, 22, 22, 20, 22, 22, 22],
             ),
         ]
 

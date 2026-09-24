@@ -36,11 +36,6 @@
       h('div.col-6.col-lg-3', T.statCard({ label: 'In spray booth', value: m.in_paint, icon: 'brush', colour: 'info' })),
       h('div.col-6.col-lg-3', T.statCard({ label: 'Waiting on parts', value: m.awaiting_parts, icon: 'box-seam', colour: 'warning' })),
       h('div.col-6.col-lg-3', T.statCard({
-        label: 'Active claims', value: m.active_claims, icon: 'shield-check', colour: 'brand',
-        sub: `Avg ${m.avg_claim_aging_days} days with insurer`,
-        onClick: () => T.navigate('/claims'),
-      })),
-      h('div.col-6.col-lg-3', T.statCard({
         label: 'Collected this month', value: m.collected_this_month, icon: 'check2-circle', colour: 'success',
       })),
     ]);

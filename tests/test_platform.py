@@ -136,8 +136,8 @@ def test_jobs_csv_export(auth_client):
     assert "CSV9000" in body
 
 
-def test_invoice_and_claim_and_parts_exports(auth_client):
-    for dataset in ("invoices", "claims", "parts"):
+def test_invoice_and_parts_exports(auth_client):
+    for dataset in ("invoices", "parts"):
         res = auth_client.get(f"/api/export/{dataset}.csv")
         assert res.status_code == 200, dataset
         assert res.mimetype == "text/csv"

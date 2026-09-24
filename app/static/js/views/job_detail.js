@@ -1,4 +1,4 @@
-/* Job card detail — progress, estimate, parts, claim, QC, history. */(function () {
+/* Job card detail — progress, estimate, parts, QC, history. */(function () {
   const T = window.TCA;
   const { h, api, money, dateShort, dateTime } = T;
 
@@ -18,7 +18,6 @@
     function render(payload) {
       const j = payload.job;
       const meta = T.store.get('meta');
-      const claim = j.claim;
       const estimate = j.estimate;
       const invoice = j.invoice;
 
@@ -32,7 +31,6 @@
               h('span.text-secondary', j.vehicle_title || ''),
               T.stageBadge(j.stage, j.stage_label),
               j.priority !== 'NORMAL' ? T.priorityBadge(j.priority) : null,
-              j.is_insurance ? h('span.badge.text-bg-dark', T.icon('shield-check'), ' Insurance') : null,
             ]),
             h('div.small.text-secondary.mt-1',
               `Job card ${j.job_no} · ${j.service} · in shop ${j.days_in_shop} day(s) · promised ${dateShort(j.promised_date)}`),
@@ -96,10 +94,6 @@
           onclick: () => addPartDialog(j),
         }, T.icon('box-seam'), ' Add part'),
 
-        h('button.btn.btn-outline-dark.btn-sm', {
-          onclick: () => claimDialog(j),
-        }, T.icon('shield-check'), claim ? ' Edit claim' : ' Link insurance claim'),
-
         h('button.btn.btn-outline-success.btn-sm', {
           onclick: async () => {
             try {
@@ -142,28 +136,6 @@
           T.section({ title: 'WhatsApp updates sent', body: notificationsHost(j) }),
         ]),
         h('div.col-lg-5', [
-          T.section({
-            title: 'Insurance claim',
-            actions: claim ? [h('button.btn.btn-sm.btn-outline-secondary', { onclick: () => claimDialog(j) }, 'Edit')] : [],
-            body: claim ? h('div', [
-              h('div.d-flex.justify-content-between.mb-2',
-                h('strong', claim.insurer_name),
-                h('span.badge.text-bg-info', claim.status_label)),
-              h('div.small.text-secondary.mb-2', `Claim ${claim.claim_no || '—'} · policy ${claim.policy_no || '—'}`),
-              h('div.row.g-2.small', [
-                info('Claimed', money(claim.claimed_amount, 'USD')),
-                info('Approved', money(claim.approved_amount, 'USD')),
-                info('Excess', money(claim.excess, 'USD')),
-                info('Excess paid', claim.excess_paid ? 'Yes' : 'No'),
-                info('Assessor', claim.assessor_name || '—'),
-                info('Aging', `${claim.aging_days} day(s)`),
-              ]),
-              claim.status === 'PARTIAL' ? h('div.alert.alert-warning.small.mt-2.mb-0',
-                `Shortfall of ${money(claim.shortfall)} will be for the customer's account.`) : null,
-              claim.status === 'REPUDIATED' ? h('div.alert.alert-danger.small.mt-2.mb-0',
-                claim.repudiation_reason || 'Repudiated by insurer.') : null,
-            ]) : T.emptyState('Not an insurance repair', 'Link a claim if the customer is claiming.', 'shield'),
-          }),
           T.section({ title: 'Parts', body: partsTable(j) }),
           T.section({ title: 'Photos', body: photosHost(j) }),
         ]),
@@ -230,11 +202,6 @@
             row('VAT', money(estimate.vat)),
             h('hr.my-2'),
             row('Total', money(estimate.total, estimate.currency), true),
-            estimate.is_insurance ? h('div.mt-2', [
-              h('hr.my-2'),
-              row('Excess payable by customer', money(estimate.excess)),
-              row('Insurer portion', money(estimate.total - estimate.excess), true),
-            ]) : null,
             estimate.approved_by ? h('div.small.text-success.mt-3',
               T.icon('check2-circle'), ` Approved by ${estimate.approved_by} on ${dateShort(estimate.approved_at)}`) : null,
           ]),
@@ -438,42 +405,6 @@
       if (!res.part_id) delete res.part_id;
       await api.post(`/api/jobs/${j.id}/parts`, res);
       T.toast('Part added.');
-      reload();
-    }
-
-    async function claimDialog(j) {
-      const meta = T.store.get('meta');
-      const res = await T.formModal({
-        title: j.claim ? `Edit claim — ${j.claim.insurer_name}` : `Link insurance claim — ${j.job_no}`,
-        fields: [
-          { name: 'insurer_code', label: 'Insurer *', type: 'select', col: 6, required: true,
-            value: (j.claim || {}).insurer_code,
-            options: meta.insurers.map((i) => ({ value: i.code, label: i.name })) },
-          { name: 'status', label: 'Status', type: 'select', col: 6,
-            value: (j.claim || {}).status || 'ASSESSOR_BOOKED',
-            options: meta.claim_statuses.map((s) => ({ value: s.code, label: s.label })) },
-          { name: 'claim_no', label: 'Claim number', col: 6, value: (j.claim || {}).claim_no },
-          { name: 'policy_no', label: 'Policy number', col: 6, value: (j.claim || {}).policy_no },
-          { name: 'assessor_name', label: 'Assessor', col: 6, value: (j.claim || {}).assessor_name },
-          { name: 'assessor_phone', label: 'Assessor phone', col: 6, value: (j.claim || {}).assessor_phone },
-          { name: 'assessor_date', label: 'Assessment date', type: 'date', col: 6,
-            value: (j.claim || {}).assessor_date },
-          { name: 'claimed_amount', label: 'Claimed amount (USD)', type: 'number', step: '0.01', col: 6,
-            value: (j.claim || {}).claimed_amount ?? (j.estimate ? j.estimate.total : 0) },
-          { name: 'approved_amount', label: 'Approved amount (USD)', type: 'number', step: '0.01', col: 6,
-            value: (j.claim || {}).approved_amount ?? 0 },
-          { name: 'excess', label: 'Excess (USD)', type: 'number', step: '0.01', col: 6,
-            value: (j.claim || {}).excess ?? 150 },
-          { name: 'excess_paid', label: 'Excess paid', type: 'switch', col: 6,
-            value: (j.claim || {}).excess_paid },
-          { name: 'notes', label: 'Notes', type: 'textarea', col: 12, value: (j.claim || {}).notes },
-        ],
-        submitLabel: j.claim ? 'Save claim' : 'Link claim',
-      });
-      if (!res) return;
-      if (j.claim) await api.patch(`/api/claims/${j.claim.id}`, res);
-      else await api.post(`/api/jobs/${j.id}/claim`, res);
-      T.toast('Claim saved.');
       reload();
     }
 

@@ -34,7 +34,6 @@ def test_create_job_card_generates_job_number(auth_client):
         "model": "Hilux",
         "service": "Panel Beating & Spray Painting",
         "panels": ["Front Bumper", "Bonnet"],
-        "is_insurance": False,
     })
     assert res.status_code == 201, res.get_json()
     job = res.get_json()["job"]
@@ -52,18 +51,18 @@ def test_vehicle_registration_is_normalised(auth_client, app):
         assert Vehicle.query.filter_by(reg_no="XYZ9999").first() is not None
 
 
-def test_advance_blocked_when_awaiting_insurer_approval(auth_client, app):
+def test_advance_blocked_until_the_customer_approves_the_estimate(auth_client, app):
     res = auth_client.post("/api/jobs", json={
-        "customer_name": "Claim Client", "reg_no": "CLM1111",
+        "customer_name": "Approval Client", "reg_no": "APP1111",
         "service": "Panel Beating & Spray Painting",
-        "is_insurance": True, "panels": ["Front Bumper"],
+        "panels": ["Front Bumper"],
     })
     job_id = res.get_json()["job"]["id"]
 
     auth_client.post(f"/api/jobs/{job_id}/stage", json={"stage": "AWAITING_APPROVAL"})
     res = auth_client.post(f"/api/jobs/{job_id}/advance", json={})
     assert res.status_code == 409
-    assert "insurer approval" in res.get_json()["message"].lower()
+    assert "customer approval" in res.get_json()["message"].lower()
 
 
 def test_qc_gate_blocks_release(auth_client):
@@ -151,20 +150,6 @@ def test_invoice_and_payment_flow(auth_client):
     assert res.status_code == 200
     assert res.get_json()["invoice"]["status"] == "PAID"
     assert res.get_json()["invoice"]["balance"] == 0
-
-
-def test_claim_link_flags_job_as_insurance(auth_client, app):
-    res = auth_client.post("/api/jobs", json={"customer_name": "Ins", "reg_no": "INS321"})
-    job_id = res.get_json()["job"]["id"]
-    res = auth_client.post(f"/api/jobs/{job_id}/claim", json={
-        "insurer_code": "OLD", "claim_no": "CLM12345", "excess": 150,
-        "claimed_amount": 900, "status": "SUBMITTED",
-    })
-    assert res.status_code == 201
-    with app.app_context():
-        job = db.session.get(JobCard, job_id)
-        assert job.is_insurance is True
-        assert job.active_claim.insurer_name == "Old Mutual"
 
 
 def test_reports_overview(auth_client):

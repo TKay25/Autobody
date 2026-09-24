@@ -65,7 +65,6 @@ def view(kind: str, token: str):
             job=job,
             vehicle=job.vehicle if job else None,
             customer=job.customer if job else None,
-            claim=job.active_claim if job else None,
             items=estimate.items,
             expires_on=estimate.expires_on,
             is_expired=estimate.is_expired,

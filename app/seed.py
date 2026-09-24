@@ -12,7 +12,6 @@ from .constants import SUPPLIERS
 from .extensions import db
 from .models import (
     Booking,
-    Claim,
     Customer,
     Invoice,
     JobCard,
@@ -90,12 +89,12 @@ DEMO_VEHICLES = [
 ]
 
 DEMO_DAMAGE = [
-    ("Front-end collision", "Front Bumper, Bonnet, Headlamp Surround", True),
-    ("Rear-end shunt", "Rear Bumper, Boot Lid / Tailgate", True),
-    ("Side swipe", "Front Door, Rear Door, Rear Quarter Panel", False),
-    ("Hail damage", "Bonnet, Roof, Boot Lid / Tailgate", True),
-    ("Wheel arch scrape", "Front Fender / Wing, Sill / Rocker", False),
-    ("Chassis pull after accident", "Chassis / Jig Alignment, Front Bumper", True),
+    ("Front-end collision", "Front Bumper, Bonnet, Headlamp Surround"),
+    ("Rear-end shunt", "Rear Bumper, Boot Lid / Tailgate"),
+    ("Side swipe", "Front Door, Rear Door, Rear Quarter Panel"),
+    ("Hail damage", "Bonnet, Roof, Boot Lid / Tailgate"),
+    ("Wheel arch scrape", "Front Fender / Wing, Sill / Rocker"),
+    ("Chassis pull after accident", "Chassis / Jig Alignment, Front Bumper"),
 ]
 
 SERVICES_ROTATION = [
@@ -203,7 +202,7 @@ def _seed_demo_work() -> None:
     ]
 
     for idx, vehicle in enumerate(vehicles):
-        summary, panels_text, is_insurance = DEMO_DAMAGE[idx % len(DEMO_DAMAGE)]
+        summary, panels_text = DEMO_DAMAGE[idx % len(DEMO_DAMAGE)]
         service = SERVICES_ROTATION[idx % len(SERVICES_ROTATION)]
         stage = stages_for_demo[idx % len(stages_for_demo)]
         panels = [p.strip() for p in panels_text.split(",")]
@@ -217,7 +216,6 @@ def _seed_demo_work() -> None:
             service=service,
             stage=stage,
             priority=rng.choice(["LOW", "NORMAL", "NORMAL", "HIGH", "URGENT"]),
-            is_insurance=is_insurance,
             description=f"{summary}. Customer reported {panels_text.lower()} damage.",
             damage_summary=panels_text,
             bay=BAYS[idx % len(BAYS)],
@@ -243,7 +241,7 @@ def _seed_demo_work() -> None:
             action="job.created",
             entity_type="job", entity_id=job.id, entity_ref=job.job_no, job_id=job.id,
             summary=f"Opened job card {job.job_no} for {vehicle.reg_no} ({service})",
-            meta_json=json.dumps({"is_insurance": is_insurance, "priority": job.priority}),
+            meta_json=json.dumps({"priority": job.priority}),
             created_at=checked_in,
         ))
 
@@ -272,12 +270,9 @@ def _seed_demo_work() -> None:
                 kind=kind, caption=caption, source="web",
             ))
 
-        lines = pricing.build_lines(panels, is_insurance=is_insurance,
-                                    parts=[{"description": p, "quantity": 1, "unit_price": rng.randint(80, 320)}
-                                           for p in (["Front Bumper"] if is_insurance else [])])
-        excess = Decimal(str(rng.choice([100, 150, 200, 250, 350]))) if is_insurance else Decimal("0")
+        lines = pricing.build_lines(panels)
         estimate = job_flow.save_estimate(
-            job, lines, is_insurance=is_insurance, excess=excess,
+            job, lines,
             notes=f"{summary} — assessed by Blessing Ncube",
             mark_sent=True,
         )
@@ -290,33 +285,9 @@ def _seed_demo_work() -> None:
             job_id=job.id,
             summary=f"Estimate {estimate.reference} sent for {job.job_no} "
                     f"totalling {estimate.currency} {estimate.total:,.2f}",
-            meta_json=json.dumps({"total": float(estimate.total), "insurance": is_insurance}),
+            meta_json=json.dumps({"total": float(estimate.total)}),
             created_at=checked_in + timedelta(days=1, hours=3),
         ))
-
-        if is_insurance:
-            claim = Claim(
-                job_id=job.id,
-                insurer_code=rng.choice(["OLD", "AIC", "NDI", "FBC", "ZIMNAT", "CBZ", "FIRST"]),
-                policy_no=f"POL-{rng.randint(100000, 999999)}",
-                claim_no=f"CLM{rng.randint(10000, 99999)}",
-                assessor_name=rng.choice(["Mr. B. Chiweshe", "Ms. T. Rusike", "Mr. K. Nyoni"]),
-                assessor_phone="+263 77 900 1234",
-                assessor_date=(checked_in + timedelta(days=2)).date(),
-                status=("SUBMITTED" if stage_index < 3 else
-                        "APPROVED" if stage_index < 10 else "SETTLED"),
-                claimed_amount=Decimal(str(estimate.total)),
-                approved_amount=Decimal(str(estimate.total)) if stage_index >= 3 else Decimal("0"),
-                excess=excess,
-                excess_paid=stage_index >= 4,
-                submitted_at=checked_in + timedelta(days=1),
-                decision_at=(checked_in + timedelta(days=4)) if stage_index >= 3 else None,
-            )
-            db.session.add(claim)
-
-        if job.is_insurance:
-            estimate.status = "APPROVED" if stage_index >= 3 else "SENT"
-            estimate.approved_by = "Assessor" if stage_index >= 3 else None
 
         if stage_index >= 2:
             db.session.add(JobPart(
@@ -350,7 +321,7 @@ def _seed_demo_work() -> None:
             if invoice:
                 invoice.status = "ISSUED"
                 invoice.issued_at = utcnow() - timedelta(days=1)
-                if stage == "COLLECTED" and not is_insurance:
+                if stage == "COLLECTED":
                     from .services import job_flow as jf
 
                     jf.record_payment(invoice, invoice.total, method="ECOCASH",
@@ -366,7 +337,7 @@ def _seed_demo_work() -> None:
                 if stage == "COLLECTED":
                     job.collected_at = utcnow() - timedelta(days=rng.randint(0, 3))
 
-        if not is_insurance and idx % 4 == 0:
+        if idx % 4 == 0:
             db.session.add(Booking(
                 customer_id=vehicle.customer_id,
                 vehicle_id=vehicle.id,
@@ -401,7 +372,7 @@ def _seed_whatsapp_demo() -> None:
         ("outbound", "Panel Beating & Spray Painting — noted. 👍\n\nWhat is the vehicle registration number?"),
         ("inbound", "ABC 1234"),
         ("outbound", "Briefly describe the damage or what you need done. You can also send photos 📷."),
-        ("inbound", "Front bumper and bonnet damaged. It is an Old Mutual claim."),
+        ("inbound", "Front bumper and bonnet damaged. How much to fix and paint it?"),
         ("outbound",
          "✅ Request logged, Takudzwa.\n\n*Reference:* TC-BKG-9A21C4\n*Vehicle:* ABC1234\n"
          "*Service:* Panel Beating & Spray Painting\n\nOur front desk will confirm your booking "

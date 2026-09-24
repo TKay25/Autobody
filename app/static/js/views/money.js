@@ -1,90 +1,148 @@
-/* Claims, invoices, reports and staff. */
+/* Payments, invoices, reports and staff. */
 (function () {
   const T = window.TCA;
   const { h, api, money, dateShort } = T;
 
-  /* ── claims ───────────────────────────────────────────────────────── */
-  T.route('/claims', async (ctx) => {
-    ctx.title = 'Insurance claims';
+  /* ── payments ─────────────────────────────────────────────────────── */
+  T.route('/payments', async (ctx) => {
+    ctx.title = 'Payments';
     const meta = T.store.get('meta');
-    const state = { status: ctx.query.status || '', insurer: '' };
+    const methodLabels = meta.payment_method_labels || {};
+    const methodLabel = (code) => methodLabels[code] || (code || '').replace(/_/g, ' ');
+
+    const state = { method: ctx.query.method || '', since: '', until: '' };
     const host = h('div');
     const summary = h('div.row.g-3.mb-3');
+    const breakdown = h('div');
+
+    function params() {
+      const p = new URLSearchParams();
+      if (state.method) p.set('method', state.method);
+      if (state.since) p.set('since', state.since);
+      if (state.until) p.set('until', state.until);
+      return p;
+    }
 
     async function load() {
-      T.mount(host, T.skeletonTable(8, 6));
-      const params = new URLSearchParams();
-      if (state.status) params.set('status', state.status);
-      if (state.insurer) params.set('insurer', state.insurer);
-      const data = await api.get(`/api/claims?${params}`);
-
-      const byStatus = {};
-      const byInsurer = {};
-      data.items.forEach((c) => {
-        byStatus[c.status] = (byStatus[c.status] || 0) + 1;
-        byInsurer[c.insurer_name] = (byInsurer[c.insurer_name] || 0) + Number(c.approved_amount || 0);
-      });
-      const awaiting = data.items.filter((c) => ['SUBMITTED', 'ASSESSOR_BOOKED'].includes(c.status));
-      const avgAging = awaiting.length
-        ? Math.round(awaiting.reduce((s, c) => s + c.aging_days, 0) / awaiting.length) : 0;
+      T.mount(host, T.skeletonTable(7, 6));
+      const data = await api.get(`/api/payments?${params()}`);
 
       T.mount(summary, [
-        h('div.col-6.col-lg-3', T.statCard({ label: 'Active claims', value: data.count, icon: 'shield-check', colour: 'brand' })),
-        h('div.col-6.col-lg-3', T.statCard({ label: 'Approved value', value: money(data.approved_value), icon: 'cash-stack', colour: 'success' })),
-        h('div.col-6.col-lg-3', T.statCard({ label: 'Awaiting decision', value: awaiting.length, icon: 'hourglass-split', colour: 'warning' })),
-        h('div.col-6.col-lg-3', T.statCard({ label: 'Avg aging', value: `${avgAging} days`, icon: 'calendar-x', colour: avgAging > 7 ? 'danger' : 'info' })),
+        h('div.col-6.col-lg-3', T.statCard({
+          label: 'Received today', value: money(data.received_today),
+          icon: 'cash-coin', colour: 'success' })),
+        h('div.col-6.col-lg-3', T.statCard({
+          label: 'This month', value: money(data.received_month),
+          icon: 'calendar-check', colour: 'primary' })),
+        h('div.col-6.col-lg-3', T.statCard({
+          label: 'In this view', value: money(data.total),
+          icon: 'funnel', colour: 'brand' })),
+        h('div.col-6.col-lg-3', T.statCard({
+          label: 'Receipts', value: String(data.count),
+          icon: 'receipt', colour: 'secondary' })),
       ]);
 
-      const colour = { DRAFT: 'secondary', ASSESSOR_BOOKED: 'info', SUBMITTED: 'warning',
-                       APPROVED: 'success', PARTIAL: 'warning', REPUDIATED: 'danger', SETTLED: 'dark' };
+      // The banking summary: what came in on each method, so the EcoCash float
+      // and the bank account can be reconciled separately.
+      T.mount(breakdown, data.by_method.length
+        ? h('div.d-flex.flex-wrap.gap-2.mb-3', data.by_method.map((row) =>
+            h('span.chip', [
+              h('strong', methodLabel(row.method)),
+              ` ${money(row.total)}`,
+              h('span.text-secondary',
+                ` · ${row.count} receipt${row.count === 1 ? '' : 's'}`),
+            ])))
+        : null);
 
       T.mount(host, T.dataTable({
         columns: [
-          { label: 'Claim', render: (r) => h('div', [h('div.fw-semibold', r.claim_no || `#${r.id}`),
-              h('div.small.text-secondary', r.policy_no || '')]) },
-          { label: 'Insurer', render: (r) => h('span.badge.text-bg-dark', r.insurer_name) },
-          { label: 'Job card', render: (r) => h('span.small', `#${r.job_id}`) },
-          { label: 'Assessor', class: 'd-none d-lg-table-cell', render: (r) => h('div', [
-              h('div.small', r.assessor_name || '—'),
-              h('div.small.text-secondary', r.assessor_date ? dateShort(r.assessor_date) : '')]) },
-          { label: 'Claimed', class: 'text-end', render: (r) => money(r.claimed_amount) },
-          { label: 'Approved', class: 'text-end', render: (r) => money(r.approved_amount) },
-          { label: 'Excess', class: 'text-end d-none d-md-table-cell', render: (r) => h('div', [
-              h('div', money(r.excess)),
-              r.excess_paid ? h('span.badge.text-bg-success', 'paid') : h('span.badge.text-bg-secondary', 'due')]) },
-          { label: 'Aging', class: 'text-end', render: (r) => h('span', {
-              class: r.aging_days > 10 && ['SUBMITTED', 'ASSESSOR_BOOKED'].includes(r.status) ? 'text-danger fw-semibold' : '',
-            }, `${r.aging_days}d`) },
-          { label: 'Status', render: (r) => h(`span.badge.text-bg-${colour[r.status] || 'secondary'}`, r.status_label) },
+          { label: 'Receipt', render: (r) => h('div', [
+              h('div.fw-semibold', r.receipt_no || `#${r.id}`),
+              h('div.small.text-secondary', dateShort(r.created_at))]) },
+          { label: 'Customer', render: (r) => h('div', [
+              h('div', r.payer_name || '—'),
+              h('div.small.text-secondary', r.reference || '')]) },
+          { label: 'Invoice', render: (r) => h('span.small', r.invoice_no || '—') },
+          { label: 'Method', render: (r) => h('span.badge.text-bg-dark', methodLabel(r.method)) },
+          { label: 'Received by', class: 'd-none d-lg-table-cell',
+            render: (r) => h('span.small', r.received_by || '—') },
+          { label: 'Amount', class: 'text-end', render: (r) => h('strong', money(r.amount)) },
+          { label: '', class: 'text-end',
+            render: (r) => h('div.d-flex.gap-1.justify-content-end', [
+              h('a.btn.btn-sm.btn-outline-secondary', {
+                href: `/api/payments/${r.id}/pdf`, target: '_blank',
+                title: 'Download the receipt', onclick: (e) => e.stopPropagation(),
+              }, T.icon('file-earmark-pdf')),
+              h('button.btn.btn-sm.btn-outline-secondary', {
+                type: 'button', title: 'Send the receipt on WhatsApp',
+                onclick: async (e) => {
+                  e.stopPropagation();
+                  try {
+                    const out = await api.post(`/api/payments/${r.id}/receipt/send`, {});
+                    T.toast(out.sent ? 'Receipt sent.' : 'The receipt could not be sent.',
+                      out.sent ? 'success' : 'warning');
+                  } catch (err) { T.toast(err.message, 'danger'); }
+                },
+              }, T.icon('whatsapp')),
+            ]) },
         ],
         rows: data.items,
-        onRowClick: (r) => T.navigate(`/jobs/${r.job_id}`),
-        empty: T.emptyState('No claims match', 'Link a claim from a job card.', 'shield'),
+        empty: T.emptyState(
+          'No payments to show',
+          (state.method || state.since || state.until)
+            ? 'Nothing came in on those filters.'
+            : 'Receipts appear here as money is recorded against invoices.',
+          'cash-coin'),
       }));
     }
 
-    const insurerFilter = T.iconSelect({
-      value: state.insurer, icon: 'building', width: 168, ariaLabel: 'Insurer',
-      onChange: (v) => { state.insurer = v; load(); },
-      options: [{ value: '', label: 'All insurers' }].concat(
-        meta.insurers.map((i) => ({ value: i.code, label: i.name }))),
+    /* Built from the published list, so adding a method needs no UI change. */
+    const methodFilter = T.iconSelect({
+      value: state.method, icon: 'credit-card', width: 176, ariaLabel: 'Payment method',
+      onChange: (v) => { state.method = v; load(); },
+      options: [{ value: '', label: 'Every method' }].concat(
+        (meta.payment_methods || []).map((m) => ({ value: m, label: methodLabel(m) }))),
     });
 
-    const statusFilter = T.iconSelect({
-      value: state.status, icon: 'funnel', width: 158, ariaLabel: 'Claim status',
-      onChange: (v) => { state.status = v; load(); },
-      options: [{ value: '', label: 'All statuses' }].concat(
-        meta.claim_statuses.map((s) => ({ value: s.code, label: s.label }))),
+    const sinceInput = h('input.form-control.form-control-sm', {
+      type: 'date', style: 'max-width:10rem', 'aria-label': 'From',
+      onchange: (e) => { state.since = e.target.value; load(); },
+    });
+    const untilInput = h('input.form-control.form-control-sm', {
+      type: 'date', style: 'max-width:10rem', 'aria-label': 'To',
+      onchange: (e) => { state.until = e.target.value; load(); },
     });
 
     await load();
 
     return h('div', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
-        h('div.flex-fill', h('h1.h4.mb-0', 'Insurance claims')),
-        h('div.tc-toolbar', [statusFilter, insurerFilter]),
+        h('div.flex-fill', [
+          h('h1.h4.mb-0', 'Payments'),
+          h('div.small.text-secondary', 'Every receipt, how it came in, and who took it.'),
+        ]),
+        h('a.btn.btn-outline-secondary.btn-sm', { href: '#/invoices' },
+          T.icon('receipt'), ' Invoices'),
+        h('a.btn.btn-brand.btn-sm', { href: '#/invoices?record=1' },
+          T.icon('cash-coin'), ' Record payment'),
       ]),
       summary,
+      h('div.d-flex.align-items-end.gap-3.flex-wrap.mb-3', [
+        h('div', [h('div.tc-label', 'Method'), methodFilter]),
+        h('div', [h('div.tc-label', 'From'), sinceInput]),
+        h('div', [h('div.tc-label', 'To'), untilInput]),
+        (state.method || state.since || state.until)
+          ? h('button.btn.btn-sm.btn-outline-secondary', {
+              type: 'button',
+              onclick: () => {
+                state.method = ''; state.since = ''; state.until = '';
+                sinceInput.value = ''; untilInput.value = '';
+                load();
+              },
+            }, 'Clear')
+          : null,
+      ]),
+      breakdown,
       T.section({ body: host, flush: true }),
     ]);
   });
@@ -98,10 +156,7 @@
     const summary = h('div.row.g-3.mb-3');
     /* `meta.payment_methods` are API codes — show them as proper sentence case. */
     const methodOptions = (meta.payment_methods || []).map((m) => ({
-      value: m,
-      label: { CASH: 'Cash', ECOCASH: 'EcoCash', INNBUCKS: 'InnBucks',
-               BANK_TRANSFER: 'Bank transfer', CARD: 'Card',
-               INSURER_SETTLEMENT: 'Insurer settlement' }[m] || m,
+      value: m, label: methodLabels[m] || m,
     }));
 
     async function load() {
@@ -126,8 +181,6 @@
           { label: 'Invoice', render: (r) => h('div', [h('div.fw-semibold', r.invoice_no),
               h('div.small.text-secondary', r.job_no || '')]) },
           { label: 'Customer', render: (r) => r.customer_name },
-          { label: 'Type', render: (r) => r.is_insurance
-              ? h('span.badge.text-bg-dark', 'Insurer') : h('span.chip', 'Customer') },
           { label: 'Total', class: 'text-end', render: (r) => money(r.total, r.currency) },
           { label: 'Paid', class: 'text-end d-none d-md-table-cell', render: (r) => money(r.amount_paid) },
           { label: 'Balance', class: 'text-end', render: (r) => h('span', {
@@ -397,8 +450,6 @@
           { name: 'due_date', label: 'Payment due', type: 'date', col: 6, icon: 'calendar-event' },
           { name: 'issue', label: 'Issue it now', type: 'switch', col: 6, value: true,
             help: 'Untick to keep it as a draft you can still change.' },
-          { name: 'is_insurance', label: 'Insurance work', type: 'switch', col: 6, value: false,
-            help: 'Marks the invoice as an insurer account.' },
           afterSaveField(),
         ],
       });
@@ -487,6 +538,9 @@
     });
 
     await load();
+    /* Deep link from the Payments tab: a receipt has to hang off an invoice, so
+       recording one always lands here. */
+    if (ctx.query.record) setTimeout(newReceipt, 250);
 
     return h('div', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
@@ -545,16 +599,20 @@
 
       return h('div', [
         h('div.row.g-3.mb-3', [
-          h('div.col-6.col-lg-3', T.statCard({
+          h('div.col-6.col-lg', T.statCard({
             label: 'Open job cards', value: String(s.jobs.open),
             icon: 'clipboard-check', colour: 'primary' })),
-          h('div.col-6.col-lg-3', T.statCard({
+          h('div.col-6.col-lg', T.statCard({
             label: 'Awaiting confirmation', value: String(s.bookings.awaiting_confirmation),
             icon: 'calendar-check', colour: 'brand' })),
-          h('div.col-6.col-lg-3', T.statCard({
+          h('div.col-6.col-lg', T.statCard({
+            label: 'Open to-do', value: String(s.tasks.open),
+            icon: 'list-check',
+            colour: s.tasks.overdue ? 'danger' : 'warning' })),
+          h('div.col-6.col-lg', T.statCard({
             label: 'Received today', value: money(s.money.collected),
             icon: 'cash-coin', colour: 'success' })),
-          h('div.col-6.col-lg-3', T.statCard({
+          h('div.col-6.col-lg', T.statCard({
             label: 'Outstanding', value: money(s.money.outstanding),
             icon: 'receipt', colour: 'warning' })),
         ]),
@@ -601,6 +659,48 @@
         ]),
         h('div.row.g-3.mt-3', [
           h('div.col-lg-6', T.section({
+            title: 'The day book — to-do by status',
+            body: sheetTable([
+              { label: 'Status', render: (r) => r.label },
+              { label: 'Tasks', class: 'text-end',
+                render: (r) => h('span.badge.text-bg-secondary', r.count) },
+            ], s.tasks.by_status, 'Nothing on the list.'),
+          })),
+          h('div.col-lg-6', T.section({
+            title: 'Who is carrying what',
+            body: sheetTable([
+              { label: 'Custodian', render: (r) => h('strong', r.name) },
+              { label: 'Open', class: 'text-end', render: (r) => r.open },
+              { label: 'Done today', class: 'text-end', render: (r) => r.done },
+              { label: 'Past due', class: 'text-end', render: (r) => r.overdue
+                  ? h('span.badge.text-bg-danger', r.overdue) : r.overdue },
+            ], s.tasks.by_custodian, 'Nobody has anything on the list.'),
+          })),
+        ]),
+        h('div.mt-3', T.section({
+          title: 'To-do list',
+          body: sheetTable([
+            { label: 'Activity', render: (r) => h('div', [
+                h('div.fw-semibold', r.title),
+                r.job_no ? h('div.small.text-secondary', `Job card ${r.job_no}`) : null]) },
+            { label: 'Area', render: (r) => r.category ? h('span.chip', r.category) : '—' },
+            { label: 'Custodian', render: (r) => h('span.small', r.custodian || 'Unassigned') },
+            { label: 'Status', render: (r) => h('span.badge.text-bg-secondary', r.status_label) },
+            { label: 'Due', class: 'text-end', render: (r) => r.is_overdue
+                ? h('span.badge.text-bg-danger', dateShort(r.due_date))
+                : h('span.small', r.due_date ? dateShort(r.due_date) : 'No date') },
+          ], s.tasks.list, 'The list is clear — nothing outstanding.'),
+        })),
+        s.tasks.done.length ? h('div.mt-3', T.section({
+          title: 'Completed today',
+          body: sheetTable([
+            { label: 'Activity', render: (r) => r.title },
+            { label: 'Custodian', render: (r) => h('span.small', r.custodian || 'Unassigned') },
+            { label: 'Area', render: (r) => h('span.small', r.category || '—') },
+          ], s.tasks.done, ''),
+        })) : null,
+        h('div.row.g-3.mt-3', [
+          h('div.col-lg-6', T.section({
             title: 'Money',
             body: h('div', [
               sheetRow('Invoiced today', money(s.money.invoiced)),
@@ -642,6 +742,8 @@
             { label: 'Confirmed', class: 'text-end', render: (r) => r.confirmed },
             { label: 'Attended', class: 'text-end', render: (r) => r.attended },
             { label: 'Open jobs', class: 'text-end', render: (r) => r.open_jobs },
+            { label: 'To-do', class: 'text-end', render: (r) => r.open_tasks },
+            { label: 'Done today', class: 'text-end', render: (r) => r.done_tasks },
           ], s.staff, ''),
         })) : null,
       ]);
@@ -661,7 +763,6 @@
     const serviceRows = Object.entries(data.by_service).sort((a, b) => b[1] - a[1]);
     const maxService = Math.max(1, ...serviceRows.map((r) => r[1]));
 
-    const insurerRows = Object.entries(data.by_insurer);
 
     await loadSheet(eodDate.value);
     return h('div', [
@@ -672,7 +773,8 @@
         body: h('div', [
           h('div.d-flex.align-items-center.gap-2.mb-3.flex-wrap', [
             h('span.small.text-secondary.me-auto',
-              'Job card statuses, enquiries and bookings, and where the money stands.'),
+              'Job card statuses, enquiries and bookings, the day book, and where ' +
+              'the money stands.'),
             eodDate,
             h('button.btn.btn-outline-secondary.btn-sm', {
               onclick: () => window.open(
@@ -687,7 +789,9 @@
         h('div.col-6.col-lg-3', T.statCard({ label: 'Avg turnaround', value: `${m.avg_turnaround_days} days`, icon: 'stopwatch', colour: 'primary' })),
         h('div.col-6.col-lg-3', T.statCard({ label: 'WIP value', value: money(m.wip_value), icon: 'cash-stack', colour: 'success' })),
         h('div.col-6.col-lg-3', T.statCard({ label: 'Receivables', value: money(m.outstanding_receivables), icon: 'receipt', colour: 'warning' })),
-        h('div.col-6.col-lg-3', T.statCard({ label: 'Avg claim aging', value: `${m.avg_claim_aging_days} days`, icon: 'shield-check', colour: 'brand' })),
+        h('div.col-6.col-lg-3', T.statCard({
+          label: 'Overdue invoices', value: m.overdue_invoices, icon: 'exclamation-triangle',
+          colour: m.overdue_invoices ? 'danger' : 'secondary' })),
       ]),
       h('div.row.g-3', [
         h('div.col-lg-7', T.section({
@@ -709,34 +813,18 @@
             ]))),
         })),
       ]),
-      h('div.row.g-3.mt-3', [
-        h('div.col-lg-6', T.section({
-          title: 'Insurer performance',
-          body: insurerRows.length ? T.dataTable({
-            columns: [
-              { label: 'Insurer', render: (r) => h('strong', r[0]) },
-              { label: 'Job cards', class: 'text-end', render: (r) => r[1].jobs },
-              { label: 'Claimed', class: 'text-end', render: (r) => money(r[1].claimed) },
-              { label: 'Approved', class: 'text-end', render: (r) => money(r[1].approved) },
-              { label: 'Avg aging', class: 'text-end', render: (r) =>
-                  `${Math.round(r[1].aging / Math.max(1, r[1].jobs))}d` },
-            ],
-            rows: insurerRows,
-          }) : T.emptyState('No insurer data yet'),
-        })),
-        h('div.col-lg-6', T.section({
-          title: 'Technician productivity',
-          body: data.technicians.length ? T.dataTable({
-            columns: [
-              { label: 'Technician', render: (r) => h('strong', r.name) },
-              { label: 'Active', class: 'text-end', render: (r) => h('span.badge.text-bg-warning', r.active_jobs) },
-              { label: 'Completed', class: 'text-end', render: (r) => r.completed_jobs },
-              { label: 'Avg days', class: 'text-end', render: (r) => r.avg_days },
-            ],
-            rows: data.technicians,
-          }) : T.emptyState('No technician data'),
-        })),
-      ]),
+      h('div.mt-3', T.section({
+        title: 'Technician productivity',
+        body: data.technicians.length ? T.dataTable({
+          columns: [
+            { label: 'Technician', render: (r) => h('strong', r.name) },
+            { label: 'Active', class: 'text-end', render: (r) => h('span.badge.text-bg-warning', r.active_jobs) },
+            { label: 'Completed', class: 'text-end', render: (r) => r.completed_jobs },
+            { label: 'Avg days', class: 'text-end', render: (r) => r.avg_days },
+          ],
+          rows: data.technicians,
+        }) : T.emptyState('No technician data'),
+      })),
       T.section({ title: 'Stage load', body: T.dataTable({
         columns: [
           { label: 'Stage', render: (r) => r.label },
@@ -763,8 +851,8 @@
        from the list knows what they are granting. */
     const ROLE_BLURB = {
       owner: 'Full control, including staff accounts and settings.',
-      manager: 'Runs the shop: job cards, claims, money and staff.',
-      estimator: 'Quotes, assessor liaison and insurer approvals.',
+      manager: 'Runs the shop: job cards, money, parts and staff.',
+      estimator: 'Prices the work and sends quotations to customers.',
       storeman: 'Stock, parts ordering and supplier receipts.',
       technician: 'Sees the board and updates the job cards assigned to them.',
       frontdesk: 'Books vehicles in, takes payments and handles customers.',
@@ -880,7 +968,7 @@
           h('div.col-md-6', [
             h('p.small.text-secondary.mb-2',
               'The bot answers customer questions, logs quote requests, tracks repairs and ' +
-              'handles insurance claim status. Test it without a Meta account in simulator mode.'),
+              'takes bookings. Test it without a Meta account in simulator mode.'),
             h('a.btn.btn-success.btn-sm', { href: '#/inbox' }, T.icon('whatsapp'), ' Open inbox & simulator'),
           ]),
           h('div.col-md-6', h('ul.small.text-secondary.mb-0', [

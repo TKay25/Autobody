@@ -28,7 +28,6 @@
           h('div.title.text-truncate', job.customer_name || ''),
           h('div.d-flex.justify-content-between.align-items-center.mt-2',
             h('div.d-flex.gap-1',
-              job.is_insurance ? h('span.chip', T.icon('shield-check'), 'Claim') : null,
               job.bay ? h('span.chip', job.bay) : null),
             h('div.meta', job.is_overdue
               ? h('span.text-danger.fw-semibold', `${job.days_in_shop}d`)
