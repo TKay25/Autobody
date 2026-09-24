@@ -333,6 +333,40 @@ def test_a_long_stamp_is_capped_to_the_frame(app):
     assert stamp._argW[0] <= frame
 
 
+def _row_background(table, row: int) -> str:
+    """The background colour a table applies to ``row``, as a bare hex string."""
+    for _command, start, end, colour in table._bkgrndcmds:
+        if start[1] <= row <= end[1]:
+            return colour.hexval()[2:].lower()
+    return ""
+
+
+def test_report_tables_hug_the_left_margin(app):
+    """A Table with no alignment centres itself.
+
+    On the closing sheet that floated the narrow tables — the stage counts, the
+    takings by method — into the middle of the page while every other block sat
+    against the margin.
+    """
+    with app.app_context():
+        table = documents._sheet_table(["Stage", "Jobs"], [["Intake", 6]], [60, 20])
+    assert table.hAlign == "LEFT"
+
+
+def test_a_stat_block_can_close_without_an_alarm_band(app):
+    """`Overdue 0` in a crimson band reads as a problem when there is none.
+
+    The closing sheet is full of figures that are not badges, so it closes each
+    block with a tint instead of a solid accent fill.
+    """
+    with app.app_context():
+        banded = documents._totals_block([("Overdue", "0", True)])
+        quiet = documents._totals_block([("Overdue", "0", True)], band=False)
+
+    assert _row_background(banded, 0) == documents.CRIMSON.lstrip("#").lower()
+    assert _row_background(quiet, 0) == documents.TINT_STRONG.lstrip("#").lower()
+
+
 def test_the_letterhead_carries_no_shouted_title(app):
     """The number and dates already identify the document.
 
