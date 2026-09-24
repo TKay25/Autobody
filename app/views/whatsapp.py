@@ -56,12 +56,13 @@ def inbound():
     body = request.get_json(silent=True) or {}
 
     # Always return 200 quickly; Meta retries aggressively on non-2xx.
+    summary = {}
     try:
-        _process(body)
+        summary = _process(body)
     except Exception as exc:  # noqa: BLE001 - never 500 back at Meta
         log.exception("WhatsApp webhook error: %s", exc)
         db.session.rollback()
-    return jsonify({"received": True}), 200
+    return jsonify({"received": True, **summary}), 200
 
 
 def _signature_ok(raw: bytes) -> bool:
@@ -85,9 +86,11 @@ def _signature_ok(raw: bytes) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def _process(body: dict) -> None:
+def _process(body: dict) -> dict:
+    """Handle one webhook body. Returns a small summary for the response."""
+    summary = {"duplicates": 0}
     if body.get("object") != "whatsapp_business_account":
-        return
+        return summary
 
     for entry in body.get("entry", []):
         for change in entry.get("changes", []):
@@ -100,9 +103,11 @@ def _process(body: dict) -> None:
                         for c in value.get("contacts", []) or []}
 
             for message in value.get("messages", []) or []:
-                _handle_message(message, contacts)
+                if _handle_message(message, contacts) == "duplicate":
+                    summary["duplicates"] += 1
 
     db.session.commit()
+    return summary
 
 
 def _handle_status(status: dict) -> None:
@@ -118,10 +123,10 @@ def _handle_status(status: dict) -> None:
                 f'\n{{"errors": {status["errors"]}}}'
 
 
-def _handle_message(message: dict, contacts: dict) -> None:
+def _handle_message(message: dict, contacts: dict) -> str | None:
     wa_id = message.get("from")
     if not wa_id:
-        return
+        return None
 
     msg_type = message.get("type")
     profile_name = contacts.get(wa_id)
@@ -133,7 +138,7 @@ def _handle_message(message: dict, contacts: dict) -> None:
     wa_message_id = message.get("id")
     if wa_message_id and WaMessage.query.filter_by(wa_message_id=wa_message_id).first():
         log.info("Ignoring redelivered WhatsApp message %s", wa_message_id)
-        return jsonify({"status": "duplicate_ignored"}), 200
+        return "duplicate"
 
     text_body = None
     interactive_id = None

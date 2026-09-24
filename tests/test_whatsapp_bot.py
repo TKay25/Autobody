@@ -254,7 +254,7 @@ def test_a_redelivered_webhook_message_is_ignored(app, client):
 
     again = client.post("/webhooks/whatsapp", json=payload)
     assert again.status_code == 200
-    assert again.get_json()["status"] == "duplicate_ignored"
+    assert again.get_json()["duplicates"] == 1
 
     with app.app_context():
         conv = WaConversation.query.filter_by(wa_id="263771110009").first()
