@@ -305,17 +305,47 @@ def test_finished_work_is_listed_under_its_own_heading(app, auth_client):
     assert "Open to-do list" not in text
 
 
+def test_a_status_stamp_sizes_itself_to_its_text(app):
+    """A stamp that fills the sheet is a banner, not a stamp.
+
+    It used to: the width was taken from a Paragraph, which reports the width it
+    was *given* rather than the width it needs, so every stamp came out 1000mm
+    wide and stretched edge to edge.
+    """
+    from reportlab.lib.units import mm
+
+    with app.app_context():
+        short = documents._pill("PAID", documents.GREEN)
+        long_ = documents._pill("PART PAID · USD 1,234.56 OUTSTANDING", documents.AMBER)
+
+    assert short._argW[0] < 60 * mm
+    assert short._argW[0] < long_._argW[0] < 120 * mm
+
+
+def test_a_long_stamp_is_capped_to_the_frame(app):
+    """...but a stamp longer than the page must not run off it."""
+    from reportlab.lib.pagesizes import A5
+    from reportlab.lib.units import mm
+
+    frame = documents._page(A5)["width"]
+    with app.app_context():
+        stamp = documents._pill("X" * 400, documents.CRIMSON, width=frame)
+    assert stamp._argW[0] <= frame
+
+
 def test_the_letterhead_carries_no_shouted_title(app):
     """The number and dates already identify the document.
 
     A second "TAX INVOICE" above "Invoice INV-…" is noise, and on the printed
-    page it was the loudest thing on the sheet.
+    page it was the loudest thing on the sheet. The band promotes the first meta
+    line — the identifier somebody actually looks for — instead.
     """
     with app.app_context():
         table = documents._letterhead([("Invoice", "INV-2026-0001")])
     right_cell = table._cellvalues[0][1]
-    assert len(right_cell) == 1, "the right column should hold only the meta lines"
-    assert "INV-2026-0001" in right_cell[0].text
+    text = " ".join(flowable.text for flowable in right_cell)
+    assert "INV-2026-0001" in text
+    assert not re.search(r"TAX INVOICE|QUOTATION|RECEIPT|END OF DAY", text)
 
 
 def test_no_pdf_builder_passes_a_shouted_heading():
