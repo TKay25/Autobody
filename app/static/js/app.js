@@ -149,6 +149,12 @@
           T.icon('gear'), 'Settings'),
         h('a.tc-user-menu-item', { href: '#/activity', onclick: closeMenu },
           T.icon('clock-history'), 'Activity log'),
+        h('button.tc-user-menu-item', {
+          type: 'button',
+          // Names the *result* of clicking, not the current state.
+          onclick: () => { closeMenu(); toggleDensity(); },
+        }, T.icon('list-ul'),
+          isCompact() ? 'Comfortable rows' : 'Compact rows'),
       ]),
       h('div.tc-user-menu-foot', [
         h('button.tc-user-menu-item.is-danger', {
@@ -612,6 +618,29 @@
     const rail = !isRail();
     try { localStorage.setItem(RAIL_KEY, rail ? '1' : '0'); } catch (e) { /* ignore */ }
     applyRail(rail);
+  }
+
+  /* ── Row density ────────────────────────────────────────────────────
+     Long tables — job cards, payments, activity — run to hundreds of rows.
+     Comfortable is the default; compact fits roughly a third more of the day
+     on one screen, which is what a front-desk tablet wants. It is a class on
+     the root that swaps the table padding tokens, so it costs one repaint and
+     no reload. */
+  const DENSITY_KEY = 'topclass.rows.compact';
+
+  function isCompact() {
+    try { return localStorage.getItem(DENSITY_KEY) === '1'; } catch (e) { return false; }
+  }
+
+  function applyDensity(compact) {
+    document.documentElement.classList.toggle('density-compact', compact);
+  }
+
+  function toggleDensity() {
+    const compact = !isCompact();
+    try { localStorage.setItem(DENSITY_KEY, compact ? '1' : '0'); } catch (e) { /* ignore */ }
+    applyDensity(compact);
+    T.toast(compact ? 'Compact rows on — more of the list per screen.' : 'Comfortable rows on.');
   }
 
   /* ── boot ────────────────────────────────────────────────────────── */

@@ -106,7 +106,123 @@
 .text-warning { color: var(--tc-amber-600) !important; }
 .text-bg-warning { background-color: var(--tc-amber-500) !important; color: #241a08 !important; }
 .bg-warning { background-color: var(--tc-amber-500) !important; }
-.bg-warning-subtle { background-color: #fdf0d5 !important; }
+.bg-warning-subtle { background-color: var(--tc-tint-amber) !important; }
+
+/* ── Brand lock ────────────────────────────────────────────────────────
+   Bootstrap's indigo, cyan and near-black are not in this palette. Left
+   alone, `info` renders cyan and `secondary` a warm grey, so a screen of
+   stat tiles came out as six different products stitched together.
+   Every colour utility the app reaches for resolves to a brand tone here.
+   ───────────────────────────────────────────────────────────────────── */
+.bg-primary-subtle   { background-color: var(--tc-tint-navy) !important; }
+.bg-info-subtle      { background-color: var(--tc-tint-steel) !important; }
+.bg-secondary-subtle { background-color: var(--tc-tint-slate) !important; }
+.bg-success-subtle   { background-color: var(--tc-tint-green) !important; }
+.bg-danger-subtle    { background-color: var(--tc-tint-red) !important; }
+.bg-light            { background-color: var(--tc-tint-slate) !important; }
+
+.text-primary   { color: var(--tc-navy-700) !important; }
+.text-info      { color: var(--tc-tint-steel-ink) !important; }
+.text-secondary { color: var(--tc-ink-muted) !important; }
+.text-dark      { color: var(--tc-navy-900) !important; }
+/* The last stray one: `.text-danger` was still resolving to Bootstrap red
+   (#dc3545) beside the brand crimson, which showed up on every overdue date. */
+.text-danger    { color: var(--tc-crimson-600) !important; }
+.text-body-secondary { color: var(--tc-ink-muted) !important; }
+
+/* Solid badges. `text-bg-info` and `text-bg-dark` were the last two
+   off-brand fills left on screen. */
+.text-bg-info   { background-color: var(--tc-tint-steel-ink) !important; color: #fff !important; }
+.text-bg-dark   { background-color: var(--tc-navy-900) !important; color: #fff !important; }
+.text-bg-light  { background-color: var(--tc-tint-slate) !important; color: var(--tc-ink-muted) !important; }
+.text-bg-danger { background-color: var(--tc-crimson-500) !important; color: #fff !important; }
+.bg-info        { background-color: var(--tc-tint-steel-ink) !important; }
+.bg-dark        { background-color: var(--tc-navy-900) !important; }
+.bg-danger      { background-color: var(--tc-crimson-500) !important; }
+.bg-secondary   { background-color: var(--tc-tint-slate) !important; }
+.border-info    { border-color: var(--tc-tint-steel-ink) !important; }
+.border-danger  { border-color: var(--tc-crimson-500) !important; }
+.bg-success     { background-color: var(--tc-green-600) !important; }
+.bg-primary     { background-color: var(--tc-navy-700) !important; }
+.border-success { border-color: var(--tc-green-600) !important; }
+.border-primary { border-color: var(--tc-navy-700) !important; }
+
+/* ── Outline & solid button variants ───────────────────────────────────
+   Each variant carries its own `--bs-btn-*` values, so overriding the root
+   variables does not reach them. Left alone they kept Bootstrap's #6c757d
+   grey, #198754 green and #dc3545 red — which is what every filter, every
+   row action and the top-bar menu button in the console was drawn in.
+   ───────────────────────────────────────────────────────────────────── */
+.btn-secondary {
+  --bs-btn-bg: var(--tc-tint-slate-ink);
+  --bs-btn-border-color: var(--tc-tint-slate-ink);
+  --bs-btn-hover-bg: var(--tc-navy-800);
+  --bs-btn-hover-border-color: var(--tc-navy-800);
+  --bs-btn-active-bg: var(--tc-navy-900);
+  --bs-btn-active-border-color: var(--tc-navy-900);
+}
+.btn-outline-secondary {
+  --bs-btn-color: var(--tc-tint-slate-ink);
+  --bs-btn-border-color: var(--tc-line-strong);
+  --bs-btn-hover-bg: var(--tc-tint-slate);
+  --bs-btn-hover-border-color: var(--tc-line-strong);
+  --bs-btn-hover-color: var(--tc-navy-800);
+  --bs-btn-active-bg: var(--tc-tint-navy);
+  --bs-btn-active-border-color: var(--tc-line-strong);
+  --bs-btn-active-color: var(--tc-navy-900);
+}
+.btn-outline-success,
+.btn-success {
+  --bs-btn-color: var(--tc-green-600);
+  --bs-btn-bg: var(--tc-green-600);
+  --bs-btn-border-color: var(--tc-green-600);
+  --bs-btn-hover-bg: var(--tc-green-700);
+  --bs-btn-hover-border-color: var(--tc-green-700);
+  --bs-btn-active-bg: var(--tc-green-700);
+  --bs-btn-active-border-color: var(--tc-green-700);
+  --bs-btn-focus-shadow-rgb: 16, 107, 65;
+}
+.btn-outline-danger,
+.btn-danger {
+  --bs-btn-color: var(--tc-crimson-500);
+  --bs-btn-bg: var(--tc-crimson-500);
+  --bs-btn-border-color: var(--tc-crimson-500);
+  --bs-btn-hover-bg: var(--tc-crimson-600);
+  --bs-btn-hover-border-color: var(--tc-crimson-600);
+  --bs-btn-active-bg: var(--tc-crimson-700);
+  --bs-btn-active-border-color: var(--tc-crimson-700);
+  --bs-btn-focus-shadow-rgb: 194, 16, 46;
+}
+.btn-outline-info,
+.btn-info {
+  --bs-btn-color: var(--tc-tint-steel-ink);
+  --bs-btn-bg: var(--tc-tint-steel-ink);
+  --bs-btn-border-color: var(--tc-tint-steel-ink);
+  --bs-btn-hover-bg: var(--tc-navy-700);
+  --bs-btn-hover-border-color: var(--tc-navy-700);
+  --bs-btn-active-bg: var(--tc-navy-800);
+  --bs-btn-active-border-color: var(--tc-navy-800);
+}
+.btn-outline-warning,
+.btn-warning {
+  --bs-btn-color: var(--tc-amber-600);
+  --bs-btn-bg: var(--tc-amber-600);
+  --bs-btn-border-color: var(--tc-amber-600);
+  --bs-btn-hover-bg: var(--tc-amber-500);
+  --bs-btn-hover-border-color: var(--tc-amber-500);
+  --bs-btn-active-bg: var(--tc-amber-500);
+  --bs-btn-active-border-color: var(--tc-amber-500);
+}
+.btn-outline-dark,
+.btn-dark {
+  --bs-btn-color: var(--tc-navy-800);
+  --bs-btn-bg: var(--tc-navy-900);
+  --bs-btn-border-color: var(--tc-navy-900);
+  --bs-btn-hover-bg: var(--tc-navy-800);
+  --bs-btn-hover-border-color: var(--tc-navy-800);
+  --bs-btn-active-bg: var(--tc-navy-700);
+  --bs-btn-active-border-color: var(--tc-navy-700);
+}
 
 body.app-body {
   background: #eef1f7;
@@ -385,18 +501,23 @@ body.auth-body { background: #eef1f7; }
 
 /* ── Sidebar ───────────────────────────────────────────────────────── */
 /* Layered entirely in CSS — no images, no extra requests. */
+/* Crimson is a bloom on the chrome, never a wash over it. Two layers stack here
+   (this one plus `.tc-sidebar::before`), and at 13% + 15% the pair measured
+   rgb(34,30,64) at the top of the rail — a blue/red ratio of 1.9, which is
+   purple, not the navy the brand runs on. Both came down, and the base gradient
+   cooled, so every point of the rail now measures above 2.2. */
 .tc-sidebar {
   position: fixed; top: 0; left: 0; bottom: 0; width: var(--tc-sidebar);
   display: flex; flex-direction: column; z-index: 1040;
   color: #93a4bd;
   overflow: hidden;
   background:
-    radial-gradient(130% 55% at 0% 0%, rgba(194, 16, 46, .13), transparent 58%),
-    radial-gradient(115% 45% at 10% 100%, rgba(42, 84, 151, .26), transparent 72%),
+    radial-gradient(130% 55% at 0% 0%, rgba(194, 16, 46, .06), transparent 58%),
+    radial-gradient(115% 45% at 10% 100%, rgba(42, 84, 151, .30), transparent 72%),
     linear-gradient(158deg, rgba(255, 255, 255, .05) 0%, transparent 40%),
     repeating-linear-gradient(45deg,
       rgba(255, 255, 255, .012) 0 2px, transparent 2px 4px),
-    linear-gradient(180deg, #0a1731 0%, #08142c 48%, #04091a 100%);
+    linear-gradient(180deg, #0a1a3a 0%, #08142c 48%, #050c20 100%);
   border-right: 1px solid rgba(255, 255, 255, .06);
   box-shadow: 1px 0 0 rgba(255, 255, 255, .03), 8px 0 30px rgba(4, 9, 26, .16);
   transition: width var(--tc-med), transform var(--tc-med);
@@ -406,7 +527,7 @@ body.auth-body { background: #eef1f7; }
 .tc-sidebar::before {
   content: ""; position: absolute; left: -45%; bottom: -16%;
   width: 190%; aspect-ratio: 1 / 1;
-  background: radial-gradient(circle, rgba(150, 12, 36, .15), transparent 62%);
+  background: radial-gradient(circle, rgba(150, 12, 36, .08), transparent 62%);
   pointer-events: none;
 }
 
@@ -888,8 +1009,11 @@ html.sidebar-rail { --tc-sidebar: 74px; }
 
 /* ── Design tokens: type, depth, motion ────────────────────────────── */
 :root {
-  --tc-font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-             "Helvetica Neue", Arial, sans-serif;
+  /* No web font is loaded — that would be another render-blocking request on
+     a shop-floor tablet. This stack resolves to Segoe UI on Windows, SF on
+     Apple, Roboto on Android, so type looks native and arrives instantly. */
+  --tc-font: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI",
+             Roboto, "Helvetica Neue", Arial, sans-serif;
   --tc-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "Cascadia Mono",
              Consolas, monospace;
 
@@ -900,6 +1024,25 @@ html.sidebar-rail { --tc-sidebar: 74px; }
   --tc-ink: #16223a;
   --tc-ink-muted: #66748c;
   --tc-ink-faint: #8c98ad;
+
+  /* ── Tonal fills ─────────────────────────────────────────────────
+     The tint and ink for each colour slot. They all sit on the navy /
+     crimson / green / amber ramp, so nothing can read as a foreign hue.
+     ─────────────────────────────────────────────────────────────── */
+  --tc-tint-navy: #dfe6f5;
+  --tc-tint-steel: #dde7f7;
+  --tc-tint-slate: #e8ecf4;
+  --tc-tint-green: #d8f0e3;
+  --tc-tint-amber: #fdf0d5;
+  --tc-tint-red: #fbe4e8;
+  --tc-tint-steel-ink: #2a5497;   /* the navy ramp's mid step, not cyan */
+  --tc-tint-slate-ink: #5c6b84;
+
+  /* Row density. `.density-compact` on the shell tightens long tables so
+     more of the day fits on one screen without zooming out. */
+  --tc-row-pad-y: .6rem;
+  --tc-row-pad-x: .75rem;
+  --tc-head-pad-y: .55rem;
 
   --tc-r-sm: .45rem;
   --tc-r: .7rem;
@@ -914,6 +1057,56 @@ html.sidebar-rail { --tc-sidebar: 74px; }
   --tc-fast: 120ms var(--tc-ease);
   --tc-med: 220ms var(--tc-ease);
   --tc-topbar-h: 56px;
+
+  /* ── Bootstrap's own theme variables ─────────────────────────────────
+     Restyling the utility classes is not enough: components read these
+     variables directly (`color: var(--bs-body-color)`, `.invalid-feedback`
+     uses `--bs-danger`), so Bootstrap's near-black, warm grey and red kept
+     showing through. Pinning the variables brands every one of them at once.
+
+     `--bs-body-bg` is deliberately left alone: cards and modals inherit it,
+     so pointing it at the page grey would turn every dialog grey.
+     ──────────────────────────────────────────────────────────────────── */
+  --bs-body-color: var(--tc-ink);
+  --bs-body-color-rgb: 22, 34, 58;
+  --bs-secondary-color: var(--tc-ink-muted);
+  --bs-secondary-color-rgb: 102, 116, 140;
+  --bs-tertiary-color: var(--tc-ink-faint);
+  --bs-tertiary-color-rgb: 140, 152, 173;
+  --bs-emphasis-color: var(--tc-navy-900);
+  --bs-heading-color: var(--tc-navy-900);
+  --bs-border-color: var(--tc-line);
+  --bs-border-color-translucent: rgba(8, 20, 44, .12);
+
+  --bs-link-color: var(--tc-crimson-600);
+  --bs-link-color-rgb: 165, 16, 43;
+  --bs-link-hover-color: var(--tc-crimson-700);
+
+  --bs-primary: var(--tc-navy-700);
+  --bs-primary-rgb: 22, 48, 95;
+  --bs-secondary: var(--tc-tint-slate-ink);
+  --bs-secondary-rgb: 92, 107, 132;
+  --bs-success: var(--tc-green-600);
+  --bs-success-rgb: 16, 107, 65;
+  --bs-danger: var(--tc-crimson-500);
+  --bs-danger-rgb: 194, 16, 46;
+  --bs-warning: var(--tc-amber-500);
+  --bs-warning-rgb: 232, 163, 23;
+  --bs-info: var(--tc-tint-steel-ink);
+  --bs-info-rgb: 42, 84, 151;
+  --bs-dark: var(--tc-navy-900);
+  --bs-dark-rgb: 8, 20, 44;
+  --bs-light: var(--tc-tint-slate);
+  --bs-light-rgb: 232, 236, 244;
+
+  --bs-focus-ring-color: rgba(194, 16, 46, .18);
+  --bs-focus-ring-width: .2rem;
+}
+
+.density-compact {
+  --tc-row-pad-y: .32rem;
+  --tc-row-pad-x: .65rem;
+  --tc-head-pad-y: .36rem;
 }
 
 html { -webkit-text-size-adjust: 100%; }
@@ -996,7 +1189,62 @@ h1.h4, .page-title { font-weight: 700; letter-spacing: -.015em; }
   transform: translateY(-1px);
 }
 .stat-card .stat-value { font-size: 1.6rem; letter-spacing: -.02em; }
-.stat-card .stat-icon { box-shadow: inset 0 0 0 1px rgba(8, 20, 44, .04); }
+/* A single soft highlight from the top-left. Pure CSS, so it costs nothing on
+   the wire and gives every tint a little depth instead of a flat fill. */
+.stat-card .stat-icon {
+  box-shadow: inset 0 0 0 1px rgba(8, 20, 44, .04);
+  background-image: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, .6), transparent 62%);
+}
+
+/* ── Flow strip ────────────────────────────────────────────────────────
+   The operational counts share one card rather than a second row of stat
+   cards, which left a ragged gap at the end of the first row.
+   ───────────────────────────────────────────────────────────────────── */
+.tc-flow { display: grid; grid-template-columns: repeat(3, 1fr); }
+.tc-flow-cell { padding: .15rem .5rem; text-align: center; }
+.tc-flow-cell + .tc-flow-cell { border-left: 1px solid var(--tc-line); }
+.tc-flow-value {
+  display: inline-flex; align-items: center; gap: .4rem;
+  font-size: 1.25rem; font-weight: 700; line-height: 1.15;
+  color: var(--tc-navy-900); font-variant-numeric: tabular-nums;
+}
+.tc-flow-value .bi { font-size: .95rem; color: var(--tc-ink-faint); }
+.tc-flow-label {
+  font-size: .65rem; font-weight: 700; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--tc-ink-faint);
+}
+/* WIP board: the search result line. Reserved height so the columns below do not
+   jump up and down as the wording changes between "12 job cards" and "No job card
+   matches …". */
+.tc-board-count { min-height: 1.15rem; transition: color var(--tc-fast); }
+
+/* A stage column emptied by the board search. Faded rather than removed, because
+   on a kanban the empty column is still a live drop target. */
+.tc-board-col-dim { opacity: .45; }
+.tc-board-col-dim .kanban-head { opacity: 1; }
+
+/* Stage strip on the dashboard: a count pill with the stage name beside it. */
+.tc-stage-chip {
+  display: inline-flex; align-items: center; gap: .45rem;
+  padding: .28rem .6rem .28rem .3rem; border-radius: 999px;
+  background: var(--tc-tint-slate); color: var(--tc-navy-800);
+  font-size: .78rem; font-weight: 600; text-decoration: none;
+  transition: background-color var(--tc-fast), color var(--tc-fast);
+}
+.tc-stage-chip:hover { background: var(--tc-tint-navy); color: var(--tc-navy-900); }
+.tc-stage-count {
+  display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem;
+  padding: 0 .35rem; border-radius: 999px;
+  background: var(--tc-navy-900); color: #fff;
+  font-size: .74rem; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 575px) {
+  .tc-flow { grid-template-columns: 1fr; }
+  .tc-flow-cell + .tc-flow-cell {
+    border-left: 0; border-top: 1px solid var(--tc-line); margin-top: .2rem;
+  }
+}
 
 .card-body { padding: 1rem; }
 .section-gap > * + * { margin-top: 1rem; }
@@ -1025,12 +1273,14 @@ h1.h4, .page-title { font-weight: 700; letter-spacing: -.015em; }
 /* ── Tables ────────────────────────────────────────────────────────── */
 .table-tc thead th {
   background: #f8fafd; position: sticky; top: 0; z-index: 2;
-  padding: .55rem .75rem;
+  padding: var(--tc-head-pad-y) var(--tc-row-pad-x);
 }
-.table-tc tbody td { padding: .6rem .75rem; }
+.table-tc tbody td { padding: var(--tc-row-pad-y) var(--tc-row-pad-x); }
 .table-tc tbody tr { transition: background-color var(--tc-fast); }
 .table-tc tbody tr:focus-within { background: #f3f6fc; }
 .table-tc tbody tr.row-static { cursor: default; }
+/* Deepen the sticky head's rule as soon as there is something under it, so the
+   header still reads as a header once rows scroll behind it. */
 
 /* ── Chat ──────────────────────────────────────────────────────────── */
 .chat-panel { border: 1px solid var(--tc-line); box-shadow: var(--tc-shadow-1); }

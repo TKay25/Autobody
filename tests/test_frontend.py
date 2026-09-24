@@ -23,6 +23,47 @@ def test_all_javascript_parses():
     assert not problems, "broken front-end script(s):\n" + "\n".join(str(p) for p in problems)
 
 
+def _problems_for(tmp_path: Path, source: str):
+    (tmp_path / "sample.js").write_text(source, encoding="utf-8")
+    return check_all(tmp_path)
+
+
+def test_a_name_declared_twice_in_one_block_is_reported(tmp_path):
+    """A duplicate `const` is a SyntaxError, and it blanks the entire screen.
+
+    This happened on the dashboard: two `const flow` lines in one function took
+    the whole route down with "Page not found", and the cause was nowhere near
+    the symptom. A bracket counter cannot see it, so it is checked explicitly.
+    """
+    problems = _problems_for(tmp_path, "const flow = 1;\nconst flow = 2;\n")
+    assert problems, "a duplicate const was not reported"
+    assert "twice" in problems[0].message
+    assert problems[0].line == 2
+
+
+def test_the_same_name_in_two_sibling_blocks_is_allowed(tmp_path):
+    """Block scoping means this is legal, so it must not be reported."""
+    source = "if (a) { const x = 1; }\nif (b) { const x = 2; }\n"
+    assert _problems_for(tmp_path, source) == []
+
+
+def test_a_shadowed_declaration_in_an_inner_block_is_allowed(tmp_path):
+    source = "const x = 1;\nfunction f() { const x = 2; return x; }\n"
+    assert _problems_for(tmp_path, source) == []
+
+
+def test_a_duplicate_inside_a_template_interpolation_is_reported(tmp_path):
+    source = "const s = `${(() => { const q = 1; const q = 2; return q; })()}`;\n"
+    problems = _problems_for(tmp_path, source)
+    assert problems, "a duplicate inside a ${ } interpolation was missed"
+
+
+def test_a_declaration_keyword_inside_a_string_is_not_a_declaration(tmp_path):
+    """`const` in a string or a template is just text, not a binding."""
+    source = 'const a = "const b = 1";\nconst c = `let d = 2`;\nconst e = /const f/;\n'
+    assert _problems_for(tmp_path, source) == []
+
+
 def test_every_view_script_is_loaded():
     """A view file that is never <script>'d in silently does nothing."""
     shell = (TEMPLATES / "app.html").read_text(encoding="utf-8")

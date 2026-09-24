@@ -14,6 +14,7 @@ Run directly:
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -84,6 +85,11 @@ def _check(path: Path) -> None:
     state: str | None = None
     prev_sig = ""        # last significant character seen in code state
     prev_word = ""       # last identifier, so `return /re/` is handled
+    # Every character that sits inside a string, template, comment or regex is
+    # overwritten with a space here, so a second pass can look for duplicate
+    # declarations without being fooled by the word "const" in a string.
+    masked = list(src)
+    span = 0             # start of the literal/comment currently being skipped
 
     while i < n:
         c = src[i]
@@ -94,16 +100,24 @@ def _check(path: Path) -> None:
         if state is None:
             if c in "\"'`":
                 state = c
+                span = i
+                _blank(masked, i, i + 1)
             elif c == "/" and nxt == "/":
                 state = "//"
+                span = i
+                _blank(masked, i, i + 2)
                 i += 1
             elif c == "/" and nxt == "*":
                 state = "/*"
+                span = i
+                _blank(masked, i, i + 2)
                 i += 1
             elif c == "/":
                 is_regex = prev_sig in REGEX_ALLOWED_AFTER or prev_word in KEYWORDS_BEFORE_REGEX
                 if is_regex:
-                    i = _skip_regex(src, i, line, path)
+                    end = _skip_regex(src, i, line, path)
+                    _blank(masked, i, end + 1)
+                    i = end
                     prev_sig, prev_word = "/", ""
                 else:
                     prev_sig, prev_word = c, ""
@@ -112,8 +126,10 @@ def _check(path: Path) -> None:
                 prev_sig, prev_word = c, ""
             elif c == "}" and stack and stack[-1][0] == TEMPLATE_OPEN:
                 # Close a `${ ... }` interpolation and resume the template.
+                # The `}` itself is real code, so it stays unblanked.
                 stack.pop()
                 state = "`"
+                span = i + 1
                 prev_sig, prev_word = c, ""
             elif c in CLOSERS:
                 if not stack:
@@ -131,30 +147,96 @@ def _check(path: Path) -> None:
                 prev_sig, prev_word = c, ""
         else:
             if c == "\\":
+                _blank(masked, i, i + 2)
                 i += 2
                 continue
             if state == "`" and c == "$" and nxt == "{":
+                # Resume code inside the interpolation. `${` is real code.
+                _blank(masked, span, i)
                 stack.append((TEMPLATE_OPEN, line))
                 state = None
                 prev_sig, prev_word = "{", ""
                 i += 2
                 continue
             if state in "\"'`" and c == state:
+                _blank(masked, span, i + 1)
                 state = None
                 prev_sig, prev_word = "'", ""
             elif state == "//" and c == "\n":
+                _blank(masked, span, i)
                 state = None
             elif state == "/*" and c == "*" and nxt == "/":
+                _blank(masked, span, i + 2)
                 state = None
                 i += 1
 
         i += 1
+
+    # An unterminated comment runs to EOF; blank its tail too. Guarded, because
+    # `span` is stale once we are back in code state and blanking it there would
+    # erase real declarations.
+    if state is not None:
+        _blank(masked, span, n)
 
     if stack:
         unclosed = ", ".join(f"{o!r}@{ln}" for o, ln in stack[-6:])
         raise Problem(path, stack[-1][1], f"unclosed {unclosed}")
     if state in {"'", '"', "`"}:
         raise Problem(path, line, f"file ends inside a {state} string")
+
+    _check_duplicate_declarations(path, masked)
+
+
+def _blank(masked: list[str], start: int, end: int) -> None:
+    """Overwrite ``masked[start:end]`` with spaces, preserving newlines.
+
+    Newlines survive so line numbers stay meaningful in the messages.
+    """
+    for k in range(start, min(end, len(masked))):
+        if masked[k] != "\n":
+            masked[k] = " "
+
+
+# A declaration keyword plus the name that follows it, or a single bracket. The
+# brackets let us give every block its own scope id, so two sibling blocks may
+# each declare the same name while one block may not declare it twice.
+DECL_RE = re.compile(
+    r"([(){}\[\]]|\b(const|let|class)\b[ \t\r\n]*([A-Za-z_$][\w$]*)?)"
+)
+
+
+def _check_duplicate_declarations(path: Path, masked: list[str]) -> None:
+    """Raise :class:`Problem` on a name declared twice inside one block.
+
+    ``const``/``let``/``class`` are block-scoped, so redeclaring one in the same
+    block is a SyntaxError that kills the whole file — the screen renders as
+    "Page not found" and the cause is nowhere near the symptom. Two sibling
+    blocks are separate scopes and stay legal.
+    """
+    text = "".join(masked)
+    scopes: list[dict[str, int]] = [{}]
+    for match in DECL_RE.finditer(text):
+        token = match.group(1)
+        if token in "([{":
+            scopes.append({})
+            continue
+        if token in ")]}":
+            if len(scopes) > 1:
+                scopes.pop()
+            continue
+
+        keyword, name = match.group(2), match.group(3)
+        if not name:
+            continue                      # `const {a} = x`, `class extends B {}`
+        line = text.count("\n", 0, match.start()) + 1
+        seen = scopes[-1]
+        if name in seen:
+            raise Problem(
+                path, line,
+                f"{keyword} {name!r} is declared twice in the same block "
+                f"(first on line {seen[name]})",
+            )
+        seen[name] = line
 
 
 def check_all(root: Path | None = None) -> list[Problem]:

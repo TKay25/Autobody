@@ -32,19 +32,25 @@
       })),
     ]);
 
-    const flow = h('div.row.g-3.mb-3', [
-      h('div.col-6.col-lg-3', T.statCard({ label: 'In spray booth', value: m.in_paint, icon: 'brush', colour: 'info' })),
-      h('div.col-6.col-lg-3', T.statCard({ label: 'Waiting on parts', value: m.awaiting_parts, icon: 'box-seam', colour: 'warning' })),
-      h('div.col-6.col-lg-3', T.statCard({
-        label: 'Collected this month', value: m.collected_this_month, icon: 'check2-circle', colour: 'success',
-      })),
+    /* The operational counts are smaller figures than the headline four, so they
+       share one strip. As a second row of stat cards they left a ragged gap at
+       the end of the first row. */
+    const flowCell = (label, value, ic) => h('div.tc-flow-cell', [
+      h('div.tc-flow-value', [T.icon(ic), String(value)]),
+      h('div.tc-flow-label', label),
     ]);
+    const flow = h('div.card.soft-card.mb-3', h('div.card-body.py-2',
+      h('div.tc-flow', [
+        flowCell('In spray booth', m.in_paint, 'brush'),
+        flowCell('Waiting on parts', m.awaiting_parts, 'box-seam'),
+        flowCell('Collected this month', m.collected_this_month, 'check2-circle'),
+      ])));
 
-    const stageStrip = h('div.d-flex.gap-2.flex-wrap',
-      (data.board.columns || []).filter((c) => c.count > 0).map((c) =>
-        h('a.chip.text-decoration-none', {
-          href: `#/jobs?stage=${c.stage}`, class: 'chip',
-        }, h('strong', c.count), c.label)));
+    const stageChips = (data.board.columns || []).filter((c) => c.count > 0).map((c) =>
+      h('a.tc-stage-chip', { href: `#/jobs?stage=${c.stage}` }, [
+        h('span.tc-stage-count', String(c.count)),
+        h('span', c.label),
+      ]));
 
     const readyTable = T.dataTable({
       columns: [
@@ -84,6 +90,34 @@
         : T.emptyState('No activity yet', null, 'clock-history'));
     }).catch(() => T.mount(activityHost, ''));
 
+    /* Every block below is optional, so the page is assembled from the ones that
+       actually hold something. A fixed 5/7 split left a tall empty card beside a
+       short one whenever a list happened to be empty — and "Ready for collection"
+       with nothing in it is already stated by the KPI card above, so it is dropped
+       rather than drawn as a hole. Paired cards `grow` so they end level. */
+    const hasReady = (data.ready_jobs || []).length > 0;
+
+    const readySection = T.section({
+      title: 'Ready for collection', body: readyTable, flush: true, grow: true,
+    });
+    const recentSection = T.section({
+      title: 'Latest job cards', body: recentTable, flush: true, grow: true,
+      actions: [h('button.btn.btn-sm.btn-outline-secondary',
+        { onclick: () => T.navigate('/board') }, 'WIP board')],
+    });
+    const activitySection = T.section({
+      title: 'Recent activity', grow: true,
+      actions: [h('a.btn.btn-sm.btn-outline-secondary', { href: '#/activity' }, 'View all')],
+      body: activityHost,
+    });
+    const stageSection = T.section({
+      title: 'Jobs by stage', grow: true,
+      body: stageChips.length
+        ? h('div.d-flex.flex-wrap.gap-2', stageChips)
+        : T.emptyState('Nothing in the workshop',
+            'Job cards appear here as they are booked in.', 'diagram-3'),
+    });
+
     return h('div', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
         h('div.flex-fill', [
@@ -99,18 +133,13 @@
       ]),
       stats,
       flow,
-      stageStrip,
       h('div.row.g-3', [
-        h('div.col-lg-5', T.section({ title: 'Ready for collection', body: readyTable, flush: true })),
-        h('div.col-lg-7', T.section({ title: 'Latest job cards', body: recentTable, flush: true,
-          actions: [h('button.btn.btn-sm.btn-outline-secondary', { onclick: () => T.navigate('/board') }, 'WIP board')] })),
+        hasReady ? h('div.col-lg-5', readySection) : null,
+        h(`div.col-lg-${hasReady ? 7 : 12}`, recentSection),
       ]),
       h('div.row.g-3.mt-1', [
-        h('div.col-lg-5', T.section({
-          title: 'Recent activity',
-          actions: [h('a.btn.btn-sm.btn-outline-secondary', { href: '#/activity' }, 'View all')],
-          body: activityHost,
-        })),
+        h('div.col-lg-7', activitySection),
+        h('div.col-lg-5', stageSection),
       ]),
     ]);
   });

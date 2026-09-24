@@ -968,10 +968,28 @@
     ]);
   }
 
-  function statCard({ label, value, icon: ic, colour = 'brand', sub, onClick }) {
-    const iconClass = colour === 'purple'
-      ? 'bg-purple text-white'
-      : `bg-${colour}-subtle text-${colour}`;
+  /* Every tile tone resolves here, so a caller cannot emit a Bootstrap colour
+     that is not in the palette — `info` was rendering cyan and `secondary` a
+     warm grey, which made a screen of tiles look like several products.
+     `tone` is the documented name; `colour` is kept for older call sites. */
+  const TILE_TONES = {
+    brand: 'bg-brand-subtle text-brand',
+    navy: 'bg-primary-subtle text-primary',
+    primary: 'bg-primary-subtle text-primary',
+    steel: 'bg-info-subtle text-info',
+    info: 'bg-info-subtle text-info',
+    slate: 'bg-secondary-subtle text-secondary',
+    secondary: 'bg-secondary-subtle text-secondary',
+    green: 'bg-success-subtle text-success',
+    success: 'bg-success-subtle text-success',
+    amber: 'bg-warning-subtle text-warning',
+    warning: 'bg-warning-subtle text-warning',
+    red: 'bg-danger-subtle text-danger',
+    danger: 'bg-danger-subtle text-danger',
+  };
+
+  function statCard({ label, value, icon: ic, colour = 'brand', tone, sub, onClick }) {
+    const iconClass = TILE_TONES[tone || colour] || TILE_TONES.brand;
     const el = h('div.card.stat-card.h-100', { onclick: onClick, style: onClick ? 'cursor:pointer' : null },
       h('div.card-body.d-flex.align-items-center.gap-3',
         h(`div.stat-icon.${iconClass}`, icon(ic || 'graph-up')),
@@ -982,8 +1000,10 @@
     return el;
   }
 
-  function section({ title, actions, body, flush, tools }) {
-    return h('div.card.soft-card.mb-3',
+  function section({ title, actions, body, flush, tools, grow }) {
+    // `grow` fills the column so two cards side by side end on the same line
+    // instead of leaving a gap under whichever one is shorter.
+    return h(`div.card.soft-card.mb-3${grow ? '.h-100' : ''}`,
       title ? h('div.card-header.d-flex.align-items-center.gap-2',
         h('span.flex-fill', title),
         tools || null,

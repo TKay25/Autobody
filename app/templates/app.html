@@ -51,11 +51,14 @@
 <script>
   window.__BOOTSTRAP__ = {{ bootstrap | tojson }};
   window.__CSRF__ = "{{ csrf_token() if csrf_token is defined else '' }}";
-  /* Apply the saved navigation width before first paint so the shell does not
-     flash from full width to rail. */
+  /* Apply the saved display preferences before first paint so the shell does
+     not flash from full width to rail, or from comfortable rows to compact. */
   try {
     if (localStorage.getItem('topclass.sidebar.rail') === '1') {
       document.documentElement.classList.add('sidebar-rail');
+    }
+    if (localStorage.getItem('topclass.rows.compact') === '1') {
+      document.documentElement.classList.add('density-compact');
     }
   } catch (e) { /* private mode */ }
 </script>
