@@ -512,6 +512,141 @@
     const data = await api.get('/api/reports/overview');
     const m = data.metrics;
 
+    /* ── end of day ──────────────────────────────────────────────────
+       The closing sheet: job card statuses, enquiries and bookings, and the
+       money, for one chosen day. Rendered by the same service that builds the
+       PDF, so the screen and the paper can never disagree. */
+    const eodHost = h('div');
+    const eodDate = h('input.form-control.form-control-sm', {
+      type: 'date', value: T.today(), style: 'max-width:11rem',
+      onchange: (e) => loadSheet(e.target.value),
+    });
+
+    async function loadSheet(day) {
+      T.mount(eodHost, T.spinner('Building the closing sheet…'));
+      try {
+        const sheet = await api.get(
+          `/api/reports/end-of-day?date=${day || eodDate.value}`);
+        T.mount(eodHost, renderSheet(sheet));
+      } catch (err) {
+        T.mount(eodHost, T.emptyState('Could not build the report',
+          'Try another date.', 'exclamation-triangle'));
+      }
+    }
+
+    const sheetRow = (label, value) => h('div.d-flex.justify-content-between.small.py-1', [
+      h('span.text-secondary', label), h('strong', value),
+    ]);
+
+    function renderSheet(s) {
+      const sheetTable = (columns, rows, empty) => rows.length
+        ? T.dataTable({ columns, rows })
+        : h('div.small.text-secondary.py-3', empty);
+
+      return h('div', [
+        h('div.row.g-3.mb-3', [
+          h('div.col-6.col-lg-3', T.statCard({
+            label: 'Open job cards', value: String(s.jobs.open),
+            icon: 'clipboard-check', colour: 'primary' })),
+          h('div.col-6.col-lg-3', T.statCard({
+            label: 'Awaiting confirmation', value: String(s.bookings.awaiting_confirmation),
+            icon: 'calendar-check', colour: 'brand' })),
+          h('div.col-6.col-lg-3', T.statCard({
+            label: 'Received today', value: money(s.money.collected),
+            icon: 'cash-coin', colour: 'success' })),
+          h('div.col-6.col-lg-3', T.statCard({
+            label: 'Outstanding', value: money(s.money.outstanding),
+            icon: 'receipt', colour: 'warning' })),
+        ]),
+        h('div.row.g-3', [
+          h('div.col-lg-6', T.section({
+            title: 'Job cards by status',
+            body: sheetTable([
+              { label: 'Stage', render: (r) => r.label },
+              { label: 'Job cards', class: 'text-end',
+                render: (r) => h('span.badge.text-bg-secondary', r.count) },
+            ], s.jobs.by_stage, 'Nothing open.'),
+          })),
+          h('div.col-lg-6', T.section({
+            title: 'Enquiries & bookings by status',
+            body: sheetTable([
+              { label: 'Status', render: (r) => r.label },
+              { label: 'Count', class: 'text-end',
+                render: (r) => h('span.badge.text-bg-secondary', r.count) },
+            ], s.bookings.by_status, 'Nothing booked for this day.'),
+          })),
+        ]),
+        h('div.row.g-3.mt-3', [
+          h('div.col-lg-6', T.section({
+            title: 'Enquiries waiting for confirmation',
+            body: sheetTable([
+              { label: 'Reference', render: (r) => h('div', [
+                  h('div.fw-semibold', r.reference),
+                  h('div.small.text-secondary', r.source || '')]) },
+              { label: 'Customer', render: (r) => r.customer_name || '—' },
+              { label: 'Service', render: (r) => h('span.small', r.service) },
+              { label: 'Slot', class: 'text-end', render: (r) => dateShort(r.slot_date) },
+            ], s.bookings.pending, 'Nothing waiting — every enquiry has been handled.'),
+          })),
+          h('div.col-lg-6', T.section({
+            title: "Today's appointments",
+            body: sheetTable([
+              { label: 'Reference', render: (r) => r.reference },
+              { label: 'Customer', render: (r) => r.customer_name || '—' },
+              { label: 'Status', render: (r) => h('span.badge.text-bg-secondary', r.status_label) },
+              { label: 'Handled by', render: (r) =>
+                  h('span.small', r.attended_by || r.confirmed_by || '—') },
+            ], s.bookings.scheduled_list, 'Nothing booked for this day.'),
+          })),
+        ]),
+        h('div.row.g-3.mt-3', [
+          h('div.col-lg-6', T.section({
+            title: 'Money',
+            body: h('div', [
+              sheetRow('Invoiced today', money(s.money.invoiced)),
+              sheetRow('Received today', money(s.money.collected)),
+              sheetRow('Invoices settled today', String(s.money.paid_today_count)),
+              sheetRow('Unpaid invoices', String(s.money.unpaid_count)),
+              sheetRow('Outstanding', money(s.money.outstanding)),
+              sheetRow('Overdue',
+                `${s.money.overdue_count} · ${money(s.money.overdue_total)}`),
+              s.money.by_method.length ? h('div.mt-2.border-top.pt-2',
+                s.money.by_method.map((row) =>
+                  h('div.d-flex.justify-content-between.small.text-secondary', [
+                    h('span', row.method.replace(/_/g, ' ')),
+                    h('span', `${row.count} · ${money(row.total)}`),
+                  ]))) : null,
+            ]),
+          })),
+          h('div.col-lg-6', T.section({
+            title: 'Unpaid & part-paid invoices',
+            body: sheetTable([
+              { label: 'Invoice', render: (r) => h('div', [
+                  h('div.fw-semibold', r.invoice_no),
+                  h('div.small.text-secondary', r.customer_name || '')]) },
+              { label: 'Total', class: 'text-end', render: (r) => money(r.total) },
+              { label: 'Paid', class: 'text-end', render: (r) => money(r.amount_paid) },
+              { label: 'Balance', class: 'text-end',
+                render: (r) => h('strong', money(r.balance)) },
+              { label: 'Due', class: 'text-end', render: (r) => r.is_overdue
+                  ? h('span.badge.text-bg-danger', dateShort(r.due_date))
+                  : h('span.small', r.due_date ? dateShort(r.due_date) : '—') },
+            ], s.money.unsettled, 'Every invoice is settled.'),
+          })),
+        ]),
+        s.staff.length ? h('div.mt-3', T.section({
+          title: 'Staff activity',
+          body: sheetTable([
+            { label: 'Name', render: (r) => h('strong', r.name) },
+            { label: 'Role', render: (r) => h('span.small', r.role) },
+            { label: 'Confirmed', class: 'text-end', render: (r) => r.confirmed },
+            { label: 'Attended', class: 'text-end', render: (r) => r.attended },
+            { label: 'Open jobs', class: 'text-end', render: (r) => r.open_jobs },
+          ], s.staff, ''),
+        })) : null,
+      ]);
+    }
+
     const maxTrend = Math.max(1, ...data.trend.map((t) => Math.max(t.intake, t.collected)));
     const chart = h('div.d-flex.align-items-end.gap-1', { style: 'height:170px' },
       data.trend.map((t) => h('div.flex-fill.d-flex.flex-column.justify-content-end.gap-1', {
@@ -528,8 +663,26 @@
 
     const insurerRows = Object.entries(data.by_insurer);
 
+    await loadSheet(eodDate.value);
     return h('div', [
       h('h1.h4.mb-3', 'Reports & performance'),
+
+      T.section({
+        title: 'End of day',
+        body: h('div', [
+          h('div.d-flex.align-items-center.gap-2.mb-3.flex-wrap', [
+            h('span.small.text-secondary.me-auto',
+              'Job card statuses, enquiries and bookings, and where the money stands.'),
+            eodDate,
+            h('button.btn.btn-outline-secondary.btn-sm', {
+              onclick: () => window.open(
+                `/api/reports/end-of-day/pdf?date=${eodDate.value}`, '_blank'),
+            }, T.icon('file-earmark-pdf'), ' Download PDF'),
+          ]),
+          eodHost,
+        ]),
+      }),
+
       h('div.row.g-3.mb-3', [
         h('div.col-6.col-lg-3', T.statCard({ label: 'Avg turnaround', value: `${m.avg_turnaround_days} days`, icon: 'stopwatch', colour: 'primary' })),
         h('div.col-6.col-lg-3', T.statCard({ label: 'WIP value', value: money(m.wip_value), icon: 'cash-stack', colour: 'success' })),

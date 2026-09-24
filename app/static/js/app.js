@@ -1,7 +1,7 @@
 /* App layout: sidebar, topbar, global search and route registration. */
 (function () {
   const T = window.TCA;
-  const { h, api } = T;
+  const { h, api, dateShort } = T;
 
   /* Navigation model. `badge` keys map to GET /api/badges. */
   const NAV = [
@@ -9,7 +9,8 @@
     { route: '/dashboard', label: 'Dashboard', icon: 'speedometer2', hint: 'Overview of today' },
     { route: '/board', label: 'WIP board', icon: 'kanban', hint: 'Drag job cards through the shop' },
     { route: '/jobs', label: 'Job cards', icon: 'clipboard-check', badge: 'jobs', hint: 'Every vehicle in the shop' },
-    { route: '/bookings', label: 'Bookings', icon: 'calendar-check', badge: 'bookings', hint: 'Appointment requests' },
+    { route: '/bookings', label: 'Enquiries & Bookings', icon: 'calendar-check', badge: 'bookings',
+      hint: 'Enquiries, bookings and confirmations' },
     { section: 'Customers' },
     { route: '/customers', label: 'Customers', icon: 'people', hint: 'CRM and contact details' },
     { route: '/vehicles', label: 'Vehicles', icon: 'car-front', hint: 'Registration register' },
@@ -30,13 +31,13 @@
   const QUICK_ACTIONS = [
     { label: 'New job card', hint: 'Book a vehicle in and estimate it',
       icon: 'clipboard-plus', tone: 'brand', run: () => T.newJobCard() },
+    { label: 'New quotation', hint: 'Build or attach an estimate',
+      icon: 'calculator', run: () => T.newJobCard({ focus: 'estimate' }) },
     { label: 'Add stock item', hint: 'Parts, paint and consumables',
       icon: 'box-seam', href: '#/parts?new=1' },
     { label: 'Payments & invoices', hint: 'Record a receipt against an invoice',
       icon: 'cash-coin', href: '#/invoices' },
-    { label: 'Message a customer', hint: 'Open the WhatsApp inbox',
-      icon: 'whatsapp', tone: 'success', href: '#/inbox' },
-    { label: 'Bookings', hint: 'Appointment requests from the website',
+    { label: 'Enquiries and Bookings', hint: 'Phone, WhatsApp and walk-in requests',
       icon: 'calendar-check', href: '#/bookings' },
   ];
 
@@ -159,6 +160,126 @@
 
     const userWrap = h('div.tc-user', [userBtn, userMenu]);
 
+    /* Enquiry bell -----------------------------------------------------
+       Modelled on ConnectLink's floating panel: it overlays the page rather
+       than pushing it around, opens from the bell, and closes the moment you
+       click anywhere else. */
+    let enqOpen = false;
+
+    const enqCount = h('span.tc-bell-count', { hidden: true });
+    const enqBell = h('button.tc-bell', {
+      type: 'button',
+      'aria-haspopup': 'dialog',
+      'aria-expanded': 'false',
+      title: 'Enquiries waiting to be confirmed',
+      onclick: (e) => { e.stopPropagation(); toggleEnqFloat(); },
+    }, [T.icon('bell'), enqCount]);
+
+    const enqBody = h('div.tc-bell-body', h('div.tc-bell-note', 'Checking…'));
+    const enqPill = h('span.tc-bell-pill', { hidden: true });
+
+    const enqPanel = h('div.tc-bell-panel', {
+      role: 'dialog', 'aria-label': 'Enquiries and bookings', hidden: true,
+    }, [
+      h('div.tc-bell-head', [
+        T.icon('bell'),
+        h('span.tc-bell-title', 'Enquiries & bookings'),
+        enqPill,
+        h('span.flex-fill'),
+        h('button.tc-bell-act', {
+          type: 'button', title: 'Open the bookings screen',
+          onclick: () => { toggleEnqFloat(false); T.navigate('/bookings'); },
+        }, T.icon('box-arrow-up-right')),
+        h('button.tc-bell-act', {
+          type: 'button', title: 'Collapse',
+          onclick: () => setEnqMin(true),
+        }, T.icon('dash')),
+        h('button.tc-bell-x', {
+          type: 'button', title: 'Close',
+          onclick: () => toggleEnqFloat(false),
+        }, '\u00d7'),
+      ]),
+      enqBody,
+    ]);
+
+    const ENQ_MIN_KEY = 'topclass.bell.min';
+
+    function setEnqMin(min) {
+      enqPanel.classList.toggle('is-min', !!min);
+      try { localStorage.setItem(ENQ_MIN_KEY, min ? '1' : '0'); } catch (e) { /* ignore */ }
+    }
+    try { setEnqMin(localStorage.getItem(ENQ_MIN_KEY) === '1'); } catch (e) { /* ignore */ }
+
+    function toggleEnqFloat(force) {
+      enqOpen = force === undefined ? !enqOpen : force;
+      enqPanel.hidden = !enqOpen;
+      enqBell.classList.toggle('is-open', enqOpen);
+      enqBell.setAttribute('aria-expanded', String(enqOpen));
+      if (enqOpen) loadEnquiries();
+    }
+
+    function setBellCount(count) {
+      enqCount.textContent = count > 9 ? '9+' : String(count);
+      enqCount.hidden = !count;
+      enqBell.classList.toggle('has-items', !!count);
+    }
+
+    async function loadEnquiries() {
+      T.mount(enqBody, T.spinner('Checking for enquiries…'));
+      try {
+        const data = await api.get('/api/bookings?status=REQUESTED', { silent: true });
+        renderEnquiries(data.items || []);
+      } catch (err) {
+        T.mount(enqBody, h('div.tc-bell-note', 'Could not load the enquiry list.'));
+      }
+    }
+
+    /* An enquiry is not a booking until somebody confirms it — hence
+       "Confirm" here and "Attend" for recording who dealt with it. */
+    function renderEnquiries(items) {
+      setBellCount(items.length);
+      enqPill.textContent = String(items.length);
+      enqPill.hidden = !items.length;
+
+      if (!items.length) {
+        T.mount(enqBody, h('div.tc-bell-note.is-clear', [
+          h('span.tc-bell-ok', T.icon('check2-circle')),
+          ' Nothing waiting — every enquiry has been dealt with.',
+        ]));
+        return;
+      }
+
+      T.mount(enqBody, h('div.tc-bell-rows', items.map((b) => h('div.tc-bell-row', [
+        h('div.tc-bell-row-main', [
+          h('span.tc-bell-ref', b.reference),
+          h('span.tc-bell-name', b.customer_name || '—'),
+          h('span.tc-bell-meta', [
+            b.service,
+            ` · ${dateShort(b.slot_date)}`,
+            b.slot_time ? ` ${b.slot_time}` : '',
+            ` · ${b.source}`,
+          ]),
+        ]),
+        h('div.tc-bell-row-actions', [
+          h('button.btn.btn-sm.btn-brand', {
+            type: 'button', onclick: () => act(() => T.bookingConfirm(b)),
+          }, 'Confirm'),
+          h('button.btn.btn-sm.btn-outline-secondary', {
+            type: 'button', onclick: () => act(() => T.bookingAttend(b)),
+          }, 'Attend'),
+          h('button.btn.btn-sm.btn-outline-secondary', {
+            type: 'button', title: 'Reschedule and notify the customer',
+            onclick: () => act(() => T.bookingReschedule(b)),
+          }, T.icon('calendar-week')),
+        ]),
+      ]))));
+    }
+
+    async function act(action) {
+      await action();
+      loadEnquiries();
+    }
+
     /* Topbar --------------------------------------------------------- */
     const paletteBtn = h('button.tc-search-trigger', {
       type: 'button',
@@ -197,6 +318,7 @@
           href: '#/inbox', title: 'WhatsApp inbox', 'aria-label': 'WhatsApp inbox',
         }, T.icon('whatsapp')),
         h('span.tc-topbar-sep.d-none.d-sm-block'),
+        enqBell,
         userWrap,
       ]),
     ]);
@@ -244,6 +366,8 @@
         });
         const t = document.querySelector('.tc-topbar') || topbar;
         t.classList.toggle('has-attention', (data.attention || 0) > 0);
+        // Keep the bell badge live even while the panel is shut.
+        if (!enqOpen) setBellCount(data.bookings || 0);
       } catch (e) { /* silent — badges are a nicety */ }
       setTimeout(pollBadges, 30000);
     }
@@ -261,15 +385,86 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { closeSidebar(); toggleUserMenu(false); }
+      if (e.key === 'Escape') { closeSidebar(); toggleUserMenu(false); toggleEnqFloat(false); }
     });
 
     document.addEventListener('click', (e) => {
       if (userOpen && !userWrap.contains(e.target)) toggleUserMenu(false);
+      if (enqOpen && !enqPanel.contains(e.target) && !enqBell.contains(e.target)) {
+        toggleEnqFloat(false);
+      }
     });
 
-    return h('div', [sidebar, h('div.tc-main', [topbar, quickbar, outlet])]);
+    return h('div', [sidebar, h('div.tc-main', [topbar, quickbar, outlet]), enqPanel]);
   }
+
+  /* ── booking actions ──────────────────────────────────────────────────
+     Shared by the enquiry bell and the bookings screen so the two cannot
+     drift apart. The rules themselves live server-side; these only gather
+     what the server needs and report the outcome. */
+  function bookingConfirm(booking) {
+    return api.patch(`/api/bookings/${booking.id}`, { status: 'CONFIRMED' })
+      .then((res) => {
+        T.toast(`Booking ${res.booking.display_reference} confirmed.`, 'success');
+        return res;
+      });
+  }
+
+  async function bookingAttend(booking) {
+    let users = [];
+    try { users = (await api.get('/api/users')).items || []; } catch (e) { users = []; }
+
+    const res = await T.formModal({
+      title: `Attend to ${booking.reference}`,
+      subtitle: 'Record who dealt with this enquiry.',
+      icon: 'person-check',
+      fields: [{
+        name: 'attended_by_id', label: 'Attended by', type: 'select', col: 12, required: true,
+        placeholder: '— Who dealt with it? —',
+        options: users.map((u) => ({ value: u.id, label: `${u.full_name} · ${u.role_label}` })),
+      }],
+      submitLabel: 'Mark attended',
+    });
+    if (!res) return null;
+
+    const saved = await api.patch(`/api/bookings/${booking.id}`, {
+      status: 'ATTENDED', attended_by_id: res.attended_by_id,
+    });
+    T.toast(`${booking.reference} marked attended to.`);
+    return saved;
+  }
+
+  async function bookingReschedule(booking) {
+    const when = booking.slot_date ? dateShort(booking.slot_date) : 'not set';
+    const res = await T.formModal({
+      title: `Reschedule ${booking.display_reference || booking.reference}`,
+      subtitle: `Currently ${when}${booking.slot_time ? ` at ${booking.slot_time}` : ''}.`
+        + ' The customer is messaged as soon as you save.',
+      icon: 'calendar-week',
+      fields: [
+        { name: 'slot_date', label: 'New date', type: 'date', col: 7,
+          required: true, value: booking.slot_date },
+        { name: 'slot_time', label: 'Time', type: 'select', col: 5,
+          value: booking.slot_time || '', options: ['', ...bookingSlots()] },
+      ],
+      submitLabel: 'Move booking',
+    });
+    if (!res) return null;
+
+    const saved = await api.post(`/api/bookings/${booking.id}/reschedule`, res);
+    T.toast(saved.message, saved.notified ? 'success' : 'warning');
+    return saved;
+  }
+
+  function bookingSlots() {
+    const meta = T.store.get('meta') || {};
+    return meta.booking_slots || ['08:00', '09:00', '10:00', '11:00', '12:00',
+      '13:00', '14:00', '15:00', '16:00'];
+  }
+
+  T.bookingConfirm = bookingConfirm;
+  T.bookingAttend = bookingAttend;
+  T.bookingReschedule = bookingReschedule;
 
   function scrim() {
     let el = document.getElementById('sidebarScrim');

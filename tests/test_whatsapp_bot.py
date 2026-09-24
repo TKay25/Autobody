@@ -109,7 +109,10 @@ def test_quote_flow_creates_booking_and_customer(app):
 
         replies = intent_router.handle_inbound(conv, text_body="Tendai Moyo")
         text = replies[0]["body"]
-        assert "TC-BKG" in text
+        # An inbound WhatsApp request is an *enquiry* until somebody confirms
+        # it, so it carries an enquiry reference — not a booking reference.
+        assert "TC-ENQ" in text
+        assert "TC-BKG" not in text
         assert conv.state == "MAIN_MENU"
 
         customer = Customer.query.filter_by(name="Tendai Moyo").first()
@@ -118,6 +121,7 @@ def test_quote_flow_creates_booking_and_customer(app):
         assert booking is not None
         assert booking.source == "whatsapp"
         assert booking.service == "Car Detailing"
+        assert booking.booking_reference is None
 
 
 def test_tracking_replies_with_stage_progress(app):
@@ -219,6 +223,57 @@ def test_webhook_verification(app, client):
 
     res = client.get("/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=42")
     assert res.status_code == 403
+
+
+def test_a_redelivered_webhook_message_is_ignored(app, client):
+    """Meta retries when we do not acknowledge fast enough.
+
+    Handling the same message twice double-replies and double-notifies, so the
+    message id is claimed before any work happens.
+    """
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "changes": [{
+                "value": {
+                    "contacts": [{"wa_id": "263771110009",
+                                  "profile": {"name": "Redelivery Tester"}}],
+                    "messages": [{
+                        "from": "263771110009",
+                        "id": "wamid.REDELIVER1",
+                        "type": "text",
+                        "text": {"body": "Hi"},
+                    }],
+                },
+            }],
+        }],
+    }
+    first = client.post("/webhooks/whatsapp", json=payload)
+    assert first.status_code == 200
+    assert first.get_json()["received"] is True
+
+    again = client.post("/webhooks/whatsapp", json=payload)
+    assert again.status_code == 200
+    assert again.get_json()["status"] == "duplicate_ignored"
+
+    with app.app_context():
+        conv = WaConversation.query.filter_by(wa_id="263771110009").first()
+        inbound = [m for m in conv.messages if m.direction == "inbound"]
+        assert len(inbound) == 1, "the redelivery was processed twice"
+
+
+def test_the_simulator_logs_what_the_customer_saw(app, auth_client):
+    """Taps used to be logged as "[button:m_quote]", which reads as noise."""
+    auth_client.post("/api/whatsapp/simulate",
+                     json={"wa_id": "+263775550901", "body": "hi"})
+    res = auth_client.post("/api/whatsapp/simulate",
+                           json={"wa_id": "+263775550901", "interactive_id": "m_quote"})
+    assert res.status_code == 200
+
+    bodies = [m["body"] for m in res.get_json()["conversation"]["messages"]]
+    assert not any(b.startswith("[button:") for b in bodies), bodies
+    # The label is taken from the menu we actually offered them.
+    assert any("quote" in b.lower() for b in bodies), bodies
 
 
 def test_webhook_processes_inbound_message(app, client):

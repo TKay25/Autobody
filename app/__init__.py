@@ -10,6 +10,10 @@ from flask import Flask, jsonify, render_template, request
 from config import Config, get_config
 
 from .constants import (
+    BOOKING_OUTCOMES,
+    BOOKING_SLOTS,
+    BOOKING_STATUS_LABELS,
+    BOOKING_STATUSES,
     CLAIM_STATUSES,
     CLAIM_STATUS_LABELS,
     INSURERS,
@@ -52,6 +56,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
     with app.app_context():
         db.create_all()
+        _ensure_schema(app)
         _bootstrap_reference_data(app)
         _bootstrap_owner(app)
 
@@ -88,6 +93,36 @@ def _init_extensions(app: Flask) -> None:
 
     app.config.setdefault("UPLOAD_DIR", Config.UPLOAD_DIR)
     app.config["UPLOAD_DIR"].mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_schema(app: Flask) -> None:
+    """Add columns to tables that already exist.
+
+    ``create_all`` builds missing tables but never alters a table that is
+    already there, so a database provisioned before a model grew a new column
+    would fail on every query touching it. The columns listed here are purely
+    additive, so applying them to a populated production database is safe.
+    """
+    from .schema import ensure_columns
+
+    try:
+        # Purely additive, so this is safe against a populated database. No
+        # UNIQUE/NOT NULL here on purpose: SQLite refuses to add a UNIQUE column
+        # through ALTER, and a NOT NULL column with no default would fail on
+        # existing rows anyway. A database created fresh gets the full
+        # definition from the model instead.
+        ensure_columns(db.engine, "bookings", {
+            "confirmed_by_id": "INTEGER",
+            "confirmed_at": "TIMESTAMP",
+            "attended_by_id": "INTEGER",
+            "attended_at": "TIMESTAMP",
+            "booking_reference": "VARCHAR(30)",
+            "outcome": "VARCHAR(20)",
+            "rescheduled_count": "INTEGER DEFAULT 0",
+        })
+    except Exception:  # a schema nicety must never stop the app from booting
+        db.session.rollback()
+        app.logger.warning("Schema guard failed.", exc_info=True)
 
 
 def _bootstrap_reference_data(app: Flask) -> None:
@@ -319,6 +354,11 @@ def reference_meta() -> dict:
         "service_names": SERVICE_NAMES,
         "insurers": INSURERS,
         "claim_statuses": [{"code": c, "label": CLAIM_STATUS_LABELS[c]} for c in CLAIM_STATUSES],
+        "booking_statuses": BOOKING_STATUSES,
+        "booking_status_labels": BOOKING_STATUS_LABELS,
+        "booking_outcomes": [{"code": code, "label": label}
+                             for code, label in BOOKING_OUTCOMES.items()],
+        "booking_slots": BOOKING_SLOTS,
         "invoice_statuses": INVOICE_STATUSES,
         "payment_methods": PAYMENT_METHODS,
         "part_categories": PART_CATEGORIES,

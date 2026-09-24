@@ -200,33 +200,83 @@
 
   /* ── bookings ─────────────────────────────────────────────────────── */
   T.route('/bookings', async (ctx) => {
-    ctx.title = 'Bookings';
+    ctx.title = 'Enquiries and Bookings';
     const host = h('div');
     const meta = T.store.get('meta');
+    const labels = (meta || {}).booking_status_labels || {};
+    const statusLabel = (code) => labels[code] || code;
+    const STATUS_CODES = ['REQUESTED', 'CONFIRMED', 'ATTENDED', 'ARRIVED',
+                          'COMPLETED', 'NO_SHOW', 'CANCELLED'];
+    let staffCache = null;
+
+    /* Staff list for the "who attended" picker — fetched once and allowed to
+       fail, because front desk may not be permitted to read the user table and
+       that must not take the whole screen down with it. */
+    async function staffOptions() {
+      if (staffCache) return staffCache;
+      try { staffCache = (await api.get('/api/users')).items || []; }
+      catch (err) { staffCache = []; }
+      return staffCache;
+    }
+
+    /* The work itself lives in app.js as T.bookingConfirm / T.bookingAttend /
+       T.bookingReschedule, so the enquiry bell and this screen can never drift
+       apart. These wrappers exist only to refresh the table afterwards. */
+    async function confirmBooking(booking) {
+      await T.bookingConfirm(booking);
+      load();
+    }
+
+    async function markAttended(booking) {
+      const saved = await T.bookingAttend(booking);
+      if (saved) load();
+    }
+
+    async function rescheduleBooking(booking) {
+      const saved = await T.bookingReschedule(booking);
+      if (saved) load();
+    }
 
     async function load() {
-      T.mount(host, T.skeletonTable(6, 5));
+      T.mount(host, T.skeletonTable(7, 5));
       const data = await api.get('/api/bookings');
-      const colour = { REQUESTED: 'warning', CONFIRMED: 'info', ARRIVED: 'primary',
-                       COMPLETED: 'success', NO_SHOW: 'secondary', CANCELLED: 'danger' };
+      const colour = { REQUESTED: 'warning', CONFIRMED: 'info', ATTENDED: 'success',
+                       ARRIVED: 'primary', COMPLETED: 'success', NO_SHOW: 'secondary',
+                       CANCELLED: 'danger' };
       T.mount(host, T.dataTable({
         columns: [
-          { label: 'Reference', render: (r) => h('div', [h('div.fw-semibold', r.reference),
-              h('div.small.text-secondary', r.source)]) },
+          /* A new enquiry only has an enquiry reference. It earns the booking
+             reference when it is confirmed, and both stay visible so the
+             customer's original number can still be traced. */
+          { label: 'Reference', render: (r) => h('div', [
+              h('div.fw-semibold', r.display_reference || r.reference),
+              h('div.small.text-secondary', r.booking_reference
+                ? `Enquiry ${r.reference}` : (r.source || '')),
+            ]) },
           { label: 'Customer', render: (r) => h('div', [h('div', r.customer_name),
               h('div.small.text-secondary', r.customer_phone || '')]) },
           { label: 'Service', render: (r) => h('span.small', r.service) },
           { label: 'Date', render: (r) => h('div', [h('div', dateShort(r.slot_date)),
               h('div.small.text-secondary', r.slot_time || 'Any time')]) },
           { label: 'From', render: (r) => money(r.quoted_from) },
-          { label: 'Status', render: (r) => h(`span.badge.text-bg-${colour[r.status] || 'secondary'}`, r.status) },
+          { label: 'Status', render: (r) => h('div', [
+              h(`span.badge.text-bg-${colour[r.status] || 'secondary'}`, statusLabel(r.status)),
+              r.outcome_label ? h('div.small.text-secondary.mt-1', r.outcome_label) : null,
+            ]) },
+          { label: 'Handled by', class: 'd-none d-lg-table-cell', render: (r) =>
+              h('span.small', r.attended_by || r.confirmed_by || '—') },
           { label: '', class: 'text-end', render: (r) => h('div.d-flex.gap-1.justify-content-end', [
               r.status === 'REQUESTED' ? h('button.btn.btn-sm.btn-brand', {
-                onclick: async (e) => { e.stopPropagation();
-                  const res = await api.patch(`/api/bookings/${r.id}`, { status: 'CONFIRMED' });
-                  T.toast(`Booking ${res.booking.reference} confirmed${res.delivered === false ? '' : ' · customer notified'}`);
-                  load(); },
+                onclick: (e) => { e.stopPropagation(); confirmBooking(r); },
               }, 'Confirm') : null,
+              r.status !== 'ATTENDED' && r.status !== 'COMPLETED' && r.status !== 'CANCELLED'
+                ? h('button.btn.btn-sm.btn-outline-secondary', {
+                    onclick: (e) => { e.stopPropagation(); markAttended(r); },
+                  }, 'Attend') : null,
+              h('button.btn.btn-sm.btn-outline-secondary', {
+                title: 'Reschedule and notify the customer',
+                onclick: (e) => { e.stopPropagation(); rescheduleBooking(r); },
+              }, T.icon('calendar-week')),
               h('button.btn.btn-sm.btn-outline-secondary', {
                 onclick: (e) => { e.stopPropagation(); editBooking(r); },
               }, T.icon('pencil')),
@@ -234,32 +284,53 @@
         ],
         rows: data.items,
         onRowClick: (r) => editBooking(r),
-        empty: T.emptyState('No bookings', 'Website and WhatsApp booking requests land here.', 'calendar-check'),
+        empty: T.emptyState('No enquiries or bookings',
+          'Phone, WhatsApp and walk-in requests land here.', 'calendar-check'),
       }));
     }
 
     async function editBooking(booking) {
+      const staff = await staffOptions();
       const res = await T.formModal({
-        title: `Booking ${booking.reference}`,
+        title: `${booking.display_reference || booking.reference}`,
+        subtitle: booking.booking_reference
+          ? `Confirmed booking · enquiry ${booking.reference}`
+          : 'Still an enquiry — confirm it to turn it into a booking.',
         fields: [
           { name: 'status', label: 'Status', type: 'select', col: 6, value: booking.status,
-            options: meta.booking_statuses || ['REQUESTED', 'CONFIRMED', 'ARRIVED', 'COMPLETED', 'NO_SHOW', 'CANCELLED'] },
+            options: (meta.booking_statuses || STATUS_CODES)
+              .map((code) => ({ value: code, label: statusLabel(code) })) },
+          { name: 'attended_by_id', label: 'Attended / confirmed by', type: 'select', col: 6,
+            value: booking.attended_by_id || booking.confirmed_by_id,
+            placeholder: '— Not recorded —',
+            options: staff.map((u) => ({
+              value: u.id, label: `${u.full_name} · ${u.role_label}` })) },
+          { name: 'outcome', label: 'Outcome', type: 'select', col: 6,
+            value: booking.outcome || '', placeholder: '— Not recorded —',
+            hint: 'Only once the customer has come through.',
+            options: (meta.booking_outcomes || [])
+              .map((o) => ({ value: o.code, label: o.label })) },
+          { name: 'rescheduled_count', label: 'Times moved', type: 'static', col: 6,
+            value: String(booking.rescheduled_count || 0) },
           { name: 'slot_date', label: 'Date', type: 'date', col: 3, value: booking.slot_date },
-          { name: 'slot_time', label: 'Time', col: 3, value: booking.slot_time || '' },
+          { name: 'slot_time', label: 'Time', col: 3,
+            type: 'select', value: booking.slot_time || '',
+            options: ['', ...((meta.booking_slots) || ['08:00', '09:00', '10:00', '11:00',
+              '12:00', '13:00', '14:00', '15:00', '16:00'])] },
           { name: 'notes', label: 'Notes', type: 'textarea', col: 12, value: booking.notes || '' },
         ],
         submitLabel: 'Save',
       });
       if (!res) return;
       await api.patch(`/api/bookings/${booking.id}`, res);
-      T.toast('Booking updated.');
+      T.toast('Saved.');
       load();
     }
 
     await load();
     return h('div', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
-        h('div.flex-fill', h('h1.h4.mb-0', 'Bookings')),
+        h('div.flex-fill', h('h1.h4.mb-0', 'Enquiries and Bookings')),
         h('button.btn.btn-brand.btn-sm', {
           onclick: async () => {
             const customers = await api.get('/api/customers');
@@ -273,17 +344,24 @@
                   options: meta.service_names },
                 { name: 'slot_date', label: 'Date', type: 'date', col: 3, value: T.today() },
                 { name: 'slot_time', label: 'Time', type: 'select', col: 3,
-                  options: ['08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00'] },
+                  options: meta.booking_slots || ['08:00', '09:00', '10:00', '11:00',
+                    '12:00', '13:00', '14:00', '15:00', '16:00'] },
+                { name: 'confirm', label: 'Confirm it now', type: 'switch', col: 12,
+                  hint: 'Otherwise it stays an enquiry until somebody confirms it.' },
                 { name: 'notes', label: 'Notes', type: 'textarea', col: 12 },
               ],
               submitLabel: 'Book in',
             });
             if (!res) return;
             const customer = customers.items.find((c) => String(c.id) === String(res.customer_id));
-            await api.post('/api/bookings', {
+            const confirmed = res.confirm === true || res.confirm === 'true' || res.confirm === 'on';
+            const saved = await api.post('/api/bookings', {
               ...res, name: customer.name, phone: customer.phone, source: 'phone',
+              confirm: confirmed,
             });
-            T.toast('Booking created.');
+            T.toast(confirmed
+              ? `Booking ${saved.booking.display_reference} created and confirmed.`
+              : `Enquiry ${saved.booking.reference} recorded.`, 'success');
             load();
           },
         }, T.icon('plus-lg'), ' New booking'),

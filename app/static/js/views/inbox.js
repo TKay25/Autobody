@@ -3,6 +3,57 @@
   const T = window.TCA;
   const { h, api, dateTime, timeOnly } = T;
 
+  /* ── chat rendering helpers ───────────────────────────────────────── */
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  const dayKey = (iso) => {
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  };
+
+  function dayLabel(iso) {
+    const d = new Date(iso);
+    const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const days = Math.round((midnight(new Date()) - midnight(d)) / DAY_MS);
+    if (days === 0) return 'Today';
+    if (days === 1) return 'Yesterday';
+    if (days < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
+    return d.toLocaleDateString(undefined,
+      { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+
+  /* Historic taps were logged as the raw payload ("[button:a_approve:1]"), which
+     told the operator nothing, so they are shown as the action taken. */
+  function bodyText(message) {
+    const raw = message.body || '';
+    const tap = /^\[button:(.+)\]$/.exec(raw.trim());
+    if (!tap) return raw;
+    return tap[1].split(':')[0].replace(/^[a-z]+_/, '').replace(/_/g, ' ')
+      .replace(/^\w/, (ch) => ch.toUpperCase());
+  }
+
+  const isTap = (message) => /^\[button:/.test((message.body || '').trim());
+
+  /* A raw payload id makes a useless one-line preview in the rail. */
+  function snippetOf(lastMessage) {
+    const raw = (lastMessage || '').trim();
+    if (!raw) return 'No messages yet';
+    const tap = /^\[button:(.+)\]$/.exec(raw);
+    if (tap) {
+      const name = tap[1].split(':')[0].replace(/^[a-z]+_/, '').replace(/_/g, ' ');
+      return `Tapped: ${name}`;
+    }
+    return raw.length > 90 ? `${raw.slice(0, 90)}…` : raw;
+  }
+
+  function tick(status) {
+    if (status === 'read') return '✓✓';
+    if (status === 'delivered') return '✓✓';
+    if (status === 'sent') return '✓';
+    if (status === 'failed') return '⚠';
+    return '';
+  }
+
   T.route('/inbox', async (ctx) => {
     ctx.title = 'WhatsApp inbox';
     const selectedId = ctx.query.id || null;
@@ -19,7 +70,7 @@
               h('div.d-flex.justify-content-between.align-items-start.gap-2', [
                 h('div.flex-fill', [
                   h('div.name', c.display_name),
-                  h('div.snippet', c.last_message || '—'),
+                  h('div.snippet', snippetOf(c.last_message)),
                 ]),
                 h('div.text-end', [
                   h('div.small.text-secondary', { style: 'font-size:.68rem' }, T.relTime(c.last_message_at)),
@@ -34,7 +85,7 @@
             el.addEventListener('click', () => { activeId = c.id; T.navigate(`/inbox?id=${c.id}`); });
             return el;
           })
-        : T.emptyState('No conversations', 'Send a test message with the simulator.', 'whatsapp'));
+        : T.emptyState('No conversations yet', 'Customer messages appear here.', 'whatsapp'));
     }
 
     /* ── right pane ─────────────────────────────────────────────────── */
@@ -42,7 +93,8 @@
 
     async function loadThread(id) {
       if (!id) {
-        T.mount(panelHost, T.emptyState('Pick a conversation', 'Or use the simulator to start one.', 'chat-dots'));
+        T.mount(panelHost, T.emptyState('Pick a conversation',
+          'Choose a customer from the list.', 'chat-dots'));
         return;
       }
       T.mount(panelHost, T.spinner('Loading conversation…'));
@@ -51,40 +103,73 @@
       c.unread = 0;
 
       const log = h('div.chat-log');
+      let lastDay = null;
+      let lastDirection = null;
+
       c.messages.forEach((m) => {
+        const direction = m.direction === 'inbound' ? 'inbound' : 'outbound';
+        const key = dayKey(m.created_at);
+        if (key !== lastDay) {
+          log.appendChild(h('div.chat-day', dayLabel(m.created_at)));
+          lastDay = key;
+          lastDirection = null;
+        }
+        const grouped = direction === lastDirection;
+        lastDirection = direction;
+
         const buttons = (m.payload && m.payload.buttons) || [];
-        const rows = (m.payload && m.payload.sections || [])
+        const rows = ((m.payload && m.payload.sections) || [])
           .reduce((acc, s) => acc.concat(s.rows || []), []);
-        log.appendChild(h(`div.bubble.${m.direction === 'inbound' ? 'inbound' : 'outbound'}`,
-          { class: (m.is_bot ? 'bubble outbound bot' : null) }, [
-            h('div', m.body || ''),
-            m.media_url ? h('img.img-fluid.rounded.mt-2', { src: m.media_url, style: 'max-width:220px' }) : null,
-            (buttons.length || rows.length)
-              ? h('div.bubble-buttons', (buttons.length ? buttons : rows).map((b) =>
-                  h('button.btn.btn-outline-secondary.btn-sm', {
-                    onclick: async () => {
-                      await api.post('/api/whatsapp/simulate', { wa_id: c.wa_id, interactive_id: b.id });
-                      loadThread(c.id);
-                      refreshList();
-                    },
-                  }, b.title)))
-              : null,
-            h('span.time', `${timeOnly(m.created_at)}${m.status && m.status !== 'delivered' ? ' · ' + m.status : ''}`),
-          ]));
+        const options = buttons.length ? buttons : rows;
+        const stamp = tick(m.status);
+
+        log.appendChild(h(`div.bubble.${direction}`, {
+          class: `bubble ${direction}${m.is_bot ? ' bot' : ''}${grouped ? ' is-grouped' : ''}`,
+        }, [
+          isTap(m)
+            ? h('div.bubble-tap', [T.icon('hand-index-thumb'), h('span', bodyText(m))])
+            : h('div.msg-text', bodyText(m)),
+          m.media_url
+            ? h('img.img-fluid.rounded.mt-2', { src: m.media_url, style: 'max-width:220px' })
+            : null,
+          options.length
+            ? h('div.bubble-buttons', options.map((b) =>
+                h('button.btn.btn-outline-secondary.btn-sm', {
+                  title: 'Send this option again',
+                  onclick: async () => {
+                    await api.post('/api/whatsapp/simulate', { wa_id: c.wa_id, interactive_id: b.id });
+                    loadThread(c.id);
+                    refreshList();
+                  },
+                }, b.title)))
+            : null,
+          h('span.time', [timeOnly(m.created_at),
+            direction === 'outbound' && stamp ? ` · ${stamp}` : '']),
+        ]));
       });
-      log.scrollTop = log.scrollHeight;
+
+      if (!c.messages.length) {
+        log.appendChild(h('div.chat-day', 'No messages yet'));
+      }
 
       const replyBox = h('textarea.form-control', {
         rows: 1, placeholder: 'Type a reply… (Enter to send)', style: 'resize:none',
       });
+      const sendBtn = h('button.btn.btn-brand', [T.icon('send')]);
       const send = async () => {
         const body = replyBox.value.trim();
-        if (!body) return;
+        if (!body || sendBtn.disabled) return;
+        sendBtn.disabled = true;
         replyBox.value = '';
-        await api.post(`/api/whatsapp/conversations/${c.id}/reply`, { body });
-        loadThread(c.id);
-        refreshList();
+        try {
+          await api.post(`/api/whatsapp/conversations/${c.id}/reply`, { body });
+          await loadThread(c.id);
+          refreshList();
+        } finally {
+          sendBtn.disabled = false;
+        }
       };
+      sendBtn.addEventListener('click', send);
       replyBox.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
       });
@@ -114,9 +199,12 @@
             T.icon('box-arrow-up-right')),
         ]),
         log,
-        h('div.p-3.border-top.bg-white', h('div.d-flex.gap-2', [replyBox,
-          h('button.btn.btn-brand', { onclick: send }, T.icon('send'))])),
+        h('div.p-3.border-top.bg-white', h('div.d-flex.gap-2', [replyBox, sendBtn])),
       ]);
+
+      /* Scroll after mounting — before that the log has no height to scroll. */
+      log.scrollTop = log.scrollHeight;
+      replyBox.focus();
     }
 
     async function refreshList() {
@@ -128,8 +216,8 @@
     /* ── simulator ──────────────────────────────────────────────────── */
     const simNumber = h('input.form-control.form-control-sm', { value: '+263775550555', placeholder: 'Customer number' });
     const simBody = h('input.form-control.form-control-sm', { placeholder: 'Type what the customer says…' });
-    const simOut = h('div.small.bg-body-tertiary.rounded.p-2.mt-2', { style: 'white-space:pre-wrap' },
-      'Responses from the bot appear here.');
+    const simOut = h('div.small.bg-body-tertiary.rounded.p-2.mt-2',
+      { style: 'white-space:pre-wrap', hidden: true });
 
     async function simulate(interactiveId) {
       const number = simNumber.value.trim();
@@ -138,11 +226,13 @@
       simBody.value = '';
       try {
         const res = await api.post('/api/whatsapp/simulate', { wa_id: number, body, interactive_id: interactiveId });
-        const last = res.conversation.messages.slice(-1)[0];
+        simOut.hidden = false;
         T.mount(simOut, [
           h('div.text-secondary', `state: ${res.state} · ${res.replies_sent} repl${res.replies_sent === 1 ? 'y' : 'ies'}`),
           h('hr.my-2'),
-          h('div', res.conversation.messages.slice(-res.replies_sent || 1).map((m) => h('div.mb-1', m.body))),
+          h('div', res.conversation.messages
+            .slice(-Math.max(res.replies_sent || 0, 1))
+            .map((m) => h('div.mb-1', m.body))),
         ]);
         await refreshList();
         if (activeId) loadThread(activeId);
@@ -154,8 +244,6 @@
     const simulator = T.section({
       title: 'Bot simulator',
       body: h('div', [
-        h('div.small.text-secondary.mb-2',
-          'Test the WhatsApp bot without a Meta account — try "hi", "quote", "track TC-2026-0001", "claim" or "book".'),
         h('div.row.g-2', [
           h('div.col-md-4', simNumber), h('div.col-md-6', simBody),
           h('div.col-md-2', h('button.btn.btn-brand.btn-sm.w-100', { onclick: () => simulate() }, 'Send')),
@@ -185,28 +273,6 @@
         panelHost,
       ]),
       h('div.mt-3', simulator),
-      h('div.mt-3', T.section({
-        title: 'How the bot is wired',
-        body: h('div.row.g-3.small', [
-          h('div.col-md-6', [
-            h('div.fw-semibold.mb-1', 'Inbound flow'),
-            h('ol.text-secondary.ps-3.mb-0', [
-              h('li', 'Meta POSTs to /webhooks/whatsapp'),
-              h('li', 'Message is logged against the conversation'),
-              h('li', 'IntentRouter resolves the next state and replies'),
-              h('li', 'Quotes become Booking + Customer + Vehicle records'),
-              h('li', 'Stage changes push proactive notifications back out'),
-            ]),
-          ]),
-          h('div.col-md-6', [
-            h('div.fw-semibold.mb-1', 'Supported intents'),
-            h('div.d-flex.flex-wrap.gap-1', [
-              'get a quote', 'track my repair', 'my claim', 'book a service', 'hours', 'location',
-              'services', 'warranty', 'talk to a person', 'stop / start', 'language (EN/SN/ND)',
-            ].map((x) => h('span.chip', x))),
-          ]),
-        ]),
-      })),
     ]);
   });
 })();

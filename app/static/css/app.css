@@ -32,7 +32,7 @@
   --tc-dark: var(--tc-navy-900);
   --tc-darker: var(--tc-navy-950);
   --tc-warning: var(--tc-amber-500);
-  --tc-sidebar: 250px;
+  --tc-sidebar: 272px;
 }
 
 /* ── Brand buttons: crimson is the primary action colour ──────────── */
@@ -384,26 +384,54 @@ body.auth-body { background: #eef1f7; }
 }
 
 /* ── Sidebar ───────────────────────────────────────────────────────── */
+/* Layered entirely in CSS — no images, no extra requests. */
 .tc-sidebar {
   position: fixed; top: 0; left: 0; bottom: 0; width: var(--tc-sidebar);
   display: flex; flex-direction: column; z-index: 1040;
   color: #93a4bd;
+  overflow: hidden;
   background:
-    radial-gradient(120% 60% at 0% 0%, rgba(194, 16, 46, .16), transparent 62%),
-    linear-gradient(180deg, #0a1730 0%, var(--tc-navy-900) 42%, #050d1e 100%);
+    radial-gradient(130% 55% at 0% 0%, rgba(194, 16, 46, .13), transparent 58%),
+    radial-gradient(115% 45% at 10% 100%, rgba(42, 84, 151, .26), transparent 72%),
+    linear-gradient(158deg, rgba(255, 255, 255, .05) 0%, transparent 40%),
+    repeating-linear-gradient(45deg,
+      rgba(255, 255, 255, .012) 0 2px, transparent 2px 4px),
+    linear-gradient(180deg, #0a1731 0%, #08142c 48%, #04091a 100%);
   border-right: 1px solid rgba(255, 255, 255, .06);
   box-shadow: 1px 0 0 rgba(255, 255, 255, .03), 8px 0 30px rgba(4, 9, 26, .16);
   transition: width var(--tc-med), transform var(--tc-med);
 }
+
+/* Soft crimson bloom anchored to the lower half of the rail. */
+.tc-sidebar::before {
+  content: ""; position: absolute; left: -45%; bottom: -16%;
+  width: 190%; aspect-ratio: 1 / 1;
+  background: radial-gradient(circle, rgba(150, 12, 36, .15), transparent 62%);
+  pointer-events: none;
+}
+
+/* Brand-coloured hairline running down the leading edge. */
+.tc-sidebar::after {
+  content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 1px;
+  background: linear-gradient(180deg, transparent, rgba(194, 16, 46, .55) 10%,
+    rgba(194, 16, 46, .10) 52%, transparent);
+  pointer-events: none;
+}
+
+/* Keep the real content above the decorative layers. */
+.tc-sidebar > * { position: relative; z-index: 1; }
 
 /* Brand */
 .tc-brand {
   display: flex; align-items: center; gap: .7rem;
   padding: 1rem .9rem; min-height: 66px;
   border-bottom: 1px solid rgba(255, 255, 255, .07);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .05), transparent);
 }
 .tc-brand .brand-mark {
   width: 38px; height: 38px; font-size: 1.1rem; border-radius: 11px;
+  box-shadow: 0 8px 20px -8px rgba(194, 16, 46, .85),
+    inset 0 1px 0 rgba(255, 255, 255, .28);
 }
 .tc-brand-text { min-width: 0; flex: 1; }
 .tc-brand-name {
@@ -425,16 +453,25 @@ body.auth-body { background: #eef1f7; }
 }
 
 /* Nav */
-.tc-nav { flex: 1; overflow-y: auto; padding: .6rem .55rem 1rem; }
-.tc-nav-section { padding: 1rem .7rem .3rem; }
+.tc-nav { flex: 1; overflow-y: auto; padding: .55rem .55rem 1.1rem; }
+.tc-nav-section {
+  display: flex; align-items: center; gap: .55rem;
+  padding: .95rem .7rem .35rem;
+}
 .tc-nav-section-label {
   font-size: .63rem; font-weight: 700; letter-spacing: .12em;
-  text-transform: uppercase; color: #55688a;
+  text-transform: uppercase; color: #5b6f93;
+}
+
+/* Hairline that trails off to the right of each section heading. */
+.tc-nav-section::after {
+  content: ""; flex: 1; height: 1px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, .10), transparent);
 }
 .tc-nav-item {
-  position: relative; display: flex; align-items: center; gap: .7rem;
-  padding: .52rem .7rem; margin-bottom: .1rem; border-radius: .55rem;
-  color: #93a4bd; text-decoration: none; font-size: .875rem; font-weight: 500;
+  position: relative; display: flex; align-items: center; gap: .6rem;
+  padding: .42rem .55rem; margin-bottom: .12rem; border-radius: .62rem;
+  color: #9aabc5; text-decoration: none; font-size: .865rem; font-weight: 500;
   transition: background var(--tc-fast), color var(--tc-fast), transform var(--tc-fast);
 }
 .tc-nav-item::before {
@@ -444,23 +481,43 @@ body.auth-body { background: #eef1f7; }
   transform: translateY(-50%);
   transition: height var(--tc-med);
 }
-.tc-nav-item:hover { background: rgba(255, 255, 255, .07); color: #fff; }
-.tc-nav-item:hover .tc-nav-icon { transform: scale(1.08); }
+.tc-nav-item:hover {
+  background: rgba(255, 255, 255, .065); color: #fff; transform: translateX(2px);
+}
+.tc-nav-item:hover .tc-nav-icon {
+  background: rgba(194, 16, 46, .18);
+  border-color: rgba(194, 16, 46, .40);
+  color: #ff9aab;
+  transform: scale(1.05);
+}
 .tc-nav-item.active {
-  background: linear-gradient(100deg, var(--tc-crimson-600), var(--tc-crimson-500) 55%, #d4193a);
+  background: linear-gradient(100deg, var(--tc-crimson-600), var(--tc-crimson-500) 58%, #d4193a);
   color: #fff; font-weight: 650;
-  box-shadow: 0 6px 18px -6px rgba(194, 16, 46, .75);
+  box-shadow: 0 8px 20px -8px rgba(194, 16, 46, .8),
+    inset 0 1px 0 rgba(255, 255, 255, .18);
 }
 .tc-nav-item.active::before { height: 62%; background: #fff; }
+
+/* Each nav glyph sits in its own soft tile so rows read as buttons. */
 .tc-nav-icon {
-  width: 1.15rem; display: grid; place-items: center; font-size: 1rem;
-  flex: none; transition: transform var(--tc-fast);
+  width: 1.85rem; height: 1.85rem; border-radius: .5rem; flex: none;
+  display: grid; place-items: center; font-size: .95rem;
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(255, 255, 255, .07);
+  transition: background var(--tc-fast), border-color var(--tc-fast),
+    color var(--tc-fast), transform var(--tc-fast);
+}
+.tc-nav-item.active .tc-nav-icon {
+  background: rgba(255, 255, 255, .22);
+  border-color: rgba(255, 255, 255, .30);
+  color: #fff;
 }
 .tc-nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tc-nav-pill {
-  flex: none; min-width: 1.35rem; text-align: center;
+  flex: none; min-width: 1.4rem; text-align: center;
   background: rgba(255, 255, 255, .12); color: #dbe4ee;
-  border-radius: 999px; padding: .05rem .42rem;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 999px; padding: .07rem .45rem;
   font-size: .68rem; font-weight: 700; font-variant-numeric: tabular-nums;
 }
 .tc-nav-item.active .tc-nav-pill { background: rgba(255, 255, 255, .26); color: #fff; }
@@ -557,6 +614,8 @@ html.sidebar-rail { --tc-sidebar: 74px; }
   display: block; width: 18px; height: 1px; background: rgba(255, 255, 255, .14);
   overflow: hidden; text-indent: -999px;
 }
+.tc-sidebar.rail .tc-nav-section::after { display: none; }
+.tc-sidebar.rail .tc-nav-item:hover { transform: none; }
 .tc-sidebar.rail .tc-nav-item::before { left: 0; }
 
 /* ── Mobile scrim ──────────────────────────────────────────────────── */
@@ -757,6 +816,23 @@ html.sidebar-rail { --tc-sidebar: 74px; }
 .bubble .time { display: block; font-size: .65rem; color: #7b8794; margin-top: .2rem; text-align: right; }
 .bubble-buttons { display: flex; flex-direction: column; gap: .25rem; margin-top: .4rem; }
 .bubble-buttons .btn { font-size: .78rem; }
+
+/* Day separators, grouping and tap chips keep a long thread readable. */
+.chat-day {
+  text-align: center; margin: .85rem 0 .6rem;
+  font-size: .67rem; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--tc-ink-faint);
+}
+.bubble.is-grouped { margin-top: -.28rem; }
+.bubble .msg-text:empty { display: none; }
+/* An inbound tap is an action, not a stray payload id. */
+.bubble-tap {
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .15rem .5rem; border-radius: 999px;
+  background: rgba(8, 20, 44, .06); border: 1px solid var(--tc-line-strong);
+  font-size: .78rem; font-weight: 600; color: var(--tc-navy-800);
+}
+.bubble-tap .bi { font-size: .8rem; opacity: .65; }
 
 /* ── Design tokens: type, depth, motion ────────────────────────────── */
 :root {
@@ -1866,6 +1942,90 @@ input[type="file"].form-control::file-selector-button:hover { background: #e5eaf
 }
 .tc-form-section::after {
   content: ""; flex: 1; height: 1px; background: var(--tc-line);
+}
+
+/* ── Enquiry bell + floating panel (top-right, ConnectLink-style) ──── */
+.tc-bell {
+  position: relative; flex: none;
+  width: 36px; height: 36px; border-radius: var(--tc-control-radius-sm);
+  display: grid; place-items: center; font-size: 1rem;
+  border: 1px solid var(--tc-line); background: #fff; color: var(--tc-ink-muted);
+  transition: background var(--tc-fast), border-color var(--tc-fast),
+    color var(--tc-fast), transform var(--tc-fast);
+}
+.tc-bell:hover {
+  background: #f4f6fb; border-color: var(--tc-crimson-400); color: var(--tc-navy-800);
+}
+.tc-bell.is-open { background: var(--tc-navy-900); border-color: var(--tc-navy-900); color: #fff; }
+.tc-bell.has-items { border-color: var(--tc-crimson-500); color: var(--tc-crimson-600); }
+.tc-bell.has-items:hover { background: #fdecef; }
+.tc-bell-count {
+  position: absolute; top: -5px; right: -5px;
+  min-width: 17px; padding: 0 4px; border-radius: 999px;
+  background: var(--tc-crimson-500); color: #fff;
+  font-size: .6rem; font-weight: 800; line-height: 17px; text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px #fff;
+}
+/* A slow nudge, not a jitter — enough to catch the eye on a busy screen. */
+.tc-bell.has-items { animation: bell-nudge 3s var(--tc-ease) infinite; }
+@keyframes bell-nudge {
+  0%, 86%, 100% { transform: none; }
+  91% { transform: rotate(-12deg); }
+  96% { transform: rotate(10deg); }
+}
+
+/* The panel overlays the page; it never reflows the content behind it. */
+.tc-bell-panel {
+  position: fixed; top: calc(var(--tc-topbar-h) + 8px); right: 14px; z-index: 1055;
+  width: 620px; max-width: calc(100vw - 28px);
+  background: #fff; border: 1px solid rgba(194, 16, 46, .22);
+  border-radius: .85rem; overflow: hidden;
+  box-shadow: 0 18px 50px -12px rgba(8, 20, 44, .34), 0 2px 8px rgba(8, 20, 44, .08);
+  animation: menu-pop 160ms var(--tc-ease);
+}
+.tc-bell-head {
+  display: flex; align-items: center; gap: .5rem;
+  padding: .55rem .85rem; font-size: .78rem; font-weight: 800;
+  color: var(--tc-crimson-600);
+  background: linear-gradient(135deg, rgba(194, 16, 46, .07), rgba(42, 84, 151, .08));
+  border-bottom: 1px solid rgba(194, 16, 46, .16);
+}
+.tc-bell-pill {
+  background: var(--tc-crimson-500); color: #fff; border-radius: 999px;
+  padding: 0 .45rem; font-size: .62rem; font-weight: 800;
+}
+.tc-bell-act {
+  flex: none; border: 1px solid rgba(194, 16, 46, .3); background: none;
+  color: var(--tc-crimson-600); border-radius: .4rem;
+  padding: .1rem .35rem; line-height: 1.3; cursor: pointer;
+  transition: background var(--tc-fast), color var(--tc-fast);
+}
+.tc-bell-act:hover { background: var(--tc-crimson-500); color: #fff; }
+.tc-bell-x {
+  flex: none; border: 0; background: none; color: var(--tc-ink-faint);
+  font-size: 1.05rem; line-height: 1; cursor: pointer; padding: 0 .2rem;
+}
+.tc-bell-x:hover { color: var(--tc-crimson-600); }
+.tc-bell-body { max-height: 330px; overflow-y: auto; }
+.tc-bell-panel.is-min .tc-bell-body { display: none; }
+.tc-bell-note { padding: 1rem .9rem; font-size: .82rem; color: var(--tc-ink-faint); }
+.tc-bell-note.is-clear { color: var(--tc-green-500); }
+.tc-bell-rows { display: grid; }
+.tc-bell-row {
+  display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+  padding: .55rem .9rem; border-bottom: 1px solid var(--tc-line);
+}
+.tc-bell-row:last-child { border-bottom: 0; }
+.tc-bell-row:hover { background: #fafbfe; }
+.tc-bell-row-main { flex: 1; min-width: 0; }
+.tc-bell-ref { font-weight: 700; font-size: .8rem; color: var(--tc-navy-900); margin-right: .4rem; }
+.tc-bell-name { font-size: .82rem; }
+.tc-bell-meta { display: block; font-size: .74rem; color: var(--tc-ink-faint); }
+.tc-bell-row-actions { display: flex; gap: .3rem; flex: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tc-bell.has-items { animation: none; }
 }
 
 .tc-footer-total {

@@ -134,7 +134,7 @@ def test_the_letterhead_carries_no_shouted_title(app):
 
 
 def test_no_pdf_builder_passes_a_shouted_heading():
-    """Guard the three builders, not just the helper's default.
+    """Guard every builder, not just the helper's default.
 
     Matched against the call sites rather than the whole file, so the comment
     explaining *why* the heading is optional does not trip the guard.
@@ -142,9 +142,9 @@ def test_no_pdf_builder_passes_a_shouted_heading():
     source = (ROOT / "app" / "services" / "documents.py").read_text(encoding="utf-8")
     # Call sites only — the definition starts with `def ` so it is skipped.
     calls = re.findall(r"^\s*_letterhead\([^)]*", source, re.MULTILINE)
-    assert len(calls) == 3, f"expected three letterhead calls, found {len(calls)}"
+    assert len(calls) == 4, f"expected four letterhead calls, found {len(calls)}"
     for call in calls:
-        assert not re.search(r"['\"](TAX INVOICE|QUOTATION|RECEIPT)['\"]", call), call
+        assert not re.search(r"['\"](TAX INVOICE|QUOTATION|RECEIPT|END OF DAY)['\"]", call), call
 
 
 def test_the_document_page_does_not_repeat_its_kind(client, auth_client, app):
@@ -345,6 +345,40 @@ def test_button_tap_on_a_missing_quotation_is_handled(app):
         replies = intent_router.handle_inbound(conv, interactive_id="a_approve:987654")
         assert replies
         assert "could not find" in replies[0]["body"].lower()
+
+
+def test_tapping_approve_twice_does_not_re_celebrate(app):
+    """Meta redelivers a tap when the webhook is slow, and customers do tap twice.
+
+    Replying with the full celebration again reads as a second approval.
+    """
+    with app.app_context():
+        customer = Customer(name="Twice Tapper", phone="+263 77 111 7777")
+        db.session.add(customer)
+        db.session.flush()
+        vehicle = Vehicle(reg_no="TAP999", make="Toyota", model="Hilux",
+                          customer_id=customer.id)
+        db.session.add(vehicle)
+        db.session.flush()
+        job = JobCard(job_no="TC-2099-0002", customer_id=customer.id,
+                      vehicle_id=vehicle.id, stage="ESTIMATE",
+                      service="Panel Beating & Spray Painting")
+        db.session.add(job)
+        db.session.flush()
+        estimate = Estimate(job_id=job.id, reference="TC-EST-TWICE", currency="USD",
+                            subtotal=100, vat=15, total=115, status="SENT")
+        db.session.add(estimate)
+        db.session.commit()
+        estimate_id = estimate.id
+
+        conv = get_or_create_conversation(customer.wa_number, customer.name)
+        first = intent_router.handle_inbound(conv, interactive_id=f"a_approve:{estimate_id}")
+        assert "is approved" in first[0]["body"]
+        assert db.session.get(Estimate, estimate_id).status == "APPROVED"
+
+        second = intent_router.handle_inbound(conv, interactive_id=f"a_approve:{estimate_id}")
+        assert "already approved" in second[0]["body"]
+        assert "🎉" not in second[0]["body"], "the second tap read as a fresh approval"
 
 
 # ── raising an invoice straight from the desk ────────────────────────────────

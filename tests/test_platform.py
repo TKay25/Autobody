@@ -177,8 +177,12 @@ def test_api_rejects_a_write_without_a_csrf_token():
         db.drop_all()
 
 
-def test_public_booking_is_csrf_exempt():
-    """The marketing site's widget posts cross-origin with no token."""
+def test_booking_creation_is_no_longer_csrf_exempt():
+    """The exemption existed for the marketing site's widget, which is gone.
+
+    Only the in-house screen creates bookings now, and it sends X-CSRFToken like
+    every other write, so a token-less POST must be refused.
+    """
 
     class CsrfOn(Config):
         TESTING = True
@@ -199,7 +203,8 @@ def test_public_booking_is_csrf_exempt():
         "name": "Website Lead", "phone": "+263771000111",
         "service": "Car Detailing", "slot_date": (date.today() + timedelta(days=1)).isoformat(),
     })
-    assert res.status_code == 201
+    assert res.status_code == 400
+    assert res.get_json()["error"] == "csrf_failed"
 
     with app.app_context():
         db.session.remove()

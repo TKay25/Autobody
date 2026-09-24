@@ -93,7 +93,7 @@ action name, which is why new actions should follow the `entity.verb` convention
 
 | Concern | Handling |
 |---|---|
-| Session theft / CSRF | Flask-WTF `CSRFProtect` on by default; the SPA sends `X-CSRFToken`; the public `POST /api/bookings` is explicitly exempt |
+| Session theft / CSRF | Flask-WTF `CSRFProtect` on by default; the SPA sends `X-CSRFToken`; every write endpoint requires it. The `/webhooks/whatsapp` blueprint is the only exemption, because Meta cannot send a token. |
 | Authentication | Flask-Login; `@login_required` on every API route; 401 JSON for `/api/*` |
 | Authorisation | Role-based (`owner`/`manager` gate destructive staff operations) |
 | Webhook trust | Shared verify token handshake; webhook blueprint exempt from CSRF (Meta cannot provide one) |

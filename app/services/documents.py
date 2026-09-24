@@ -553,6 +553,212 @@ def build_receipt_pdf(payment: Payment) -> bytes:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# End-of-day report
+# ─────────────────────────────────────────────────────────────────────────────
+def _sheet_table(header: list[str], rows: list[list[str]], widths: list[float]):
+    """Compact table used by the closing sheet — one style, repeated."""
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Table, TableStyle
+
+    styles = _styles()
+    data = [[Paragraph(f"<b>{h}</b>", styles["h2"]) for h in header]]
+    for row in rows:
+        data.append([
+            Paragraph(str(cell), styles["cellright"] if index == len(row) - 1
+                      else styles["cell"])
+            for index, cell in enumerate(row)
+        ])
+
+    table = Table(data, colWidths=[width * mm for width in widths], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.HexColor(NAVY)),
+        ("TOPPADDING", (0, 0), (-1, -1), 3.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+        ("LEFTPADDING", (0, 0), (0, -1), 0),
+        ("RIGHTPADDING", (-1, 0), (-1, -1), 0),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    return table
+
+
+def build_end_of_day_pdf(report: dict) -> bytes:
+    """The closing sheet: job card statuses, enquiries/bookings and the money."""
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Spacer
+
+    styles = _styles()
+    jobs = report["jobs"]
+    bookings = report["bookings"]
+    money = report["money"]
+
+    story = [
+        _letterhead(
+            [("Report", "End of day"),
+             ("For", report["date_label"]),
+             ("Generated", (report["generated_at"] or "")[:16].replace("T", " "))],
+        ),
+        Spacer(1, 6 * mm),
+
+        Paragraph("JOB CARDS", styles["h2"]),
+        _totals_block([
+            ("Open job cards", str(jobs["open"]), False),
+            ("Checked in today", str(jobs["opened"]), False),
+            ("Completed today", str(jobs["completed"]), False),
+            ("Collected today", str(jobs["collected"]), False),
+            ("Past promised date", str(jobs["overdue"]), True),
+        ]),
+        Spacer(1, 5 * mm),
+        Paragraph("Jobs still open, by stage", styles["body"]),
+        Spacer(1, 2 * mm),
+        _sheet_table(
+            ["Stage", "Jobs"],
+            [[row["label"], row["count"]] for row in jobs["by_stage"]],
+            [60, 20],
+        ),
+    ]
+
+    if jobs["list"]:
+        story += [
+            Spacer(1, 6 * mm),
+            Paragraph("Open job cards", styles["body"]),
+            Spacer(1, 2 * mm),
+            _sheet_table(
+                ["Job card", "Customer", "Reg", "Stage", "Promised", "Days"],
+                [[row["job_no"], row["customer_name"] or "—", row["reg_no"] or "—",
+                  row["stage_label"], row["promised_date"] or "—", row["days_in_shop"]]
+                 for row in jobs["list"][:60]],
+                [26, 42, 25, 33, 24, 24],
+            ),
+        ]
+
+    story += [
+        Spacer(1, 7 * mm),
+        Paragraph("ENQUIRIES & BOOKINGS", styles["h2"]),
+        _totals_block([
+            ("Raised today", str(bookings["raised"]), False),
+            ("Scheduled today", str(bookings["scheduled"]), False),
+            ("Handled / confirmed", str(bookings["handled"]), False),
+            ("Awaiting confirmation", str(bookings["awaiting_confirmation"]), False),
+            ("Jobs secured", str(bookings["secured"]), False),
+            ("Walked out", str(bookings["walked_out"]), True),
+        ]),
+        Spacer(1, 5 * mm),
+        Paragraph("Today's appointments by status", styles["body"]),
+        Spacer(1, 2 * mm),
+        _sheet_table(
+            ["Status", "Count"],
+            [[row["label"], row["count"]] for row in bookings["by_status"]],
+            [60, 20],
+        ),
+    ]
+
+    if bookings["pending"]:
+        story += [
+            Spacer(1, 6 * mm),
+            Paragraph("Still awaiting confirmation", styles["body"]),
+            Spacer(1, 2 * mm),
+            _sheet_table(
+                ["Reference", "Customer", "Service", "Slot", "Source"],
+                [[row["reference"], row["customer_name"] or "—", row["service"],
+                  row["slot_date"] or "—", (row["source"] or "").title() or "—"]
+                 for row in bookings["pending"][:40]],
+                [28, 44, 40, 26, 36],
+            ),
+        ]
+
+    if bookings["scheduled_list"]:
+        story += [
+            Spacer(1, 6 * mm),
+            Paragraph("Today's appointments", styles["body"]),
+            Spacer(1, 2 * mm),
+            _sheet_table(
+                ["Reference", "Customer", "Service", "Time", "Status", "Handled by", "Outcome"],
+                [[row["reference"], row["customer_name"] or "—", row["service"],
+                  row["slot_time"] or "Any", row["status_label"],
+                  row["attended_by"] or row["confirmed_by"] or "—",
+                  row["outcome_label"] or "—"]
+                 for row in bookings["scheduled_list"][:60]],
+                [24, 33, 30, 14, 24, 28, 17],
+            ),
+        ]
+
+    story += [
+        Spacer(1, 7 * mm),
+        Paragraph("MONEY", styles["h2"]),
+        _totals_block([
+            ("Invoiced today", _money(money["invoiced"]), False),
+            ("Received today", _money(money["collected"]), False),
+            ("Invoices settled today", str(money["paid_today_count"]), False),
+            ("Outstanding on unpaid invoices", _money(money["outstanding"]), False),
+            ("Unpaid invoices", str(money["unpaid_count"]), False),
+            ("Overdue", f"{money['overdue_count']} · {_money(money['overdue_total'])}", True),
+        ]),
+    ]
+
+    if money["by_method"]:
+        story += [
+            Spacer(1, 6 * mm),
+            Paragraph("Takings by method", styles["body"]),
+            Spacer(1, 2 * mm),
+            _sheet_table(
+                ["Method", "Receipts", "Total"],
+                [[row["method"].replace("_", " ").title(), row["count"], _money(row["total"])]
+                 for row in money["by_method"]],
+                [44, 24, 28],
+            ),
+        ]
+
+    if money["payments"]:
+        story += [
+            Spacer(1, 6 * mm),
+            Paragraph("Receipts issued today", styles["body"]),
+            Spacer(1, 2 * mm),
+            _sheet_table(
+                ["Receipt", "Invoice", "Payer", "Method", "Amount"],
+                [[row["receipt_no"] or "—", row["invoice_no"] or "—",
+                  row["payer_name"] or "—", (row["method"] or "").replace("_", " ").title(),
+                  _money(row["amount"])]
+                 for row in money["payments"][:60]],
+                [30, 30, 50, 34, 26],
+            ),
+        ]
+
+    if money["unsettled"]:
+        story += [
+            Spacer(1, 6 * mm),
+            Paragraph("Unpaid / part-paid invoices", styles["body"]),
+            Spacer(1, 2 * mm),
+            _sheet_table(
+                ["Invoice", "Customer", "Total", "Paid", "Balance", "Due"],
+                [[row["invoice_no"], row["customer_name"] or "—", _money(row["total"]),
+                  _money(row["amount_paid"]), _money(row["balance"]), row["due_date"] or "—"]
+                 for row in money["unsettled"][:60]],
+                [28, 42, 24, 24, 24, 40],
+            ),
+        ]
+
+    if report["staff"]:
+        story += [
+            Spacer(1, 7 * mm),
+            Paragraph("STAFF", styles["h2"]),
+            _sheet_table(
+                ["Name", "Role", "Confirmed", "Attended", "Open jobs"],
+                [[row["name"], (row["role"] or "").title(), row["confirmed"],
+                  row["attended"], row["open_jobs"]]
+                 for row in report["staff"]],
+                [46, 30, 26, 24, 24],
+            ),
+        ]
+
+    story += _footer(
+        f"<b>End of day</b> — {report['date_label']}. Prepared from the workshop "
+        "system at the close of business."
+    )
+    return _render(story, f"End of day {report['date']}", accent=NAVY)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 def build_for(kind: str, record) -> tuple[bytes, str]:
     """Dispatch helper. Returns (pdf_bytes, filename)."""
     kind = (kind or "").lower()

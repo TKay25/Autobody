@@ -127,6 +127,14 @@ def _handle_message(message: dict, contacts: dict) -> None:
     profile_name = contacts.get(wa_id)
     conversation = get_or_create_conversation(wa_id, profile_name=profile_name)
 
+    # Meta redelivers a webhook whenever we do not acknowledge it fast enough.
+    # Handling the same message twice double-books, double-replies and
+    # double-notifies, so the message id is claimed before any work happens.
+    wa_message_id = message.get("id")
+    if wa_message_id and WaMessage.query.filter_by(wa_message_id=wa_message_id).first():
+        log.info("Ignoring redelivered WhatsApp message %s", wa_message_id)
+        return jsonify({"status": "duplicate_ignored"}), 200
+
     text_body = None
     interactive_id = None
     media_url = None
@@ -167,13 +175,13 @@ def _handle_message(message: dict, contacts: dict) -> None:
         body=text_body or "",
         msg_type=msg_type,
         payload={"id": interactive_id} if interactive_id else None,
-        wa_message_id=message.get("id"),
+        wa_message_id=wa_message_id,
         media_url=media_url,
     )
 
-    if message.get("id"):
+    if wa_message_id:
         try:
-            WhatsAppClient().mark_read(message["id"])
+            WhatsAppClient().mark_read(wa_message_id)
         except Exception:  # noqa: BLE001 - non fatal
             pass
 

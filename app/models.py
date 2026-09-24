@@ -15,7 +15,9 @@ from sqlalchemy import func
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .constants import (
+    BOOKING_OUTCOMES,
     CLAIM_STATUS_LABELS,
+    ENQUIRY_REF_PREFIX,
     STAGE_LABELS,
     STAGE_PROGRESS,
 )
@@ -928,7 +930,11 @@ class Booking(TimestampMixin, db.Model):
     __tablename__ = "bookings"
 
     id = db.Column(db.Integer, primary_key=True)
-    reference = db.Column(db.String(30), unique=True, default=lambda: gen_ref("TC-BKG"))
+    # Issued the moment the enquiry lands. A booking reference is issued
+    # separately, and only once somebody confirms it.
+    reference = db.Column(db.String(30), unique=True,
+                          default=lambda: gen_ref(ENQUIRY_REF_PREFIX))
+    booking_reference = db.Column(db.String(30), unique=True, index=True)
     customer_id = db.Column(db.Integer, db.ForeignKey("customers.id"), nullable=False, index=True)
     vehicle_id = db.Column(db.Integer, db.ForeignKey("vehicles.id"))
     service = db.Column(db.String(80), nullable=False)
@@ -939,13 +945,39 @@ class Booking(TimestampMixin, db.Model):
     notes = db.Column(db.Text)
     quoted_from = db.Column(db.Numeric(12, 2), default=0)
 
+    # Who in the workshop handled this enquiry. Recorded when it is confirmed
+    # and again when the customer actually turns up, so the end-of-day report
+    # can put a name against every status change instead of leaving it
+    # anonymous.
+    confirmed_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    confirmed_at = db.Column(db.DateTime)
+    attended_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    attended_at = db.Column(db.DateTime)
+
+    # How the visit ended, once the customer actually turned up: the job was
+    # secured, or they walked out without committing to anything.
+    outcome = db.Column(db.String(20))
+    rescheduled_count = db.Column(db.Integer, default=0, nullable=False)
+
     customer = db.relationship("Customer", back_populates="bookings")
     vehicle = db.relationship("Vehicle")
+    # Two foreign keys onto the same table, so the joins have to be explicit.
+    confirmed_by = db.relationship("User", foreign_keys=[confirmed_by_id])
+    attended_by = db.relationship("User", foreign_keys=[attended_by_id])
+
+    @property
+    def display_reference(self) -> str:
+        """The booking reference once it has one, otherwise the enquiry's."""
+        return self.booking_reference or self.reference
 
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "reference": self.reference,
+            "booking_reference": self.booking_reference,
+            # What to show on screen: the booking reference once it has one,
+            # otherwise the enquiry it still is.
+            "display_reference": self.display_reference,
             "customer_id": self.customer_id,
             "customer_name": self.customer.name if self.customer else None,
             "customer_phone": self.customer.phone if self.customer else None,
@@ -958,6 +990,15 @@ class Booking(TimestampMixin, db.Model):
             "source": self.source,
             "notes": self.notes,
             "quoted_from": float(_money(self.quoted_from)),
+            "confirmed_by_id": self.confirmed_by_id,
+            "confirmed_by": self.confirmed_by.full_name if self.confirmed_by else None,
+            "confirmed_at": self.confirmed_at.isoformat() if self.confirmed_at else None,
+            "attended_by_id": self.attended_by_id,
+            "attended_by": self.attended_by.full_name if self.attended_by else None,
+            "attended_at": self.attended_at.isoformat() if self.attended_at else None,
+            "outcome": self.outcome,
+            "outcome_label": BOOKING_OUTCOMES.get(self.outcome or ""),
+            "rescheduled_count": self.rescheduled_count or 0,
             "created_at": self.created_at.isoformat(),
         }
 

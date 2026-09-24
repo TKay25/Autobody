@@ -104,14 +104,34 @@ def test_parts_blocking_prevents_advance(auth_client):
     assert "outstanding" in res.get_json()["message"]
 
 
-def test_public_booking_endpoint_needs_no_login(client):
+def test_creating_a_booking_requires_login(client):
+    """No longer public: the marketing-site widget that needed this is gone.
+
+    Left open, anyone could create customers and bookings anonymously. Uses only
+    the anonymous client — mixing it with `auth_client` in one test makes this
+    client look signed in, because Flask-Login's g._login_user leaks.
+    """
     res = client.post("/api/bookings", json={
-        "name": "Web Lead", "phone": "+263772222222",
+        "name": "Anonymous Lead", "phone": "+263772222222",
+        "service": "Ceramic Coating", "slot_date": date.today().isoformat(),
+    })
+    assert res.status_code == 401
+
+
+def test_staff_can_create_a_booking(auth_client):
+    """An in-house request starts life as an *enquiry*, not a booking.
+
+    It only becomes a booking — and only then earns a booking reference — when
+    somebody confirms it.
+    """
+    res = auth_client.post("/api/bookings", json={
+        "name": "Phone Lead", "phone": "+263772333333",
         "service": "Ceramic Coating", "slot_date": date.today().isoformat(),
     })
     assert res.status_code == 201
     body = res.get_json()
-    assert body["booking"]["reference"].startswith("TC-BKG")
+    assert body["booking"]["reference"].startswith("TC-ENQ")
+    assert body["booking"]["booking_reference"] is None
     assert body["quote"]["from_price"] == 350.0
 
 

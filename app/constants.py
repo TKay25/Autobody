@@ -203,7 +203,40 @@ SUPPLIERS = [
 INVOICE_STATUSES = ["DRAFT", "ISSUED", "PART_PAID", "PAID", "OVERDUE", "CANCELLED"]
 PAYMENT_METHODS = ["CASH", "ECOCASH", "INNBUCKS", "BANK_TRANSFER", "CARD", "INSURER_SETTLEMENT"]
 
-BOOKING_STATUSES = ["REQUESTED", "CONFIRMED", "ARRIVED", "COMPLETED", "NO_SHOW", "CANCELLED"]
+# An enquiry and a booking are the same record at two different stages. A new
+# enquiry is just that — an enquiry, and a staff member attends to it. It only
+# becomes a *booking* once somebody confirms it, which is also the moment it
+# earns a booking reference. Keeping those two words apart is what stops the
+# console asking staff to "confirm an enquiry".
+ENQUIRY_REF_PREFIX = "TC-ENQ"
+BOOKING_REF_PREFIX = "TC-BKG"
+
+BOOKING_STATUSES = ["REQUESTED", "CONFIRMED", "ATTENDED", "ARRIVED", "COMPLETED",
+                    "NO_SHOW", "CANCELLED"]
+
+# Kept separate from the codes so the console can show proper wording without
+# every screen hard-coding its own map.
+BOOKING_STATUS_LABELS = {
+    "REQUESTED": "New enquiry",          # nobody has picked it up yet
+    "ATTENDED": "Attended to",           # a staff member has dealt with the enquiry
+    "CONFIRMED": "Booking confirmed",    # only now is it a booking
+    "ARRIVED": "Customer came through",  # they actually turned up
+    "COMPLETED": "Completed",
+    "NO_SHOW": "Did not arrive",
+    "CANCELLED": "Cancelled",
+}
+# Still waiting on the customer or the workshop — used by the end-of-day report.
+BOOKING_OPEN_STATUSES = ["REQUESTED", "CONFIRMED", "ATTENDED", "ARRIVED"]
+
+# How a visit actually ended. Recorded once the customer has come through, so
+# the workshop can separate a job it won from one the customer walked away from.
+BOOKING_OUTCOMES = {
+    "SECURED": "Job secured",
+    "WALKED_OUT": "Walked out — no commitment",
+}
+# An outcome only means anything once somebody has actually turned up.
+BOOKING_OUTCOME_STATUSES = ["ARRIVED", "COMPLETED"]
+
 BOOKING_SLOTS = [
     "08:00", "09:00", "10:00", "11:00", "12:00",
     "13:00", "14:00", "15:00", "16:00",

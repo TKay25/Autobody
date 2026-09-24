@@ -104,7 +104,7 @@
    *                                     navigating straight to its job card
    * @returns {Promise<object|null>} the created job, or null if cancelled
    */
-  async function newJobCard({ onCreated } = {}) {
+  async function newJobCard({ onCreated, focus } = {}) {
     const meta = T.store.get('meta');
     const [panelsRes, customersRes, usersRes] = await Promise.all([
       api.get('/api/estimating/panels'), api.get('/api/customers'), api.get('/api/users'),
@@ -493,7 +493,7 @@
 
       /* estimate source — attach a quotation, or build one from scratch */
       h('div.col-12', sectionHead(3, 'Estimate')),
-      h('div.col-12', [
+      h('div.col-12', { id: 'jd-estimate' }, [
         modeSwitch,
         h('div.mt-3', attachPane),
         buildPane,
@@ -511,9 +511,11 @@
         [T.icon('check-lg'), ' Create job card']);
 
       const m = T.modal({
-        title: 'New job card',
-        subtitle: 'Book the vehicle in and build the estimate in one pass.',
-        icon: 'clipboard-plus',
+        title: focus === 'estimate' ? 'New quotation' : 'New job card',
+        subtitle: focus === 'estimate'
+          ? 'A quotation lives on a job card, so the customer and vehicle come first.'
+          : 'Book the vehicle in and build the estimate in one pass.',
+        icon: focus === 'estimate' ? 'calculator' : 'clipboard-plus',
         accent: 'brand',
         size: 'xl',
         body: h('div', form),
@@ -525,6 +527,17 @@
           createBtn,
         ],
       });
+
+      /* The "New quotation" quick action opens this same intake — a quotation only
+         exists inside a job card — but lands on the estimate section with "build it
+         here" already chosen, so it does not just duplicate New job card. */
+      if (focus === 'estimate') {
+        setMode('build');
+        setTimeout(() => {
+          form.querySelector('#jd-estimate')
+            ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 420);
+      }
 
       /* Clear the invalid ring the moment the operator fixes a field. */
       form.addEventListener('input', (e) => e.target.classList?.remove('is-invalid'));

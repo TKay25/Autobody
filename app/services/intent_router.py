@@ -690,18 +690,25 @@ class IntentRouter:
         currency = estimate.currency or "USD"
 
         if approve:
-            if estimate.status != "APPROVED":
+            if estimate.status == "APPROVED":
+                # Tapping approve again must not read as a second approval.
+                # Meta can redeliver a tap, and customers do tap twice.
+                reply = text(
+                    f"Quotation *{estimate.reference}* is already approved, {name} — "
+                    "we are already on it.\n\nReply *menu* if there is anything else."
+                )
+            else:
                 approve_estimate(
                     estimate,
                     approved_by=f"{customer.name if customer else 'Customer'} (WhatsApp)",
                 )
-            reply = text(
-                f"🎉 Thank you, {name} — quotation *{estimate.reference}* is approved.\n\n"
-                f"We will order the parts, book the vehicle into the workshop and keep you "
-                f"updated at every stage."
-                + (f"\n\nExcess payable: *{currency} "
-                   f"{Decimal(str(estimate.excess)):,.2f}*" if estimate.is_insurance else "")
-            )
+                reply = text(
+                    f"🎉 Thank you, {name} — quotation *{estimate.reference}* is approved.\n\n"
+                    f"We will order the parts, book the vehicle into the workshop and keep you "
+                    f"updated at every stage."
+                    + (f"\n\nExcess payable: *{currency} "
+                       f"{Decimal(str(estimate.excess)):,.2f}*" if estimate.is_insurance else "")
+                )
         else:
             estimate.status = "DECLINED"
             db.session.commit()
@@ -901,7 +908,7 @@ class IntentRouter:
         bar_filled = round(progress / 10)
         bar = "▰" * bar_filled + "▱" * (10 - bar_filled)
         lines = [
-            f"*Job {job.job_no}*",
+            f"*Job card {job.job_no}*",
             f"🚗 {job.vehicle.title if job.vehicle else 'Vehicle'} ({job.vehicle.reg_no if job.vehicle else '-'})",
             "",
             f"*Stage:* {STAGE_LABELS.get(job.stage, job.stage)}",
@@ -937,7 +944,7 @@ class IntentRouter:
             return self._claim_status_reply(job)
         if job:
             return [text(
-                f"Job {job.job_no} is not flagged as an insurance claim. "
+                f"Job card {job.job_no} is not flagged as an insurance claim. "
                 "If you are claiming, send us your insurer name and claim number and our "
                 "estimator will link it."
             ), more_menu_reply()]
@@ -972,7 +979,8 @@ class IntentRouter:
         db.session.commit()
         if job.active_claim:
             return self._claim_status_reply(job)
-        return [text(f"Job {job.job_no} has no claim linked yet. Our estimator will add it."),
+        return [text(f"Job card {job.job_no} has no claim linked yet. "
+                     "Our estimator will add it."),
                 more_menu_reply()]
 
     def _claim_status_reply(self, job: JobCard) -> list[dict]:

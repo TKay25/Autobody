@@ -17,7 +17,11 @@ from werkzeug.utils import secure_filename
 
 from .. import reference_meta
 from ..constants import (
+    BOOKING_OUTCOMES,
+    BOOKING_REF_PREFIX,
+    BOOKING_STATUSES,
     CLAIM_STATUSES,
+    ENQUIRY_REF_PREFIX,
     PART_STATUSES,
     PRIORITIES,
     SERVICE_NAMES,
@@ -25,7 +29,7 @@ from ..constants import (
     STAGE_CUSTOMER_TEXT,
     STAGE_LABELS,
 )
-from ..extensions import csrf, db
+from ..extensions import db
 from ..models import (
     Booking,
     Claim,
@@ -40,9 +44,10 @@ from ..models import (
     User,
     Vehicle,
     WaConversation,
+    gen_ref,
     utcnow,
 )
-from ..services import documents, job_flow, notifications, pricing
+from ..services import documents, job_flow, notifications, pricing, reporting
 from ..services.activity import log_activity, recent_activity
 from ..services.whatsapp_client import log_inbound, normalise_msisdn
 
@@ -1237,14 +1242,24 @@ def list_bookings():
     query = Booking.query
     if status:
         query = query.filter(Booking.status == status)
+    # The attribution names are shown on every row, so join them up front
+    # rather than letting each booking lazy-load its own two staff rows.
+    query = query.options(
+        db.joinedload(Booking.confirmed_by), db.joinedload(Booking.attended_by)
+    )
     bookings = query.order_by(Booking.slot_date.asc(), Booking.id.desc()).limit(300).all()
     return jsonify({"items": [b.to_dict() for b in bookings], "count": len(bookings)})
 
 
 @bp.post("/bookings")
-@csrf.exempt
+@login_required
 def create_booking():
-    """Public endpoint — also used by the website's quick-quote widget."""
+    """Create a booking from the console — phone, walk-in or fleet request.
+
+    This was public and CSRF-exempt so the marketing site's quick-quote widget
+    could post to it. That widget is gone, so it is now an ordinary authenticated
+    write: an open path here let anyone create customers and bookings anonymously.
+    """
     data = payload()
     name = want(data, "name")
     phone = want(data, "phone")
@@ -1266,19 +1281,31 @@ def create_booking():
                                                   make=want(data, "make"),
                                                   model=want(data, "model"))
 
+    # Everything the phone rings about arrives as an *enquiry*. Only a confirmed
+    # one becomes a booking, and that is the moment it earns a booking
+    # reference — which is why the two references are issued separately.
     booking = Booking(
         customer_id=customer.id,
         vehicle_id=vehicle.id if vehicle else None,
         service=service,
         slot_date=slot_date,
         slot_time=want(data, "slot_time"),
-        status="REQUESTED",
-        source=want(data, "source") or "web",
+        status="CONFIRMED" if want(data, "confirm") else "REQUESTED",
+        source=want(data, "source") or "phone",
         notes=want(data, "notes"),
         quoted_from=as_decimal(pricing.quick_quote(service)["from_price"]),
+        reference=gen_ref(ENQUIRY_REF_PREFIX),
     )
+    if booking.status == "CONFIRMED":
+        booking.booking_reference = gen_ref(BOOKING_REF_PREFIX)
+        booking.confirmed_by_id = current_user.id
+        booking.confirmed_at = utcnow()
     db.session.add(booking)
     db.session.commit()
+
+    if booking.status == "CONFIRMED":
+        notifications.notify_booking_confirmed(booking)
+
     return jsonify({"booking": booking.to_dict(),
                     "quote": pricing.quick_quote(service)}), 201
 
@@ -1296,12 +1323,101 @@ def update_booking(booking_id: int):
         booking.slot_time = want(data, "slot_time")
     if "notes" in data:
         booking.notes = want(data, "notes")
+
+    explicit_confirmed = as_int(data.get("confirmed_by_id"))
+    explicit_attended = as_int(data.get("attended_by_id"))
+
     if "status" in data:
-        booking.status = want(data, "status")
-        if booking.status == "CONFIRMED":
+        status = want(data, "status")
+        if status not in BOOKING_STATUSES:
+            return bad(f"Unknown booking status '{status}'.")
+        booking.status = status
+
+        # A status on its own records what happened but not who did it, and the
+        # closing report needs a name against every enquiry. Fall back to the
+        # signed-in user so the column is never left blank.
+        if status == "CONFIRMED":
+            booking.confirmed_by_id = (explicit_confirmed or booking.confirmed_by_id
+                                       or current_user.id)
+            booking.confirmed_at = booking.confirmed_at or utcnow()
+            # Confirming is precisely what turns the enquiry into a booking, so
+            # this is where the booking reference is minted. Only ever once.
+            if not booking.booking_reference:
+                booking.booking_reference = gen_ref(BOOKING_REF_PREFIX)
             notifications.notify_booking_confirmed(booking)
+        elif status == "ATTENDED":
+            person = explicit_attended or explicit_confirmed or current_user.id
+            booking.attended_by_id = booking.attended_by_id or person
+            booking.attended_at = booking.attended_at or utcnow()
+            # Attending implies it was accepted, so attribute the confirmation
+            # too rather than leaving a gap in the audit trail.
+            booking.confirmed_by_id = booking.confirmed_by_id or person
+            booking.confirmed_at = booking.confirmed_at or utcnow()
+    elif explicit_confirmed or explicit_attended:
+        if explicit_confirmed:
+            booking.confirmed_by_id = explicit_confirmed
+        if explicit_attended:
+            booking.attended_by_id = explicit_attended
+
+    if "outcome" in data:
+        outcome = want(data, "outcome")
+        if outcome and outcome not in BOOKING_OUTCOMES:
+            return bad(f"Unknown booking outcome '{outcome}'.")
+        booking.outcome = outcome or None
+
     db.session.commit()
     return jsonify({"booking": booking.to_dict()})
+
+
+@bp.post("/bookings/<int:booking_id>/reschedule")
+@login_required
+def reschedule_booking(booking_id: int):
+    """Move an appointment and tell the customer.
+
+    Kept out of PATCH on purpose: moving a booking has a consequence outside
+    this system (the customer gets a message), so it should not be possible to
+    shift one silently as a side effect of an ordinary edit.
+    """
+    booking = db.session.get(Booking, booking_id)
+    if not booking:
+        return bad("Booking not found.", 404)
+
+    data = payload()
+    slot_date = as_date(data.get("slot_date"))
+    if not slot_date:
+        return bad("A new date is required.")
+    slot_time = want(data, "slot_time") or None
+
+    if slot_date == booking.slot_date and slot_time == (booking.slot_time or None):
+        return bad("That is the slot the booking is already on.")
+
+    previous = booking.slot_date.strftime("%a %d %b %Y") if booking.slot_date else "—"
+    if booking.slot_time:
+        previous += f" at {booking.slot_time}"
+
+    booking.slot_date = slot_date
+    booking.slot_time = slot_time
+    booking.rescheduled_count = (booking.rescheduled_count or 0) + 1
+    db.session.commit()
+
+    notified = notifications.notify_booking_rescheduled(booking, previous)
+    log_activity(
+        "booking.rescheduled",
+        f"Moved booking {booking.display_reference} from {previous} to "
+        f"{slot_date.strftime('%a %d %b %Y')}"
+        + (f" at {slot_time}" if slot_time else ""),
+        entity_type="booking", entity_id=booking.id,
+        entity_ref=booking.display_reference,
+        meta={"previous": previous, "notified": notified},
+        commit=True,
+    )
+    return jsonify({
+        "booking": booking.to_dict(),
+        "notified": notified,
+        "previous": previous,
+        "message": ("Booking moved and the customer has been notified." if notified
+                    else "Booking moved. The customer could not be notified."),
+    })
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1362,6 +1478,42 @@ def wa_takeover(conversation_id: int):
     return jsonify({"conversation": conversation.to_dict()})
 
 
+def _humanise_id(interactive_id: str) -> str:
+    """`a_approve:1` -> `Approve`. Last resort when nothing offered matches."""
+    stem = (interactive_id or "").split(":", 1)[0]
+    for prefix in ("m_", "a_", "svc_", "bsvc_", "q_"):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
+            break
+    return stem.replace("_", " ").strip().title() or interactive_id
+
+
+def _interactive_label(conversation, interactive_id: str) -> str | None:
+    """Find the wording the customer actually tapped.
+
+    A bare id ("a_approve:1") means nothing in a chat log, so it is resolved
+    against the options we last put in front of them — the payload on our own
+    outbound messages is the only place the title lives.
+    """
+    import json
+
+    for message in conversation.messages[:8]:
+        if message.direction != "outbound" or not message.payload_json:
+            continue
+        try:
+            options = json.loads(message.payload_json)
+        except (ValueError, TypeError):
+            continue
+        for button in options.get("buttons") or []:
+            if str(button.get("id")) == interactive_id:
+                return button.get("title")
+        for section in options.get("sections") or []:
+            for row in section.get("rows") or []:
+                if str(row.get("id")) == interactive_id:
+                    return row.get("title")
+    return None
+
+
 @bp.post("/whatsapp/simulate")
 @login_required
 def wa_simulate():
@@ -1377,7 +1529,12 @@ def wa_simulate():
     from ..services.whatsapp_client import WhatsAppClient, get_or_create_conversation
 
     conversation = get_or_create_conversation(number)
-    log_inbound(conversation, body=body or f"[button:{interactive_id}]",
+    # Log what the customer saw, not the payload we happened to send them.
+    inbound_body = body
+    if interactive_id:
+        inbound_body = (_interactive_label(conversation, interactive_id)
+                        or _humanise_id(interactive_id))
+    log_inbound(conversation, body=inbound_body or "",
                 payload={"id": interactive_id} if interactive_id else None)
 
     replies = handle_inbound(conversation, text_body=body, interactive_id=interactive_id)
@@ -1456,6 +1613,22 @@ def update_user(user_id: int):
 # ─────────────────────────────────────────────────────────────────────────────
 # Reporting
 # ─────────────────────────────────────────────────────────────────────────────
+@bp.get("/reports/end-of-day")
+@login_required
+def end_of_day_report():
+    """The closing sheet — job card statuses, enquiries/bookings and money."""
+    day = as_date(request.args.get("date")) or date.today()
+    return jsonify(reporting.end_of_day(day))
+
+
+@bp.get("/reports/end-of-day/pdf")
+@login_required
+def end_of_day_report_pdf():
+    day = as_date(request.args.get("date")) or date.today()
+    sheet = documents.build_end_of_day_pdf(reporting.end_of_day(day))
+    return _pdf_response(sheet, f"End-of-day-{day.isoformat()}.pdf")
+
+
 @bp.get("/reports/overview")
 @login_required
 def reports_overview():

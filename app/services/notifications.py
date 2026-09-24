@@ -290,7 +290,7 @@ def notify_quote_ready(job: JobCard) -> bool:
 
 def notify_parts_received(job: JobCard, parts: list[str]) -> bool:
     body = (
-        f"📦 Good news — parts received for job {job.job_no}.\n\n"
+        f"📦 Good news — parts received for job card {job.job_no}.\n\n"
         + "\n".join(f"• {p}" for p in parts[:8])
         + "\n\nWork continues and we will update you at the next stage."
     )
@@ -313,11 +313,19 @@ def notify_invoice_issued(job: JobCard, invoice) -> bool:
 
 def notify_warranty(job: JobCard) -> bool:
     body = (
-        f"🛡️ *Warranty registered* — job {job.job_no}\n\n{WARRANTY_TEXT}\n\n"
+        f"🛡️ *Warranty registered* — job card {job.job_no}\n\n{WARRANTY_TEXT}\n\n"
         "Keep this message as your warranty reference. Reply *menu* for anything else."
     )
     return _dispatch(job, body, template=TEMPLATE_WARRANTY, use_template=True,
                      params=[job.customer.name, job.job_no])
+
+
+def _slot_text(booking) -> str:
+    """'Mon 23 Sep 2026 at 08:00', or just the day when no time was booked."""
+    if not booking.slot_date:
+        return "to be advised"
+    when = booking.slot_date.strftime("%a %d %b %Y")
+    return f"{when} at {booking.slot_time}" if booking.slot_time else when
 
 
 def notify_booking_confirmed(booking) -> bool:
@@ -326,11 +334,10 @@ def notify_booking_confirmed(booking) -> bool:
         return False
     body = (
         f"✅ *Booking confirmed*\n\n"
-        f"Reference: {booking.reference}\n"
+        f"Reference: {booking.display_reference}\n"
         f"Service: {booking.service}\n"
-        f"Date: {booking.slot_date.strftime('%a %d %b %Y')}"
-        + (f" at {booking.slot_time}" if booking.slot_time else "")
-        + f"\n\n📍 {current_app.config['COMPANY_ADDRESS']}"
+        f"Date: {_slot_text(booking)}"
+        f"\n\n📍 {current_app.config['COMPANY_ADDRESS']}"
         "\n\nReply *menu* to change or cancel."
     )
     client = WhatsAppClient()
@@ -342,6 +349,36 @@ def notify_booking_confirmed(booking) -> bool:
         log.error("Booking confirmation failed: %s", exc)
         return False
     _log(None, customer.wa_number, "booking_confirmed", body, "sent")
+    return True
+
+
+def notify_booking_rescheduled(booking, previous_slot: str) -> bool:
+    """Tell the customer their appointment has moved.
+
+    Deliberately says what it was before as well as what it is now — a bare new
+    date gives the customer nothing to check against.
+    """
+    customer = booking.customer
+    if not customer or not customer.wa_number:
+        return False
+    body = (
+        f"🔁 *Booking moved*\n\n"
+        f"Reference: {booking.display_reference}\n"
+        f"Service: {booking.service}\n"
+        f"Was: {previous_slot}\n"
+        f"Now: {_slot_text(booking)}"
+        f"\n\n📍 {current_app.config['COMPANY_ADDRESS']}"
+        "\n\nReply *menu* if that no longer works."
+    )
+    client = WhatsAppClient()
+    conversation = get_or_create_conversation(customer.wa_number, customer.name)
+    try:
+        client.send_text(customer.wa_number, body, conversation=conversation,
+                         intent="booking_rescheduled")
+    except Exception as exc:  # noqa: BLE001
+        log.error("Booking reschedule notice failed: %s", exc)
+        return False
+    _log(None, customer.wa_number, "booking_rescheduled", body, "sent")
     return True
 
 
