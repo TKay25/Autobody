@@ -9,6 +9,14 @@
 			"isBackground": true,
 			"problemMatcher": [],
 			"group": "build"
+		},
+		{
+			"label": "pytest (full suite)",
+			"type": "shell",
+			"command": "$env:PYTHONIOENCODING='utf-8'; & \"C:/Users/tzvakasikwa/AppData/Local/Python/pythoncore-3.14-64/python.exe\" -m pytest -q --tb=short",
+			"args": [],
+			"problemMatcher": [],
+			"group": "test"
 		}
 	]
 }

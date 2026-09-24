@@ -3,12 +3,19 @@
   const T = window.TCA;
   const { h, api, money, dateShort } = T;
 
+  /* Payment methods are API codes ("BANK_TRANSFER"); the human labels come from
+     `reference_meta()`. These live at module scope on purpose: they used to be
+     declared inside the payments route's closure, and the invoices route below
+     referenced `methodLabels` anyway — so opening Invoices threw
+     `ReferenceError: methodLabels is not defined` and the screen rendered
+     nothing at all. */
+  const methodLabels = () => (T.store.get('meta') || {}).payment_method_labels || {};
+  const methodLabel = (code) => methodLabels()[code] || (code || '').replace(/_/g, ' ');
+
   /* ── payments ─────────────────────────────────────────────────────── */
   T.route('/payments', async (ctx) => {
     ctx.title = 'Payments';
     const meta = T.store.get('meta');
-    const methodLabels = meta.payment_method_labels || {};
-    const methodLabel = (code) => methodLabels[code] || (code || '').replace(/_/g, ' ');
 
     const state = { method: ctx.query.method || '', since: '', until: '' };
     const host = h('div');
@@ -156,7 +163,7 @@
     const summary = h('div.row.g-3.mb-3');
     /* `meta.payment_methods` are API codes — show them as proper sentence case. */
     const methodOptions = (meta.payment_methods || []).map((m) => ({
-      value: m, label: methodLabels[m] || m,
+      value: m, label: methodLabel(m),
     }));
 
     async function load() {

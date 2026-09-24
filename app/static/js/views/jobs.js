@@ -303,20 +303,33 @@
       } else {
         T.mount(customerTypeHost, fleetChoice);
       }
+      /* "New customer name" is only a question for someone who is not on file.
+         Asking for a name beside a customer that was just picked invites the
+         operator to type a second, conflicting one, so the field goes away and
+         any value already typed is dropped rather than submitted. */
+      newNameField.classList.toggle('d-none', !!picked);
+      if (picked && newNameInput.value) newNameInput.value = '';
     }
+
+    const newNameInput = h('input.form-control.form-control-sm', {
+      name: 'customer_name', placeholder: 'Only if new',
+    });
+    const newNameField = h('div.col-md-3', field('New customer name', newNameInput));
 
     form = h('form.row.g-3', { onsubmit: (e) => e.preventDefault() }, [
       /* customer */
       h('div.col-12', sectionHead(1, 'Customer & vehicle')),
-      h('div.col-md-6', field('Customer', h('select.form-select.form-select-sm', {
+      h('div.col-md-6', field('Customer', T.searchableSelect(h('select.form-select.form-select-sm', {
         name: 'customer_id',
         onchange: () => { loadQuotations(''); syncCustomerType(); },
       }, [h('option', { value: '' }, '— New customer —')].concat(
         customersRes.items.map((c) => h('option', { value: c.id },
-          `${c.name}${c.phone ? ' · ' + c.phone : ''}`)))),
+          `${c.name}${c.phone ? ' · ' + c.phone : ''}`)))), {
+        placeholder: 'Search name or phone…', ariaLabel: 'Search customers',
+      }).node,
         { hint: 'Existing quotations for this customer are offered below.' })),
       h('div.col-md-3', field('Customer type', customerTypeHost)),
-      h('div.col-md-3', field('New customer name', h('input.form-control.form-control-sm', { name: 'customer_name', placeholder: 'Only if new' }))),
+      newNameField,
       h('div.col-md-3', field('Phone / WhatsApp', h('input.form-control.form-control-sm', { name: 'customer_phone', placeholder: '+263 77 000 0000' }))),
       h('div.col-md-3', field('Registration *', h('input.form-control.form-control-sm.text-uppercase', {
         name: 'reg_no', required: true, placeholder: 'ABC 1234',
@@ -328,17 +341,21 @@
 
       /* job */
       h('div.col-12', sectionHead(2, 'Job details')),
-      h('div.col-md-4', field('Service', h('select.form-select.form-select-sm', { name: 'service' },
-        (meta.service_names || []).map((s) => h('option', { selected: s === 'Panel Beating & Spray Painting' }, s))))),
-      h('div.col-md-2', field('Priority', h('select.form-select.form-select-sm', { name: 'priority' },
-        ['LOW', 'NORMAL', 'HIGH', 'URGENT'].map((p) => h('option', { selected: p === 'NORMAL' }, p))))),
+      h('div.col-md-4', field('Service', T.searchableSelect(h('select.form-select.form-select-sm', { name: 'service' },
+        (meta.service_names || []).map((s) => h('option', { selected: s === 'Panel Beating & Spray Painting' }, s))),
+        { placeholder: 'Search services…', ariaLabel: 'Search services' }).node)),
+      h('div.col-md-2', field('Priority', T.searchableSelect(h('select.form-select.form-select-sm', { name: 'priority' },
+        ['LOW', 'NORMAL', 'HIGH', 'URGENT'].map((p) => h('option', { selected: p === 'NORMAL' }, p))),
+        { placeholder: 'Search…', ariaLabel: 'Search priority' }).node)),
       h('div.col-md-3', field('Promised date', h('input.form-control.form-control-sm', { name: 'promised_date', type: 'date', value: T.today() }))),
       h('div.col-md-3', field('Bay', h('input.form-control.form-control-sm', { name: 'bay', placeholder: 'Bay 1' }))),
-      h('div.col-md-6', field('Technician', h('select.form-select.form-select-sm', { name: 'technician_id' },
+      h('div.col-md-6', field('Technician', T.searchableSelect(h('select.form-select.form-select-sm', { name: 'technician_id' },
         [h('option', { value: '' }, '— Unassigned —')].concat(
-          technicians.map((t) => h('option', { value: t.id }, t.full_name)))))),
-      h('div.col-md-3', field('Fuel level', h('select.form-select.form-select-sm', { name: 'fuel_level' },
-        ['Empty', '1/4', '1/2', '3/4', 'Full'].map((f) => h('option', { selected: f === '1/2' }, f))))),
+          technicians.map((t) => h('option', { value: t.id }, t.full_name)))),
+        { placeholder: 'Search technicians…', ariaLabel: 'Search technicians' }).node)),
+      h('div.col-md-3', field('Fuel level', T.searchableSelect(h('select.form-select.form-select-sm', { name: 'fuel_level' },
+        ['Empty', '1/4', '1/2', '3/4', 'Full'].map((f) => h('option', { selected: f === '1/2' }, f))),
+        { placeholder: 'Search…', ariaLabel: 'Search fuel level' }).node)),
       h('div.col-md-3', field('Odometer in', h('input.form-control.form-control-sm', { name: 'odometer_in', type: 'number' }))),
       h('div.col-12', field('Damage summary', h('input.form-control.form-control-sm', { name: 'damage_summary', placeholder: 'Front bumper, bonnet, both headlamp surrounds' }))),
       h('div.col-12', field('Notes / description', h('textarea.form-control.form-control-sm', { name: 'description', rows: 2 }))),
@@ -431,12 +448,20 @@
               payload.append('kind', 'QUOTATION');
               payload.append('caption', source.estimate
                 ? `Quotation ${source.estimate.reference}` : 'Quotation attached at intake');
-              await fetch(`/api/jobs/${res.job.id}/documents`, {
+              const upload = await fetch(`/api/jobs/${res.job.id}/documents`, {
                 method: 'POST',
                 headers: { 'X-CSRFToken': window.__CSRF__ || '' },
                 credentials: 'same-origin',
                 body: payload,
               });
+              /* `fetch` only rejects on a network failure, so a 400 for a bad file
+                 type used to pass silently and the operator was told the job card
+                 was created with its document attached. */
+              if (!upload.ok) {
+                const body = await upload.json().catch(() => ({}));
+                T.toast(body.error || 'The job card was created, but the document did not attach.',
+                  'warning');
+              }
             } catch (uploadErr) {
               T.toast('The job card was created, but the document did not attach.',
                 'warning');

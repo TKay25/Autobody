@@ -401,7 +401,7 @@ python -m pytest -q
 Or, on Windows terminals that mangle long pytest output:
 
 ```powershell
-python run_tests.py          # writes a readable test-results.txt
+python run_tests.py          # writes a readable pytest-report.txt
 ```
 
 Coverage:

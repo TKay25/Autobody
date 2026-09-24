@@ -495,8 +495,12 @@
       if (onChange) onChange(hidden.value);
     });
 
-    const control = dot ? h('div.tc-input-icon.has-icon', [dot, select]) : select;
-    const node = h('div.tc-combo', [control, free, hidden]);
+    const picker = searchableSelect(select, {
+      placeholder: swatch ? 'Search colour…' : 'Search…',
+      ariaLabel: `Search ${name}`,
+      lead: dot,
+    });
+    const node = h('div.tc-combo', [picker.node, free, hidden]);
     paint();
 
     return {
@@ -508,6 +512,9 @@
         const current = keep ? hidden.value : '';
         select.innerHTML = '';
         appendChild(select, buildOptions(list, current, otherLabel, chooseLabel));
+        /* The select now holds the full new list, so re-read it before filtering. */
+        if (picker.search.value) picker.search.value = '';
+        picker.resync();
         if (current && !select.value) { free.hidden = false; free.value = current; hidden.value = current; }
         paint();
       },
@@ -524,6 +531,179 @@
     });
     nodes.push(h('option', { value: '__other__' }, otherLabel || 'Other (type it in)'));
     return nodes;
+  }
+
+  /* ── searchable dropdowns ────────────────────────────────────────────
+     A real combobox: the visible control is a text box, and typing filters the
+     option list *in the list itself*. An earlier version put a filter row above
+     a native <select>, which silently did nothing on a phone — a native select
+     opens the OS picker, where an inline filter cannot reach. Here the options
+     are ordinary buttons, so search works with a finger, a mouse or a keyboard.
+
+     The native <select> is kept in the form but hidden: it stays the single
+     source of value, so `name`, `FormData`, `formValue()` and the required-field
+     validation all keep working untouched. Picking dispatches a real `change`
+     event on it, which is what the intake's customer handler, the Make → Model
+     cascade and the form's error-clearing all listen for.
+     ─────────────────────────────────────────────────────────────────── */
+
+  /** Read a <select> into plain specs, keeping any <optgroup> structure. */
+  function readSelectSpecs(select) {
+    const groups = [];
+    let current = null;
+    Array.from(select.children).forEach((child) => {
+      if (child.tagName === 'OPTGROUP') {
+        current = { label: child.label, options: [] };
+        groups.push(current);
+      } else if (child.tagName === 'OPTION') {
+        if (!current) { current = { label: null, options: [] }; groups.push(current); }
+        current.options.push({
+          value: child.value, label: child.textContent, disabled: !!child.disabled,
+        });
+      }
+    });
+    return groups;
+  }
+
+  /**
+   * Turn a <select> into a searchable combobox.
+   *
+   * @returns {{node: Node, search: Node, inputId: string, resync: Function}}
+   */
+  function searchableSelect(select, { placeholder = 'Search…', ariaLabel, lead } = {}) {
+    let groups = readSelectSpecs(select);
+
+    /* Value carrier only. `display:none` still submits, and still reads through
+       formValue(), so nothing downstream has to know this is a combobox. */
+    select.classList.add('d-none');
+    select.setAttribute('tabindex', '-1');
+
+    const flat = () => groups.flatMap((g) => g.options);
+    const labelOf = (value) => {
+      const found = flat().find((o) => String(o.value) === String(value));
+      return found ? found.label : '';
+    };
+
+    const input = h('input.form-control.form-control-sm.tc-cbo-input', {
+      type: 'text', autocomplete: 'off', spellcheck: 'false',
+      role: 'combobox', 'aria-expanded': 'false', 'aria-autocomplete': 'list',
+      'aria-label': ariaLabel || 'Choose an option',
+      placeholder,
+    });
+    if (select.id) input.id = `${select.id}__combo`;
+
+    const list = h('div.tc-cbo-list', { hidden: true, role: 'listbox' });
+    const node = h(`div.tc-cbo${lead ? '.has-lead' : ''}`, [
+      h('div.tc-cbo-control', [lead || null, input,
+        h('i.bi.bi-chevron-expand.tc-cbo-caret')]),
+      list,
+      select,
+    ]);
+
+    let items = [];
+    let active = -1;
+
+    const showLabel = () => { input.value = labelOf(select.value); };
+
+    function highlight(index) {
+      items.forEach((it) => it.el.classList.remove('is-active'));
+      if (index < 0 || index >= items.length) return;
+      items[index].el.classList.add('is-active');
+      items[index].el.scrollIntoView({ block: 'nearest' });
+    }
+
+    function render(term) {
+      const needle = (term || '').trim().toLowerCase();
+      const matches = (o) => !needle
+        || String(o.label).toLowerCase().includes(needle)
+        || String(o.value).toLowerCase().includes(needle);
+      list.innerHTML = '';
+      items = [];
+
+      groups.forEach((group) => {
+        const opts = group.options.filter(matches);
+        if (!opts.length) return;
+        if (group.label) list.appendChild(h('div.tc-cbo-group', group.label));
+        opts.forEach((o) => {
+          const chosen = String(o.value) === String(select.value);
+          const el = h('button.tc-cbo-opt', {
+            type: 'button', role: 'option', disabled: o.disabled,
+            'aria-selected': chosen ? 'true' : 'false',
+            class: chosen ? 'is-selected' : null,
+          }, o.label);
+          /* Keep focus on the input so the blur-close does not fire mid-pick. */
+          el.addEventListener('mousedown', (e) => e.preventDefault());
+          el.addEventListener('click', () => pick(o.value));
+          list.appendChild(el);
+          items.push({ value: o.value, disabled: o.disabled, el });
+        });
+      });
+
+      if (!items.length) list.appendChild(h('div.tc-cbo-empty', 'No match'));
+      active = items.findIndex((it) => String(it.value) === String(select.value));
+      highlight(active);
+    }
+
+    function open() {
+      if (!list.hidden) return;
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      render('');
+      input.select();
+    }
+
+    function close() {
+      if (list.hidden) return;
+      list.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      showLabel();
+    }
+
+    function pick(value) {
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      close();
+    }
+
+    input.addEventListener('focus', open);
+    input.addEventListener('click', open);
+    input.addEventListener('input', () => { if (list.hidden) open(); render(input.value); });
+    /* A blur can land after a click on an option, so let the click win first. */
+    input.addEventListener('blur', () => setTimeout(close, 120));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { close(); input.blur(); return; }
+      if (e.key === 'Enter') {
+        /* Enter belongs to the dropdown, not to the surrounding form. */
+        e.preventDefault();
+        if (!list.hidden && items[active]) pick(items[active].value);
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (list.hidden) { open(); return; }
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        let next = active + step;
+        while (next >= 0 && next < items.length && items[next].disabled) next += step;
+        if (next >= 0 && next < items.length) { active = next; highlight(next); }
+      }
+    });
+
+    /* A value set from elsewhere (a cascade rebuilding the list) must not leave
+       the panel open over stale options. */
+    select.addEventListener('change', () => { if (!list.hidden) close(); });
+
+    showLabel();
+    return {
+      node,
+      search: input,
+      inputId: input.id,
+      /** Re-read the option list after the caller has rebuilt it. */
+      resync() {
+        groups = readSelectSpecs(select);
+        if (!list.hidden) render('');
+        showLabel();
+      },
+    };
   }
 
   /** Standard helpers for the vehicle reference lists served by /api/meta. */
@@ -742,7 +922,11 @@
             groups || optionList(f).map((o) => h('option', {
               value: o.value, selected: String(o.value) === String(start) }, o.label)));
           refs[f.name] = input;
-          return shell(f, iconWrap(input), { labelFor: common.id });
+          const picker = searchableSelect(input, {
+            placeholder: f.searchPlaceholder || 'Search…',
+            ariaLabel: `Search ${labelText(f)}`,
+          });
+          return shell(f, iconWrap(picker.node), { labelFor: picker.inputId || common.id });
         }
 
         /* — everything else is an <input> — */
@@ -844,8 +1028,10 @@
         if (!ok) {
           toast('Please complete the highlighted fields.', 'warning');
           const target = firstBad && firstBad.type !== 'hidden'
+            && !firstBad.classList.contains('d-none')
             ? firstBad
-            : firstBad?.closest('.tc-field')?.querySelector('input:not([type=hidden]),select,textarea,button');
+            : firstBad?.closest('.tc-field')
+                ?.querySelector('input:not([type=hidden]),select:not(.d-none),textarea,button');
           target?.focus();
           return;
         }
@@ -900,14 +1086,19 @@
   function iconSelect({ options = [], value = '', onChange, icon = 'funnel',
                         width = 160, ariaLabel } = {}) {
     const select = h('select.form-select.form-select-sm', {
-      style: `width:auto;min-width:${width}px`,
       'aria-label': ariaLabel || undefined,
       onchange: (e) => onChange && onChange(e.target.value),
     }, options.map((o) => {
       const opt = typeof o === 'string' ? { value: o, label: o } : o;
       return h('option', { value: opt.value, selected: String(opt.value) === String(value) }, opt.label);
     }));
-    return h('div.tc-input-icon.has-icon', { style: 'width:auto' }, h(`i.bi.bi-${icon}`), select);
+    const picker = searchableSelect(select, {
+      placeholder: ariaLabel || 'Any',
+      ariaLabel,
+      lead: h(`i.bi.bi-${icon}.tc-cbo-lead`),
+    });
+    picker.search.style.minWidth = `${width}px`;
+    return picker.node;
   }
   function dataTable({ columns, rows, onRowClick, empty, rowLabel }) {
     if (!rows || !rows.length) return empty || emptyState('Nothing here yet');
@@ -1114,6 +1305,7 @@
   TCA.emptyState = emptyState;
   TCA.searchInput = searchInput;
   TCA.iconSelect = iconSelect;
+  TCA.searchableSelect = searchableSelect;
   TCA.skeletonTable = skeletonTable;
   TCA.spinner = spinner;
   TCA.dataTable = dataTable;

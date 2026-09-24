@@ -137,7 +137,7 @@
         ]),
         h('div.col-lg-5', [
           T.section({ title: 'Parts', body: partsTable(j) }),
-          T.section({ title: 'Photos', body: photosHost(j) }),
+          T.section({ title: 'Photos & documents', body: photosHost(j) }),
         ]),
       ]);
 
@@ -316,24 +316,71 @@
         ])))));
     }
 
+    /** Anything that is not an image renders as a document row, not an <img>. */
+    const isPdf = (name) => /\.pdf($|\?)/i.test(name || '');
+
     function photosHost(j) {
       const host = h('div');
-      const add = h('button.btn.btn-sm.btn-outline-secondary.mb-2', {
-        onclick: async () => {
-          const res = await api.post(`/api/jobs/${j.id}/photos`, {
-            url: `https://placehold.co/800x600/24384d/ffffff?text=${encodeURIComponent(j.job_no)}`,
-            kind: 'PROGRESS', caption: 'Added from web',
-          });
-          T.toast('Photo added to job card.');
-          reload();
-        },
-      }, T.icon('camera'), ' Add photo');
-      host.appendChild(add);
+      /* A real picker. This used to POST a hard-coded placehold.co URL and call it
+         "Add photo", so there was no way to attach an actual picture or PDF and
+         the button opened nothing at all. */
+      const picker = h('input', {
+        type: 'file', multiple: true, hidden: true,
+        accept: 'image/png,image/jpeg,image/webp,image/gif,application/pdf',
+      });
+
+      async function upload(files) {
+        let done = 0;
+        const failed = [];
+        for (const file of files) {
+          const payload = new FormData();
+          payload.append('file', file);
+          payload.append('kind', isPdf(file.name) ? 'DOCUMENT' : 'PHOTO');
+          payload.append('caption', file.name);
+          try {
+            const res = await fetch(`/api/jobs/${j.id}/documents`, {
+              method: 'POST',
+              headers: { 'X-CSRFToken': window.__CSRF__ || '' },
+              credentials: 'same-origin',
+              body: payload,
+            });
+            if (res.ok) done += 1;
+            else {
+              const body = await res.json().catch(() => ({}));
+              failed.push(`${file.name}: ${body.error || `HTTP ${res.status}`}`);
+            }
+          } catch (err) {
+            failed.push(`${file.name}: upload failed`);
+          }
+        }
+        if (done) T.toast(`${done} file${done === 1 ? '' : 's'} attached to ${j.job_no}.`, 'success');
+        failed.forEach((msg) => T.toast(msg, 'danger'));
+        reload();
+      }
+
+      picker.addEventListener('change', () => {
+        const files = Array.from(picker.files || []);
+        picker.value = '';            // so the same file can be re-picked later
+        if (files.length) upload(files);
+      });
+
+      host.appendChild(h('div.d-flex.align-items-center.gap-2.flex-wrap.mb-2', [
+        h('button.btn.btn-sm.btn-outline-secondary', {
+          type: 'button', onclick: () => picker.click(),
+        }, T.icon('cloud-arrow-up'), ' Attach photo or PDF'),
+        h('span.tc-hint', 'JPG, PNG, WebP, GIF or PDF, up to 24 MB each.'),
+        picker,
+      ]));
+
       host.appendChild(j.photos.length
         ? h('div.row.g-2', j.photos.map((p) => h('div.col-6', h('div',
-            h('img.img-fluid.rounded', { src: p.url, alt: p.caption || 'Job photo', loading: 'lazy' }),
-            h('div.small.text-secondary', p.caption || p.kind)))))
-        : T.emptyState('No photos', null, 'camera'));
+            isPdf(p.url)
+              ? h('a.d-flex.align-items-center.gap-2.text-truncate',
+                  { href: p.url, target: '_blank', rel: 'noopener' },
+                  T.icon('file-earmark-pdf'), h('span.text-truncate', p.caption || 'Document'))
+              : h('img.img-fluid.rounded', { src: p.url, alt: p.caption || 'Job photo', loading: 'lazy' }),
+            h('div.small.text-secondary.text-truncate', p.caption || p.kind)))))
+        : T.emptyState('Nothing attached yet', 'Photos and PDFs you attach appear here.', 'camera'));
       return host;
     }
 

@@ -16,5 +16,6 @@ instance/
 .coverage
 htmlcov/
 test-results.txt
+pytest-report.txt
 *.log
 
