@@ -191,9 +191,8 @@
   --bs-btn-active-border-color: var(--tc-line-strong);
   --bs-btn-active-color: var(--tc-navy-900);
 }
-.btn-outline-success,
+/* ── Solid variants ─────────────────────────────────────────────────── */
 .btn-success {
-  --bs-btn-color: var(--tc-green-600);
   --bs-btn-bg: var(--tc-green-600);
   --bs-btn-border-color: var(--tc-green-600);
   --bs-btn-hover-bg: var(--tc-green-700);
@@ -202,9 +201,7 @@
   --bs-btn-active-border-color: var(--tc-green-700);
   --bs-btn-focus-shadow-rgb: 16, 107, 65;
 }
-.btn-outline-danger,
 .btn-danger {
-  --bs-btn-color: var(--tc-crimson-500);
   --bs-btn-bg: var(--tc-crimson-500);
   --bs-btn-border-color: var(--tc-crimson-500);
   --bs-btn-hover-bg: var(--tc-crimson-600);
@@ -213,9 +210,7 @@
   --bs-btn-active-border-color: var(--tc-crimson-700);
   --bs-btn-focus-shadow-rgb: 194, 16, 46;
 }
-.btn-outline-info,
 .btn-info {
-  --bs-btn-color: var(--tc-tint-steel-ink);
   --bs-btn-bg: var(--tc-tint-steel-ink);
   --bs-btn-border-color: var(--tc-tint-steel-ink);
   --bs-btn-hover-bg: var(--tc-navy-700);
@@ -223,9 +218,7 @@
   --bs-btn-active-bg: var(--tc-navy-800);
   --bs-btn-active-border-color: var(--tc-navy-800);
 }
-.btn-outline-warning,
 .btn-warning {
-  --bs-btn-color: var(--tc-amber-600);
   --bs-btn-bg: var(--tc-amber-600);
   --bs-btn-border-color: var(--tc-amber-600);
   --bs-btn-hover-bg: var(--tc-amber-500);
@@ -233,15 +226,80 @@
   --bs-btn-active-bg: var(--tc-amber-500);
   --bs-btn-active-border-color: var(--tc-amber-500);
 }
-.btn-outline-dark,
 .btn-dark {
-  --bs-btn-color: var(--tc-navy-800);
   --bs-btn-bg: var(--tc-navy-900);
   --bs-btn-border-color: var(--tc-navy-900);
   --bs-btn-hover-bg: var(--tc-navy-800);
   --bs-btn-hover-border-color: var(--tc-navy-800);
   --bs-btn-active-bg: var(--tc-navy-700);
   --bs-btn-active-border-color: var(--tc-navy-700);
+}
+
+/* ── Outline variants ───────────────────────────────────────────────────
+   These used to share one rule with their solid twin, which set `--bs-btn-bg`
+   to the very colour held by `--bs-btn-color`. An outline button therefore
+   drew its label in the colour it was filled with: on the WhatsApp screen
+   (Open in WhatsApp, Take over, the simulator's quick replies) that was green
+   on green — effectively invisible. An outline button keeps a transparent
+   background and only fills once hovered.
+   ───────────────────────────────────────────────────────────────────── */
+.btn-outline-success {
+  --bs-btn-color: var(--tc-green-600);
+  --bs-btn-bg: transparent;
+  --bs-btn-border-color: var(--tc-green-600);
+  --bs-btn-hover-bg: var(--tc-green-600);
+  --bs-btn-hover-border-color: var(--tc-green-600);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-active-bg: var(--tc-green-700);
+  --bs-btn-active-border-color: var(--tc-green-700);
+  --bs-btn-active-color: #fff;
+  --bs-btn-focus-shadow-rgb: 16, 107, 65;
+}
+.btn-outline-danger {
+  --bs-btn-color: var(--tc-crimson-500);
+  --bs-btn-bg: transparent;
+  --bs-btn-border-color: var(--tc-crimson-500);
+  --bs-btn-hover-bg: var(--tc-crimson-500);
+  --bs-btn-hover-border-color: var(--tc-crimson-500);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-active-bg: var(--tc-crimson-600);
+  --bs-btn-active-border-color: var(--tc-crimson-600);
+  --bs-btn-active-color: #fff;
+  --bs-btn-focus-shadow-rgb: 194, 16, 46;
+}
+.btn-outline-info {
+  --bs-btn-color: var(--tc-tint-steel-ink);
+  --bs-btn-bg: transparent;
+  --bs-btn-border-color: var(--tc-tint-steel-ink);
+  --bs-btn-hover-bg: var(--tc-navy-700);
+  --bs-btn-hover-border-color: var(--tc-navy-700);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-active-bg: var(--tc-navy-800);
+  --bs-btn-active-border-color: var(--tc-navy-800);
+  --bs-btn-active-color: #fff;
+}
+.btn-outline-warning {
+  --bs-btn-color: var(--tc-amber-600);
+  --bs-btn-bg: transparent;
+  --bs-btn-border-color: var(--tc-amber-600);
+  --bs-btn-hover-bg: var(--tc-amber-500);
+  --bs-btn-hover-border-color: var(--tc-amber-500);
+  /* Dark ink on amber — white on amber is unreadable. */
+  --bs-btn-hover-color: #241a08;
+  --bs-btn-active-bg: var(--tc-amber-500);
+  --bs-btn-active-border-color: var(--tc-amber-500);
+  --bs-btn-active-color: #241a08;
+}
+.btn-outline-dark {
+  --bs-btn-color: var(--tc-navy-900);
+  --bs-btn-bg: transparent;
+  --bs-btn-border-color: var(--tc-navy-900);
+  --bs-btn-hover-bg: var(--tc-navy-900);
+  --bs-btn-hover-border-color: var(--tc-navy-900);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-active-bg: var(--tc-navy-800);
+  --bs-btn-active-border-color: var(--tc-navy-800);
+  --bs-btn-active-color: #fff;
 }
 
 body.app-body {
@@ -932,7 +990,23 @@ html.sidebar-rail { --tc-sidebar: 74px; }
 
 /* ── Chat ──────────────────────────────────────────────────────────── */
 .chat-wrap { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; height: calc(100vh - 150px); }
-@media (max-width: 860px) { .chat-wrap { grid-template-columns: 1fr; height: auto; } }
+/* A grid or flex item refuses to shrink below its content unless `min-height` is
+   reset — it defaults to `auto`. That is what let the message log grow to 6836px
+   inside a 1200px wrap and spill down the page, straight through the Bot
+   simulator sitting underneath it. With these resets the log scrolls in place. */
+.chat-wrap > * { min-height: 0; min-width: 0; }
+.chat-wrap .card { display: flex; flex-direction: column; min-height: 0; }
+.chat-wrap .card-body { flex: 1 1 auto; min-height: 0; }
+.chat-list { min-height: 0; }
+.chat-panel { min-height: 0; }
+.chat-log { min-height: 0; }
+@media (max-width: 860px) {
+  .chat-wrap { grid-template-columns: 1fr; height: auto; }
+  /* Stacked there is no fixed row height for the panels to scroll against, so
+     the log simply grew — a long thread made a 9000px page. Cap them instead. */
+  .chat-wrap > .card { height: 34vh; }
+  .chat-wrap > .flex-fill { height: 56vh; }
+}
 
 /* Tabs inside the attention panel — one bell, two lists. */
 .tc-bell-tabs { display: flex; gap: .2rem; }
@@ -986,38 +1060,77 @@ html.sidebar-rail { --tc-sidebar: 74px; }
   background: var(--tc-crimson-500); box-shadow: 0 0 0 3px rgba(194, 16, 46, .14);
 }
 .chat-item .snippet {
-  font-size: .78rem; color: #6a7381;
+  font-size: .78rem; color: #5f6b7f;
   display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
 }
 .chat-panel { background: #fff; border-radius: .85rem; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 1px 2px rgba(16,24,33,.06); }
 .chat-log { flex: 1; overflow-y: auto; padding: 1rem; background: #f0f2f5; }
 .bubble {
-  max-width: 72%; padding: .5rem .75rem; border-radius: .75rem;
-  margin-bottom: .5rem; font-size: .875rem; white-space: pre-wrap; word-wrap: break-word;
+  max-width: 74%; padding: .6rem .8rem .45rem; border-radius: .85rem;
+  margin-bottom: .55rem; font-size: .875rem; line-height: 1.5;
+  word-wrap: break-word; box-shadow: var(--tc-shadow-1);
 }
-.bubble.inbound { background: #fff; border-top-left-radius: .2rem; }
+.bubble.inbound { background: #fff; border: 1px solid var(--tc-line); border-top-left-radius: .2rem; }
 /* Outbound is the shop talking, so it wears the house colour rather than
    WhatsApp green — otherwise the console looks like two apps stitched up. */
 .bubble.outbound {
   background: #e8eefb; border: 1px solid #d6e0f5;
   margin-left: auto; border-top-right-radius: .2rem;
 }
-.bubble.bot::after {
-  content: "bot"; font-size: .62rem; color: #6a7381; margin-left: .5rem;
-  border: 1px solid #cfd6de; border-radius: 4px; padding: 0 .25rem; vertical-align: middle;
+/* The bot separates a confirmation into blocks with blank lines. Rendering each
+   block as its own paragraph is what stops it reading as one grey smear. */
+.msg-p + .msg-p { margin-top: .55rem; }
+.msg-text strong { font-weight: 700; }
+.msg-text code {
+  font-size: .82em; padding: .05rem .3rem; border-radius: .3rem;
+  background: rgba(8, 20, 44, .07);
 }
-.bubble .time { display: block; font-size: .65rem; color: #7b8794; margin-top: .2rem; text-align: right; }
-.bubble-buttons { display: flex; flex-direction: column; gap: .25rem; margin-top: .4rem; }
-.bubble-buttons .btn { font-size: .78rem; }
+/* `Reference: …` / `Service: …` / `Date: …` line up as a two-column list so a
+   booking confirmation can be scanned at a glance instead of read. */
+.msg-kv { display: grid; gap: .15rem; }
+.msg-kv-row { display: grid; grid-template-columns: auto 1fr; gap: .55rem; align-items: baseline; }
+.msg-kv-k { color: #5f6b7f; font-size: .8rem; }
+.msg-kv-v { font-weight: 600; color: var(--tc-navy-900); min-width: 0; }
+
+.bubble-buttons { display: flex; flex-direction: column; gap: .3rem; margin-top: .5rem; }
+/* The replies the customer was offered. Every other labelled button in the app is
+   a filled crimson slab, but these are choices *inside* a message rather than the
+   screen's primary action — seven of them filled turned one bubble into a wall of
+   red. Kept light here: crimson type and border, filling only on hover. */
+.bubble-buttons .btn,
+.bubble-buttons .btn-outline-secondary {
+  font-size: .78rem; font-weight: 600;
+  background: #fff; border: 1px solid var(--tc-crimson-400);
+  color: var(--tc-crimson-600); border-radius: .5rem;
+}
+.bubble-buttons .btn:hover,
+.bubble-buttons .btn-outline-secondary:hover {
+  background: var(--tc-crimson-500); border-color: var(--tc-crimson-500); color: #fff;
+}
+/* One footer row: who sent it, when, and whether it landed. */
+.bubble-foot {
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: .35rem; margin-top: .3rem;
+}
+.bubble-bot {
+  font-size: .56rem; font-weight: 800; letter-spacing: .09em;
+  color: var(--tc-navy-700); background: rgba(8, 20, 44, .08);
+  border-radius: .25rem; padding: .05rem .3rem;
+}
+.bubble .time { font-size: .65rem; color: #5f6b7f; }
+.bubble-tick { font-size: .82rem; color: #5f6b7f; }
+.bubble-tick.is-read { color: #2f6fe4; }
+.bubble-tick.is-failed { color: var(--tc-crimson-600); }
 
 /* Day separators, grouping and tap chips keep a long thread readable. */
 .chat-day {
-  text-align: center; margin: .85rem 0 .6rem;
-  font-size: .67rem; font-weight: 700; letter-spacing: .07em;
-  text-transform: uppercase; color: var(--tc-ink-faint);
+  width: fit-content; margin: .95rem auto .7rem;
+  padding: .16rem .7rem; border-radius: 999px;
+  background: rgba(255, 255, 255, .92); border: 1px solid var(--tc-line);
+  font-size: .64rem; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--tc-ink-muted);
 }
-.bubble.is-grouped { margin-top: -.28rem; }
-.bubble .msg-text:empty { display: none; }
+.bubble.is-grouped { margin-top: -.3rem; }
 /* An inbound tap is an action, not a stray payload id. */
 .bubble-tap {
   display: inline-flex; align-items: center; gap: .4rem;
@@ -1042,8 +1155,12 @@ html.sidebar-rail { --tc-sidebar: 74px; }
   --tc-line: #e2e8f2;
   --tc-line-strong: #d3dbe9;
   --tc-ink: #16223a;
-  --tc-ink-muted: #66748c;
-  --tc-ink-faint: #8c98ad;
+  /* Both greys were too light to read: on white, `ink-faint` measured 2.9:1 and
+     `ink-muted` 4.2:1 against the 4.5:1 minimum. That is what made timestamps,
+     the phone number under a contact's name and the top-bar placeholder look
+     washed out. Darkened here rather than at ~49 call sites. */
+  --tc-ink-muted: #5d6a80;
+  --tc-ink-faint: #636e80;
 
   /* ── Tonal fills ─────────────────────────────────────────────────
      The tint and ink for each colour slot. They all sit on the navy /
@@ -1324,13 +1441,6 @@ h1.h4, .page-title { font-weight: 700; letter-spacing: -.015em; }
     radial-gradient(circle at 18% 8%, rgba(255, 255, 255, .7), transparent 55%),
     linear-gradient(180deg, #f2f5fa, #e9eef7);
   padding: 1.1rem;
-}
-.bubble { box-shadow: var(--tc-shadow-1); line-height: 1.45; }
-.bubble.inbound { border: 1px solid var(--tc-line); }
-.bubble.bot::after {
-  content: "bot"; font-size: .6rem; color: var(--tc-navy-700);
-  border: 1px solid var(--tc-line-strong); background: #f2f5fa;
-  border-radius: 4px; padding: 0 .25rem; margin-left: .5rem; vertical-align: middle;
 }
 .chat-item { transition: background-color var(--tc-fast); }
 

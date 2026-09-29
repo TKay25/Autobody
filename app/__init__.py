@@ -212,6 +212,8 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(api.bp)
     app.register_blueprint(docs.bp)
     app.register_blueprint(whatsapp.bp)
+    # The same webhook under the shorter /webhook URL Meta users tend to type.
+    app.register_blueprint(whatsapp.alias)
 
 
 def _register_jinja(app: Flask) -> None:

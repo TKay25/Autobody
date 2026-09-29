@@ -126,6 +126,9 @@ class TestConfig(Config):
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
     WA_MODE = "simulator"
+    # Pinned so the suite never depends on the developer's local .env — the
+    # webhook verification tests assert on this exact string.
+    WA_VERIFY_TOKEN = "topclass-verify-token"
     SECRET_KEY = "test-secret"
     # Keep hashing cheap in tests; production uses Werkzeug's scrypt default.
     PASSWORD_HASH_METHOD = "pbkdf2:sha256:1000"

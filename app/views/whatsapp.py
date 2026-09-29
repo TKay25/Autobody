@@ -3,6 +3,9 @@
 GET  /webhooks/whatsapp  – verification handshake (hub.challenge)
 POST /webhooks/whatsapp  – inbound messages + delivery statuses
 
+``/webhook`` is an accepted alias serving the same two endpoints (see the bottom
+of this module), so either URL can be pasted into the Meta app dashboard.
+
 Point your Meta app's webhook at ``https://<your-domain>/webhooks/whatsapp`` and
 use ``WA_VERIFY_TOKEN`` as the verify token.
 """
@@ -63,6 +66,28 @@ def inbound():
         log.exception("WhatsApp webhook error: %s", exc)
         db.session.rollback()
     return jsonify({"received": True, **summary}), 200
+
+
+# ── /webhook alias ───────────────────────────────────────────────────────────
+# Meta accepts whatever URL you paste into the app dashboard, and "/webhook" is
+# the obvious thing to type. The canonical route is /webhooks/whatsapp; this
+# alias serves the identical two endpoints so the short URL also verifies and
+# receives. Without it, verification fails with a 404.
+#
+# strict_slashes=False so both "/webhook" and "/webhook/" work: Meta does not
+# follow the 308 redirect on the POST, so the body would be lost.
+alias = Blueprint("whatsapp_alias", __name__)
+csrf.exempt(alias)
+
+
+@alias.get("/webhook", strict_slashes=False)
+def verify_alias():
+    return verify()
+
+
+@alias.post("/webhook", strict_slashes=False)
+def inbound_alias():
+    return inbound()
 
 
 def _signature_ok(raw: bytes) -> bool:

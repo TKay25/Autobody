@@ -3,6 +3,38 @@
   const T = window.TCA;
   const { h, api, dateTime, timeOnly } = T;
 
+  /* ── sizing the chat column ────────────────────────────────────────────
+     The message log has to scroll inside the chat panel, not grow the page.
+     `calc(100vh - 150px)` guessed at the chrome, and the guess went stale once
+     the Bot simulator was added below the chat: the wrap stayed 1200px tall
+     while its log grew to 6836px, so the thread spilled straight down the page
+     and through the simulator.
+
+     The correct height depends on the top bar, the quick-action strip and the
+     simulator — none of which is a constant — so measure it instead of guessing.
+     ────────────────────────────────────────────────────────────────────── */
+  let chatFitBound = false;
+
+  function fitChat() {
+    const view = document.querySelector('.tc-chat-view');
+    if (!view) return;
+    const wrap = view.querySelector('.chat-wrap');
+    const sim = view.querySelector('.tc-chat-sim');
+    if (!wrap) return;
+    /* Under 860px the columns stack, so a fixed height is wrong. */
+    if (window.innerWidth <= 860) { wrap.style.height = ''; return; }
+    /* The simulator's own margin above it, plus .tc-content's bottom padding. */
+    const room = window.innerHeight - wrap.getBoundingClientRect().top
+      - (sim ? sim.getBoundingClientRect().height : 0) - 40;
+    wrap.style.height = `${Math.max(320, Math.round(room))}px`;
+  }
+
+  function bindChatFit() {
+    if (chatFitBound) return;
+    chatFitBound = true;
+    window.addEventListener('resize', () => window.requestAnimationFrame(fitChat));
+  }
+
   /* ── chat rendering helpers ───────────────────────────────────────── */
   const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -34,6 +66,64 @@
 
   const isTap = (message) => /^\[button:/.test((message.body || '').trim());
 
+  /* ── message body ──────────────────────────────────────────────────
+     The bot sends its confirmations with WhatsApp's own text markup, so a
+     booking read `✅ *Booking confirmed*` — asterisks and all. These helpers
+     turn the markers into real emphasis and split the body on blank lines, so a
+     confirmation scans as title · details · address · instruction instead of
+     one grey wall.
+     Built from nodes rather than innerHTML, so message text can never inject
+     markup into the page.
+     ─────────────────────────────────────────────────────────────── */
+  const MARKUP = /(\*[^*\n]+\*|_[^_\n]+_|~[^~\n]+~|```[^`\n]+```)/g;
+
+  function inlineMarkup(text) {
+    const out = [];
+    let last = 0;
+    let m;
+    MARKUP.lastIndex = 0;
+    while ((m = MARKUP.exec(text)) !== null) {
+      if (m.index > last) out.push(text.slice(last, m.index));
+      const token = m[0];
+      if (token.startsWith('```')) out.push(h('code', token.slice(3, -3)));
+      else if (token[0] === '*') out.push(h('strong', token.slice(1, -1)));
+      else if (token[0] === '_') out.push(h('em', token.slice(1, -1)));
+      else out.push(h('s', token.slice(1, -1)));
+      last = m.index + token.length;
+    }
+    if (last < text.length) out.push(text.slice(last));
+    return out;
+  }
+
+  /* `Reference: TC-BKG-85F746` and friends. Only worth laying out as a list when
+     the block is mostly made of them, so ordinary prose with one colon in it is
+     left alone. */
+  const KV_LINE = /^([A-Z][A-Za-z0-9 /-]{1,22}):[ \t]+(\S.*)$/;
+
+  function renderBody(raw) {
+    const blocks = String(raw || '').split(/\n{2,}/).filter((b) => b.trim());
+    return blocks.map((block) => {
+      const lines = block.split('\n');
+      const kvs = lines.filter((l) => KV_LINE.test(l.trim()));
+      if (kvs.length >= 2 && kvs.length >= lines.length - 1) {
+        return h('div.msg-kv', lines.map((line) => {
+          const hit = KV_LINE.exec(line.trim());
+          if (!hit) return h('div.msg-kv-row', h('div.msg-kv-v', inlineMarkup(line)));
+          return h('div.msg-kv-row', [
+            h('div.msg-kv-k', hit[1]),
+            h('div.msg-kv-v', inlineMarkup(hit[2])),
+          ]);
+        }));
+      }
+      const parts = [];
+      lines.forEach((line, i) => {
+        if (i) parts.push(h('br'));
+        parts.push(...inlineMarkup(line));
+      });
+      return h('div.msg-p', parts);
+    });
+  }
+
   const initialsOf = (name) => (name || '?')
     .split(/\s+/).filter(Boolean).slice(0, 2)
     .map((part) => part[0].toUpperCase()).join('') || '?';
@@ -50,12 +140,16 @@
     return raw.length > 90 ? `${raw.slice(0, 90)}…` : raw;
   }
 
+  /* A read receipt should not look like one that only got delivered, which is what
+     a bare ✓✓ string gave us. Returns the icon, its tone and a tooltip. */
   function tick(status) {
-    if (status === 'read') return '✓✓';
-    if (status === 'delivered') return '✓✓';
-    if (status === 'sent') return '✓';
-    if (status === 'failed') return '⚠';
-    return '';
+    if (status === 'read') return { icon: 'check-all', tone: 'read', title: 'Read' };
+    if (status === 'delivered') return { icon: 'check-all', title: 'Delivered' };
+    if (status === 'sent') return { icon: 'check', title: 'Sent' };
+    if (status === 'failed') {
+      return { icon: 'exclamation-triangle-fill', tone: 'failed', title: 'Failed' };
+    }
+    return null;
   }
 
   T.route('/inbox', async (ctx) => {
@@ -89,7 +183,21 @@
                 ]),
               ]),
             ]);
-            el.addEventListener('click', () => { activeId = c.id; T.navigate(`/inbox?id=${c.id}`); });
+            el.addEventListener('click', () => {
+              if (c.id === activeId) return;
+              activeId = c.id;
+              /* Swap the selection in place. Routing here re-runs this whole
+                 route handler — refetching the conversation list, remounting the
+                 left rail and reloading the thread — which reads as a full page
+                 refresh every time a conversation is opened. The URL still moves
+                 so the thread stays linkable and survives a reload. */
+              Array.from(listHost.children).forEach((node, i) => {
+                const item = conversations.items[i];
+                if (item) node.classList.toggle('active', item.id === activeId);
+              });
+              window.history.replaceState(null, '', `#/inbox?id=${c.id}`);
+              loadThread(c.id);
+            });
             return el;
           })
         : T.emptyState('No conversations yet', 'Customer messages appear here.', 'whatsapp'));
@@ -135,7 +243,7 @@
         }, [
           isTap(m)
             ? h('div.bubble-tap', [T.icon('hand-index-thumb'), h('span', bodyText(m))])
-            : h('div.msg-text', bodyText(m)),
+            : h('div.msg-text', renderBody(bodyText(m))),
           m.media_url
             ? h('img.img-fluid.rounded.mt-2', { src: m.media_url, style: 'max-width:220px' })
             : null,
@@ -150,8 +258,16 @@
                   },
                 }, b.title)))
             : null,
-          h('span.time', [timeOnly(m.created_at),
-            direction === 'outbound' && stamp ? ` · ${stamp}` : '']),
+          h('div.bubble-foot', [
+            m.is_bot ? h('span.bubble-bot', 'BOT') : null,
+            h('span.time', timeOnly(m.created_at)),
+            direction === 'outbound' && stamp
+              ? h('i', {
+                  class: `bi bi-${stamp.icon} bubble-tick${stamp.tone ? ` is-${stamp.tone}` : ''}`,
+                  title: stamp.title,
+                })
+              : null,
+          ]),
         ]));
       });
 
@@ -276,7 +392,8 @@
     renderList();
     await loadThread(activeId);
 
-    return h('div', [
+    bindChatFit();
+    const root = h('div.tc-chat-view', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
         h('div.flex-fill', [h('h1.h4.mb-0', 'WhatsApp inbox'),
           h('div.small.text-secondary',
@@ -287,7 +404,11 @@
         T.section({ body: listHost, flush: true }),
         panelHost,
       ]),
-      h('div.mt-3', simulator),
+      h('div.tc-chat-sim.mt-3', simulator),
     ]);
+    /* Once now, and once after the first paint so the measured top is real. */
+    fitChat();
+    window.requestAnimationFrame(fitChat);
+    return root;
   });
 })();
