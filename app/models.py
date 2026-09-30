@@ -250,6 +250,12 @@ class JobCard(TimestampMixin, db.Model):
     promised_date = db.Column(db.Date)
     completed_at = db.Column(db.DateTime)
     collected_at = db.Column(db.DateTime)
+    # How the customer rated the job, asked for once after collection. The
+    # requested_at stamp is what stops the feedback job nagging twice.
+    feedback_requested_at = db.Column(db.DateTime)
+    feedback_rating = db.Column(db.Integer)          # 5 | 3 | 1
+    feedback_text = db.Column(db.Text)
+    feedback_at = db.Column(db.DateTime)
     keys_received = db.Column(db.Boolean, default=True, nullable=False)
     fuel_level = db.Column(db.String(10))
     valuables = db.Column(db.Text)
@@ -363,6 +369,11 @@ class JobCard(TimestampMixin, db.Model):
             "valuables": self.valuables,
             "odometer_in": self.odometer_in,
             "collected_at": self.collected_at.isoformat() if self.collected_at else None,
+            "feedback_rating": self.feedback_rating,
+            "feedback_text": self.feedback_text,
+            "feedback_at": self.feedback_at.isoformat() if self.feedback_at else None,
+            "feedback_requested_at": (self.feedback_requested_at.isoformat()
+                                      if self.feedback_requested_at else None),
             "vehicle": self.vehicle.to_dict() if self.vehicle else None,
             "customer": self.customer.to_dict() if self.customer else None,
             "estimate": est.to_dict() if est else None,
@@ -733,6 +744,14 @@ class Invoice(TimestampMixin, db.Model):
         "Payment", back_populates="invoice", cascade="all, delete-orphan",
         order_by="Payment.id.desc()",
     )
+    proofs = db.relationship(
+        "PaymentProof", back_populates="invoice", cascade="all, delete-orphan",
+        order_by="PaymentProof.id.desc()",
+    )
+
+    @property
+    def proof_count(self) -> int:
+        return len(self.proofs)
 
     @property
     def balance(self) -> Decimal:
@@ -766,10 +785,58 @@ class Invoice(TimestampMixin, db.Model):
             "issued_at": self.issued_at.isoformat() if self.issued_at else None,
             "paid_at": self.paid_at.isoformat() if self.paid_at else None,
             "public_token": self.public_token,
+            "proofs": [p.to_dict() for p in self.proofs],
+            "proof_count": self.proof_count,
         }
         if deep:
             data["payments"] = [p.to_dict() for p in self.payments]
         return data
+
+
+class PaymentProof(db.Model):
+    """A screenshot or deposit slip a customer sent as proof of payment.
+
+    Deliberately NOT a ``Payment``: a proof is a claim, not money in the bank.
+    Somebody has to look at it and record the real payment, so this is evidence
+    with a verification trail rather than a receipt.
+    """
+    __tablename__ = "payment_proofs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    invoice_id = db.Column(db.Integer, db.ForeignKey("invoices.id"), nullable=False, index=True)
+    customer_id = db.Column(db.Integer, db.ForeignKey("customers.id"), index=True)
+    filename = db.Column(db.String(255), nullable=False)
+    url = db.Column(db.String(400), nullable=False)
+    note = db.Column(db.String(255))
+    source = db.Column(db.String(30), default="whatsapp")
+    # Filled in when the front desk has checked it against the bank/EcoCash
+    # statement and recorded the actual payment.
+    verified_at = db.Column(db.DateTime)
+    verified_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    created_at = db.Column(db.DateTime, default=_now, nullable=False)
+
+    invoice = db.relationship("Invoice", back_populates="proofs")
+    customer = db.relationship("Customer")
+    verified_by = db.relationship("User")
+
+    @property
+    def is_verified(self) -> bool:
+        return self.verified_at is not None
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "invoice_id": self.invoice_id,
+            "invoice_no": self.invoice.invoice_no if self.invoice else None,
+            "customer_id": self.customer_id,
+            "url": self.url,
+            "note": self.note,
+            "source": self.source,
+            "is_verified": self.is_verified,
+            "verified_at": self.verified_at.isoformat() if self.verified_at else None,
+            "verified_by": self.verified_by.full_name if self.verified_by else None,
+            "created_at": self.created_at.isoformat(),
+        }
 
 
 class Payment(db.Model):
@@ -869,17 +936,27 @@ class Booking(TimestampMixin, db.Model):
     # secured, or they walked out without committing to anything.
     outcome = db.Column(db.String(20))
     rescheduled_count = db.Column(db.Integer, default=0, nullable=False)
+    # The day-before nudge. Non-null means it already went out, which is what
+    # makes the reminder job safe to run as often as you like.
+    reminder_sent_at = db.Column(db.DateTime)
 
     customer = db.relationship("Customer", back_populates="bookings")
     vehicle = db.relationship("Vehicle")
     # Two foreign keys onto the same table, so the joins have to be explicit.
     confirmed_by = db.relationship("User", foreign_keys=[confirmed_by_id])
     attended_by = db.relationship("User", foreign_keys=[attended_by_id])
+    photos = db.relationship("BookingPhoto", back_populates="booking",
+                             cascade="all, delete-orphan", order_by="BookingPhoto.id")
 
     @property
     def display_reference(self) -> str:
         """The booking reference once it has one, otherwise the enquiry's."""
         return self.booking_reference or self.reference
+
+    @property
+    def photo_count(self) -> int:
+        """How many photos the customer sent with the enquiry."""
+        return len(self.photos)
 
     def to_dict(self) -> dict:
         return {
@@ -910,6 +987,43 @@ class Booking(TimestampMixin, db.Model):
             "outcome": self.outcome,
             "outcome_label": BOOKING_OUTCOMES.get(self.outcome or ""),
             "rescheduled_count": self.rescheduled_count or 0,
+            "reminder_sent_at": (self.reminder_sent_at.isoformat()
+                                 if self.reminder_sent_at else None),
+            "photos": [p.to_dict() for p in self.photos],
+            "photo_count": self.photo_count,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+class BookingPhoto(db.Model):
+    """A photo a customer sent with an enquiry.
+
+    ``JobPhoto`` is job-card scoped, and an enquiry is a ``Booking`` that has no
+    job card yet. Without this table a damage photo sent during the WhatsApp
+    quote flow was collected into the conversation context and then thrown away
+    when the lead was created — and that photo is the single most useful thing
+    the front desk can receive.
+    """
+    __tablename__ = "booking_photos"
+
+    id = db.Column(db.Integer, primary_key=True)
+    booking_id = db.Column(db.Integer, db.ForeignKey("bookings.id"), nullable=False, index=True)
+    filename = db.Column(db.String(255), nullable=False)
+    url = db.Column(db.String(400), nullable=False)
+    kind = db.Column(db.String(30), default="DAMAGE")  # DAMAGE | REFERENCE | PAYMENT_PROOF
+    caption = db.Column(db.String(255))
+    source = db.Column(db.String(30), default="whatsapp")  # whatsapp | web
+    created_at = db.Column(db.DateTime, default=_now, nullable=False)
+
+    booking = db.relationship("Booking", back_populates="photos")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "url": self.url,
+            "kind": self.kind,
+            "caption": self.caption,
+            "source": self.source,
             "created_at": self.created_at.isoformat(),
         }
 

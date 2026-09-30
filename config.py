@@ -80,6 +80,13 @@ class Config:
     # is public, and without it anyone can post fake messages at the bot.
     WA_APP_SECRET = os.getenv("WA_APP_SECRET", "")
     WA_VERIFY_TOKEN = os.getenv("WA_VERIFY_TOKEN", "topclass-verify-token")
+    # Optional second lock on the webhook *delivery* URL. The verify token only
+    # proves who configured the webhook — it rides in the GET handshake and never
+    # touches a POST body. Setting this makes the same shared secret a query
+    # check on every delivery, so "anyone who knows our domain" becomes "anyone
+    # who knows the exact URL pasted into Meta". NOT a substitute for
+    # WA_APP_SECRET: it proves the caller knows the URL, not that Meta sent it.
+    WA_WEBHOOK_TOKEN = os.getenv("WA_WEBHOOK_TOKEN", "")
     WA_GRAPH_URL = os.getenv("WA_GRAPH_URL", "https://graph.facebook.com")
     WA_SESSION_WINDOW_HOURS = 24
 
@@ -126,9 +133,22 @@ class TestConfig(Config):
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
     WA_MODE = "simulator"
+    # The whole WhatsApp block is pinned, because ``config.py`` runs ``load_dotenv``
+    # at import: without this a developer's real `.env` leaks into the suite. That
+    # already broke the webhook tests once (WA_VERIFY_TOKEN) and had the live
+    # access token sitting in test config.
+    WA_ACCESS_TOKEN = ""
+    WA_PHONE_NUMBER_ID = ""
+    WA_BUSINESS_ACCOUNT_ID = ""
     # Pinned so the suite never depends on the developer's local .env — the
     # webhook verification tests assert on this exact string.
     WA_VERIFY_TOKEN = "topclass-verify-token"
+    # Also pinned, and empty: a developer with WA_WEBHOOK_TOKEN in .env must not
+    # turn every webhook test into a 403.
+    WA_WEBHOOK_TOKEN = ""
+    # Same reasoning. The signature test subclasses this with its own secret; a
+    # real secret leaking in here would 403 every unsigned webhook test.
+    WA_APP_SECRET = ""
     SECRET_KEY = "test-secret"
     # Keep hashing cheap in tests; production uses Werkzeug's scrypt default.
     PASSWORD_HASH_METHOD = "pbkdf2:sha256:1000"

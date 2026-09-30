@@ -42,6 +42,9 @@ class WhatsAppClient:
 
     def __init__(self, app=None):
         self.app = app or current_app
+        # The simulator warning is worth saying once per process, not once per
+        # message — a busy thread would otherwise bury the rest of the log.
+        self._warned_simulator = False
 
     # ── config helpers ───────────────────────────────────────────────────
     @property
@@ -57,6 +60,22 @@ class WhatsAppClient:
         )
 
     @property
+    def missing_live_settings(self) -> list[str]:
+        """Which of the three settings is stopping a real send.
+
+        Naming them is the whole point: the alternative is a deployment that
+        accepts messages, computes replies and stores them as *delivered*, while
+        the customer's phone stays silent and nothing anywhere says why.
+        """
+        return [
+            name for name, present in (
+                ("WA_MODE=live", self.cfg.get("WA_MODE") == "live"),
+                ("WA_ACCESS_TOKEN", bool(self.cfg.get("WA_ACCESS_TOKEN"))),
+                ("WA_PHONE_NUMBER_ID", bool(self.cfg.get("WA_PHONE_NUMBER_ID"))),
+            ) if not present
+        ]
+
+    @property
     def _endpoint(self) -> str:
         return (
             f"{self.cfg['WA_GRAPH_URL']}/{self.cfg['WA_API_VERSION']}"
@@ -66,6 +85,17 @@ class WhatsAppClient:
     # ── transport ────────────────────────────────────────────────────────
     def _post(self, payload: dict) -> dict:
         if not self.is_live:
+            # WARNING, not INFO, and it names what is missing. A silent no-op here
+            # is indistinguishable from a working bot in the inbox, which is how a
+            # production deployment sat in simulator mode answering nobody.
+            if not self._warned_simulator:
+                self._warned_simulator = True
+                log.warning(
+                    "WhatsApp is in SIMULATOR mode - nothing is being sent to "
+                    "WhatsApp. Missing: %s. Messages are still stored so the inbox "
+                    "shows the conversation.",
+                    ", ".join(self.missing_live_settings) or "(unknown)",
+                )
             log.info("[WA-SIM] -> %s :: %s", payload.get("to"), payload)
             return {"simulated": True, "payload": payload}
         try:
@@ -224,7 +254,13 @@ class WhatsAppClient:
 
         status = "delivered"
         try:
-            self._post(payload)
+            result = self._post(payload)
+            if isinstance(result, dict) and result.get("simulated"):
+                # Recording this as "delivered" is a lie the operator has no way to
+                # see through: the inbox draws delivery ticks for messages that
+                # never left the machine. ConnectLink never had this problem
+                # because it always posts and always reports the status code.
+                status = "simulated"
         except WhatsAppError as exc:
             status = "failed"
             log.error("WhatsApp send failed: %s", exc)

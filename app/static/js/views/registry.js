@@ -237,6 +237,16 @@
       if (saved) load();
     }
 
+    /* Enquiry photos. A customer sends them before any job card exists, so they
+       hang off the enquiry — and this pill is the only place the desk sees them
+       without opening the chat thread in the inbox. */
+    function enquiryPhotos(booking) {
+      return T.photoViewer(booking.photos || [], {
+        title: `Photos · ${booking.display_reference || booking.reference}`,
+        subtitle: booking.customer_name || '',
+      });
+    }
+
     async function load() {
       T.mount(host, T.skeletonTable(7, 5));
       const data = await api.get('/api/bookings');
@@ -252,6 +262,9 @@
               h('div.fw-semibold', r.display_reference || r.reference),
               h('div.small.text-secondary', r.booking_reference
                 ? `Enquiry ${r.reference}` : (r.source || '')),
+              T.photoPill(r, { cls: 'mt-1',
+                title: 'Damage photos sent with the enquiry',
+                onClick: enquiryPhotos }),
             ]) },
           { label: 'Customer', render: (r) => h('div', [h('div', r.customer_name),
               h('div.small.text-secondary', r.customer_phone || '')]) },

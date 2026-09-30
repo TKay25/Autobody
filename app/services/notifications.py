@@ -6,6 +6,7 @@ what the customer was told, and so failed sends can be retried.
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from flask import current_app, has_request_context, request
@@ -25,6 +26,23 @@ TEMPLATE_PARTS_IN = "parts_received"
 TEMPLATE_PAYMENT_DUE = "payment_due"
 TEMPLATE_WARRANTY = "warranty_registered"
 TEMPLATE_DOCUMENT = "document_share"
+TEMPLATE_BOOKING_REMINDER = "booking_reminder"
+TEMPLATE_FEEDBACK = "job_feedback"
+
+# The rating scale. Deliberately three options, not five: WhatsApp caps reply
+# buttons at three, and the same three ids are reused as the quick-reply payloads
+# on the ``job_feedback`` template — so the tap means the same thing whether the
+# customer is inside the 24h window or not.
+FEEDBACK_RATINGS = [
+    (5, "Excellent"),
+    (3, "Okay"),
+    (1, "Poor"),
+]
+
+
+def _feedback_buttons(job) -> list[dict]:
+    return [{"id": f"rate:{job.id}:{score}", "title": label}
+            for score, label in FEEDBACK_RATINGS]
 
 
 def public_url(path: str) -> str:
@@ -378,15 +396,178 @@ def notify_booking_rescheduled(booking, previous_slot: str) -> bool:
     return True
 
 
-def send_custom(conversation, body: str, *, is_bot: bool = False, user=None):
-    """Used by the web inbox when a staff member replies manually."""
+def send_due_feedback_requests(day: date | None = None) -> dict:
+    """Ask the customers whose vehicles were collected on ``day`` how we did.
+
+    Defaults to yesterday, so the ask lands after they have had the car back for
+    a night rather than while they are still on the forecourt. Only jobs that
+    actually reached COLLECTED are asked about, and ``feedback_requested_at``
+    makes the run idempotent.
+    """
+    from ..models import JobCard
+
+    day = day or (date.today() - timedelta(days=1))
+    # A half-open range rather than ``date(collected_at) = day``: function-wrapping
+    # the column is not portable to Postgres and cannot use an index. The day is
+    # read on the server's clock, the same clock that wrote ``collected_at``.
+    start = datetime.combine(day, time.min)
+    end = start + timedelta(days=1)
+    pending = JobCard.query.filter(
+        JobCard.stage == "COLLECTED",
+        JobCard.feedback_requested_at.is_(None),
+        JobCard.collected_at >= start,
+        JobCard.collected_at < end,
+    ).order_by(JobCard.id.asc()).all()
+
+    sent = 0
+    for job in pending:
+        if notify_feedback_request(job):
+            job.feedback_requested_at = utcnow()
+            sent += 1
+
+    already = JobCard.query.filter(
+        JobCard.stage == "COLLECTED",
+        JobCard.feedback_requested_at.isnot(None),
+        JobCard.collected_at >= start,
+        JobCard.collected_at < end,
+    ).count()
+    db.session.commit()
+    return {"day": day.isoformat(), "due": len(pending), "sent": sent,
+            "skipped": already}
+
+
+def notify_feedback_request(job: JobCard) -> bool:
+    """Ask for a rating on a finished job.
+
+    Inside the service window this is three reply buttons; outside it, the
+    approved template carrying the same three quick-reply payloads, so the tap
+    is handled identically either way.
+    """
+    customer = job.customer
+    if not customer or not customer.wa_number:
+        return False
+    if not customer.whatsapp_opt_in:
+        _log(job, customer.wa_number, TEMPLATE_FEEDBACK, "", "skipped_optout")
+        return False
+
+    name = (customer.name or "there").split(" ")[0]
+    body = (
+        f"How did we do on *{job.job_no}*, {name}?\n\n"
+        "One tap tells the workshop owner. If anything was not right, pick "
+        "*Poor* and tell us what happened — we would rather hear it from you."
+    )
     client = WhatsAppClient()
-    delivered = True
+    conversation = get_or_create_conversation(customer.wa_number, customer.name)
     try:
-        client.send_text(conversation.wa_id, body, conversation=conversation, is_bot=is_bot)
+        if conversation.is_session_open:
+            client.send_buttons(customer.wa_number, body, _feedback_buttons(job),
+                                header="Topclass Auto Body", conversation=conversation,
+                                intent=TEMPLATE_FEEDBACK, job_id=job.id)
+        else:
+            client.send_template(customer.wa_number, TEMPLATE_FEEDBACK,
+                                 [name, job.job_no], conversation=conversation,
+                                 job_id=job.id)
+    except Exception as exc:  # noqa: BLE001
+        log.error("Feedback request failed: %s", exc)
+        _log(job, customer.wa_number, TEMPLATE_FEEDBACK, body, "failed", str(exc)[:250])
+        return False
+    _log(job, customer.wa_number, TEMPLATE_FEEDBACK, body, "sent")
+    return True
+
+
+def send_custom(conversation, body: str, *, is_bot: bool = False, user=None):
+    """Used by the web inbox when a staff member replies manually.
+
+    Returns ``False`` when the message did **not** reach WhatsApp. A manual reply
+    that silently goes nowhere is worse than one that visibly fails: the operator
+    ticks the customer off as answered and stops expecting a response.
+    """
+    client = WhatsAppClient()
+    try:
+        message = client.send_text(conversation.wa_id, body,
+                                   conversation=conversation, is_bot=is_bot)
     except Exception as exc:  # noqa: BLE001
         log.error("Manual reply failed: %s", exc)
-        delivered = False
         log_outbound(conversation, body=body, is_bot=is_bot, status="failed",
                      payload={"error": str(exc)[:200]})
-    return delivered
+        return False
+    if message is None:
+        return False
+    # ``_dispatch`` records "simulated" when nothing left the machine.
+    return getattr(message, "status", "delivered") != "simulated"
+
+
+def notify_booking_reminder(booking) -> bool:
+    """The day-before nudge.
+
+    Unlike the other booking notices this one is *designed* to land outside the
+    24-hour service window — the customer booked days ago and has said nothing
+    since. Free-form text would be rejected outright by Meta, so when the window
+    is shut this goes out as the approved template instead.
+    """
+    customer = booking.customer
+    if not customer or not customer.wa_number:
+        return False
+    if not customer.whatsapp_opt_in:
+        _log(None, customer.wa_number, TEMPLATE_BOOKING_REMINDER, "", "skipped_optout")
+        return False
+
+    when = _slot_text(booking)
+    body = (
+        f"⏰ *Reminder — your appointment*\n\n"
+        f"Reference: {booking.display_reference}\n"
+        f"Service: {booking.service}\n"
+        f"When: {when}"
+        f"\n\n📍 {current_app.config['COMPANY_ADDRESS']}"
+        "\n\nReply *menu* if you need to move it."
+    )
+    client = WhatsAppClient()
+    conversation = get_or_create_conversation(customer.wa_number, customer.name)
+    try:
+        if conversation.is_session_open:
+            client.send_text(customer.wa_number, body, conversation=conversation,
+                             intent=TEMPLATE_BOOKING_REMINDER)
+        else:
+            client.send_template(
+                customer.wa_number, TEMPLATE_BOOKING_REMINDER,
+                [customer.name, when, booking.display_reference],
+                conversation=conversation,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.error("Booking reminder failed: %s", exc)
+        _log(None, customer.wa_number, TEMPLATE_BOOKING_REMINDER, body, "failed",
+             str(exc)[:250])
+        return False
+    _log(None, customer.wa_number, TEMPLATE_BOOKING_REMINDER, body, "sent")
+    return True
+
+
+def send_due_booking_reminders(day: date | None = None) -> dict:
+    """Remind everyone booked in for ``day`` (default: tomorrow), once each.
+
+    ``Booking.reminder_sent_at`` is the guard, so this is safe to run as often as
+    you like — hourly, twice a day, or as a single daily cron. Only bookings that
+    are still expected are reminded: a cancelled or no-show appointment must not
+    be resurrected by a nudge.
+    """
+    from ..models import Booking
+
+    day = day or (date.today() + timedelta(days=1))
+    pending = Booking.query.filter(
+        Booking.slot_date == day,
+        Booking.status.in_(("REQUESTED", "CONFIRMED", "ATTENDED")),
+        Booking.reminder_sent_at.is_(None),
+    ).order_by(Booking.slot_time.asc()).all()
+
+    sent = 0
+    for booking in pending:
+        if notify_booking_reminder(booking):
+            booking.reminder_sent_at = utcnow()
+            sent += 1
+
+    already = Booking.query.filter(
+        Booking.slot_date == day, Booking.reminder_sent_at.isnot(None),
+    ).count()
+    db.session.commit()
+    return {"day": day.isoformat(), "due": len(pending), "sent": sent,
+            "skipped": already}

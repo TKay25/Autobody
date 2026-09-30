@@ -54,6 +54,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     _register_jinja(app)
     _register_error_handlers(app)
     _register_cli(app)
+    _log_whatsapp_mode(app)
 
     with app.app_context():
         db.create_all()
@@ -65,6 +66,30 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def _log_whatsapp_mode(app: Flask) -> None:
+    """Say once, at boot, whether this process can actually send WhatsApp.
+
+    A simulator-mode deployment is otherwise completely invisible: the webhook
+    accepts messages, the bot answers, the inbox renders the conversation — and
+    every reply is filed as delivered. One line here is the difference between a
+    two-minute env fix and a day of wondering why nobody replies.
+    """
+    if app.config.get("TESTING"):
+        return
+    from .services.whatsapp_client import WhatsAppClient
+
+    client = WhatsAppClient(app)
+    if client.is_live:
+        app.logger.info("WhatsApp: LIVE via phone number id %s.",
+                        app.config.get("WA_PHONE_NUMBER_ID"))
+    else:
+        app.logger.warning(
+            "WhatsApp: SIMULATOR - replies are stored but NOT sent to WhatsApp. "
+            "Missing: %s. In production set these on the host, not in .env.",
+            ", ".join(client.missing_live_settings) or "(unknown)",
+        )
+
+
 def _configure_logging(app: Flask) -> None:
     if not app.debug:
         logging.basicConfig(level=logging.INFO)
@@ -127,6 +152,14 @@ def _ensure_schema(app: Flask) -> None:
             "booking_reference": "VARCHAR(30)",
             "outcome": "VARCHAR(20)",
             "rescheduled_count": "INTEGER DEFAULT 0",
+            "reminder_sent_at": "TIMESTAMP",
+        })
+
+        ensure_columns(db.engine, "job_cards", {
+            "feedback_requested_at": "TIMESTAMP",
+            "feedback_rating": "INTEGER",
+            "feedback_text": "TEXT",
+            "feedback_at": "TIMESTAMP",
         })
 
         # Insurance claims are no longer part of the product: every job is
@@ -350,6 +383,38 @@ def _register_cli(app: Flask) -> None:
 
         run_seed(with_demo=demo)
         click.echo("Seed complete.")
+
+    @app.cli.command("booking-reminders")
+    @click.option("--date", "day", default=None,
+                  help="ISO date to remind for (default: tomorrow).")
+    def booking_reminders(day: str | None) -> None:
+        """Nudge tomorrow's bookings. Safe to run as often as you like."""
+        from datetime import date as _date
+
+        from .services.notifications import send_due_booking_reminders
+
+        target = _date.fromisoformat(day) if day else None
+        result = send_due_booking_reminders(target)
+        click.echo(
+            f"{result['sent']} reminder(s) sent for {result['day']} "
+            f"({result['due']} due, {result['skipped']} already sent)."
+        )
+
+    @app.cli.command("feedback-requests")
+    @click.option("--date", "day", default=None,
+                  help="ISO date the vehicles were collected (default: yesterday).")
+    def feedback_requests(day: str | None) -> None:
+        """Ask yesterday's customers how we did. Safe to run repeatedly."""
+        from datetime import date as _date
+
+        from .services.notifications import send_due_feedback_requests
+
+        target = _date.fromisoformat(day) if day else None
+        result = send_due_feedback_requests(target)
+        click.echo(
+            f"{result['sent']} feedback request(s) sent for {result['day']} "
+            f"({result['due']} due, {result['skipped']} already asked)."
+        )
 
     @app.cli.command("reset-db")
     def reset_db() -> None:

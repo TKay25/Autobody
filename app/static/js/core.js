@@ -1295,6 +1295,43 @@
   TCA.createStore = createStore;
   TCA.modal = modal;
   TCA.closeModal = closeModal;
+  /* One viewer for every customer-supplied image the app receives: enquiry
+     damage photos and proof-of-payment screenshots. Built as nodes, never
+     innerHTML — the files come from outside the app. */
+  function photoViewer(items, { title, subtitle } = {}) {
+    const photos = items || [];
+    const isImage = (url) => /\.(png|jpe?g|webp|gif)$/i.test(url || '');
+    return modal({
+      title: title || 'Photos',
+      subtitle: subtitle || '',
+      icon: 'camera',
+      size: 'lg',
+      body: photos.length
+        ? h('div.tc-photo-grid', photos.map((p) => (
+            isImage(p.url)
+              ? h('a', { href: p.url, target: '_blank', rel: 'noopener' },
+                  h('img.tc-photo-thumb', { src: p.url, loading: 'lazy',
+                                            alt: p.caption || p.note || 'Attachment' }))
+              : h('a.btn.btn-sm.btn-outline-secondary',
+                  { href: p.url, target: '_blank', rel: 'noopener' },
+                  p.caption || p.note || 'Open attachment')
+          )))
+        : h('div.text-secondary', 'Nothing was attached.'),
+    });
+  }
+
+  /* The little camera + count button that opens the viewer. */
+  function photoPill(row, { onClick, title, cls } = {}) {
+    const count = row.photo_count || row.proof_count || 0;
+    if (!count) return null;
+    return h(`button.btn.btn-sm.btn-outline-secondary${cls ? ' ' + cls : ''}`, {
+      title: title || 'View photos',
+      onclick: (e) => { e.stopPropagation(); onClick && onClick(row); },
+    }, [icon('camera'), h('span.ms-1', String(count))]);
+  }
+
+  TCA.photoViewer = photoViewer;
+  TCA.photoPill = photoPill;
   TCA.confirmDialog = confirmDialog;
   TCA.formModal = formModal;
   TCA.comboField = comboField;

@@ -146,6 +146,13 @@
     if (status === 'read') return { icon: 'check-all', tone: 'read', title: 'Read' };
     if (status === 'delivered') return { icon: 'check-all', title: 'Delivered' };
     if (status === 'sent') return { icon: 'check', title: 'Sent' };
+    /* Stored, never sent — WhatsApp is in simulator mode. Deliberately NOT a tick:
+       a delivery receipt for a message that was never handed to Meta is exactly
+       how a deployment that answers nobody manages to look healthy. */
+    if (status === 'simulated') {
+      return { icon: 'slash-circle', tone: 'failed',
+               title: 'NOT sent — WhatsApp is in simulator mode' };
+    }
     if (status === 'failed') {
       return { icon: 'exclamation-triangle-fill', tone: 'failed', title: 'Failed' };
     }
@@ -393,6 +400,22 @@
     await loadThread(activeId);
 
     bindChatFit();
+    /* Is this deployment actually connected? If it is not, say so at the top
+       rather than letting the operator believe every customer has been answered.
+       Fails soft: a status hiccup must not take the inbox down with it. */
+    const waWarn = h('div');
+    api.get('/api/whatsapp/status').then((s) => {
+      if (s.live) return;
+      T.mount(waWarn, h('div.alert.alert-warning.d-flex.gap-2.align-items-start.mb-3', [
+        T.icon('exclamation-triangle-fill'),
+        h('div', [
+          h('div.fw-semibold', 'WhatsApp is in simulator mode — nothing is being sent.'),
+          h('div.small', 'Messages arrive and the bot answers, but every reply stops '
+            + `here. Missing: ${(s.missing || []).join(', ') || 'unknown'}.`),
+        ]),
+      ]));
+    }).catch(() => {});
+
     const root = h('div.tc-chat-view', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
         h('div.flex-fill', [h('h1.h4.mb-0', 'WhatsApp inbox'),
@@ -400,6 +423,7 @@
             `${conversations.items.length} conversation(s) · ${conversations.unread_total} unread message(s)`)]),
         h('button.btn.btn-outline-secondary.btn-sm', { onclick: refreshList }, T.icon('arrow-clockwise'), ' Refresh'),
       ]),
+      waWarn,
       h('div.chat-wrap', [
         T.section({ body: listHost, flush: true }),
         panelHost,

@@ -19,6 +19,8 @@ from decimal import Decimal
 from flask import current_app
 
 from ..constants import (
+    BOOKING_SLOT_CAPACITY,
+    BOOKING_SLOTS,
     SERVICE_BY_CODE,
     SERVICE_NAMES,
     STAGE_CUSTOMER_TEXT,
@@ -26,7 +28,8 @@ from ..constants import (
     STAGE_PROGRESS,
 )
 from ..extensions import db
-from ..models import Booking, Customer, JobCard, Vehicle, WaConversation
+from ..models import (Booking, BookingPhoto, Customer, Invoice, JobCard, JobPhoto, PaymentProof,
+                      Task, Vehicle, WaConversation, utcnow)
 from .pricing import quick_quote
 
 # ── tiny i18n table (English / Shona / Ndebele) ──────────────────────────────
@@ -69,8 +72,9 @@ LANGUAGE_MARKERS = {
 # cannot swallow the registration number or the damage description the customer
 # just typed; an explicit request ("Shona") still works from any of them.
 DATA_ENTRY_STATES = {
-    "QUOTE_REG", "QUOTE_SERVICE", "QUOTE_DESC", "QUOTE_CONTACT",
-    "TRACK_REF", "BOOK_SERVICE", "BOOK_DATE", "BOOK_CONTACT",
+    "QUOTE_REG", "QUOTE_SERVICE", "QUOTE_DESC", "QUOTE_CONTACT", "QUOTE_EMAIL",
+    "TRACK_REF", "BOOK_SERVICE", "BOOK_DATE", "BOOK_TIME", "BOOK_CONTACT",
+    "PAYMENT_PROOF", "WARRANTY_CLAIM",
 }
 
 T = {
@@ -145,6 +149,13 @@ T = {
               "Pindurai nezita renyu (kana kunyora *skip* kana muri mutengi wedu).",
         "nd": "Ngiyabonga. Okokugcina — yiliphi ibizo elizafakwa kukadi lomsebenzi? "
               "Phendula ngebizo lakho (kumbe bhala *skip* uma usuvele ungumthengi).",
+    },
+    "ask_email": {
+        "en": "Thanks {name}. And an email address for the quotation? "
+              "(or type *skip*)",
+        "sn": "Ndatenda {name}. Uye kero yeemail yequotation? (kana kunyora *skip*)",
+        "nd": "Ngiyabonga {name}. Lakhe ikheli le-imeyili lesiphakamiso? "
+              "(kumbe bhala *skip*)",
     },
     "more_prompt": {
         "en": "Anything else I can help with?",
@@ -226,6 +237,10 @@ def match_service(text: str) -> str | None:
 
 REG_PATTERN = re.compile(r"\b([A-Z]{2,3}[ -]?\d{2,5}[A-Z]?)\b", re.I)
 JOB_PATTERN = re.compile(r"\b(TC-\d{4}-\d{3,5})\b", re.I)
+# Deliberately loose. An address that fails a strict RFC regex is still worth
+# keeping — the front desk can correct it, but a missed one is a lead we cannot
+# send a quotation to.
+EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
 # ── reply builders ───────────────────────────────────────────────────────────
@@ -263,6 +278,8 @@ def main_menu_reply(company: str, lang: str, prefix: str = "") -> dict:
              "description": "Detailing, ceramic coating, PPF"},
             {"id": "m_track", "title": "Track my repair",
              "description": "Job number or registration"},
+            {"id": "m_pay", "title": "I've paid — send proof",
+             "description": "Send a receipt or EcoCash screenshot"},
             {"id": "m_services", "title": "Our services & prices"},
             {"id": "m_human", "title": "Talk to a person"},
             {"id": "m_lang", "title": "🌐 Language"},
@@ -308,7 +325,9 @@ def more_menu_reply(lang: str = "en") -> dict:
             {"id": "m_quote", "title": "Get a quote"},
             {"id": "m_track", "title": "Track my repair"},
             {"id": "m_book", "title": "Book a service"},
+            {"id": "m_pay", "title": "I've paid"},
             {"id": "m_services", "title": "Our services"},
+            {"id": "m_warranty", "title": "Warranty"},
             {"id": "m_human", "title": "Talk to a person"},
             {"id": "m_lang", "title": "🌐 Language"},
             {"id": "m_info", "title": "Contact details"},
@@ -323,6 +342,9 @@ class IntentRouter:
     """Processes one inbound message and returns the replies to send."""
 
     FALLBACK_LIMIT = 2
+    # A customer forwarding a 60-photo album must not bloat the context column
+    # or bury the desk in noise. The last few are the ones that matter.
+    MAX_PENDING_PHOTOS = 8
 
     def __init__(self, conversation: WaConversation, app=None):
         self.conv = conversation
@@ -365,7 +387,17 @@ class IntentRouter:
 
     # ── media (damage photos) ────────────────────────────────────────────
     def _handle_media(self, media_url: str) -> list[dict]:
-        self.conv.ctx_set(pending_media=(self.conv.ctx_get("pending_media") or []) + [media_url])
+        # While we are waiting for payment proof, a picture is the answer to the
+        # question — it must not be filed as a damage photo.
+        if self.conv.state == "PAYMENT_PROOF":
+            return self._attach_payment_proof(media_url)
+        if self.conv.state == "WARRANTY_CLAIM":
+            return self._log_warranty_claim(media_url=media_url)
+
+        # Capped at MAX_PENDING_PHOTOS: keep the most recent, which are the ones
+        # that show the damage once the customer has thought a bit more.
+        media = (self.conv.ctx_get("pending_media") or []) + [media_url]
+        self.conv.ctx_set(pending_media=media[-self.MAX_PENDING_PHOTOS:])
         job = self._find_job()
         if job:
             from ..models import JobPhoto
@@ -376,9 +408,13 @@ class IntentRouter:
             ))
             db.session.commit()
             return [text("📷 Photo received and attached to your job card, thank you!")]
+        # Committed here because pending_media is load-bearing: it is what feeds
+        # BookingPhoto when the enquiry is finally created.
+        db.session.commit()
+        count = len(self.conv.ctx_get("pending_media") or [])
         return [text(
-            "📷 Thank you, we received your photo. Send your registration number so we can "
-            "attach it to the right vehicle, or type *menu*."
+            f"📷 Photo received ({count} so far) — it will be attached to your enquiry.\n"
+            "Send your registration number if you have not already, or type *menu*."
         )]
 
     # ── interactive replies (buttons / list rows) ────────────────────────
@@ -389,8 +425,12 @@ class IntentRouter:
             return self._input_book_service(choice.split(":", 1)[1])
         if choice.startswith("day:"):
             return self._input_book_date(choice.split(":", 1)[1])
+        if choice.startswith("bslot:"):
+            return self._input_book_time(choice.split(":", 1)[1])
         if choice.startswith("lang:"):
             return self._input_lang(choice.split(":", 1)[1])
+        if choice.startswith("rate:"):
+            return self._record_feedback(choice)
         if choice.startswith("a_approve:"):
             return self._quotation_decision(choice.split(":", 1)[1], approve=True)
         if choice.startswith("a_decline:"):
@@ -400,6 +440,8 @@ class IntentRouter:
             "m_quote": self._menu_quote,
             "m_track": self._menu_track,
             "m_book": self._menu_book,
+            "m_pay": self._menu_pay,
+            "m_warranty": self._menu_warranty,
             "m_human": self._menu_human,
             "m_info": self._menu_info,
             "m_menu": self._go_main_menu,
@@ -435,10 +477,14 @@ class IntentRouter:
             "QUOTE_SERVICE": self._input_quote_service,
             "QUOTE_DESC": self._input_quote_desc,
             "QUOTE_CONTACT": self._input_quote_contact,
+            "QUOTE_EMAIL": self._input_quote_email,
             "TRACK_REF": self._input_track_ref,
             "BOOK_SERVICE": self._input_book_service,
             "BOOK_DATE": self._input_book_date,
+            "BOOK_TIME": self._input_book_time,
             "BOOK_CONTACT": self._input_book_contact,
+            "PAYMENT_PROOF": self._input_payment_proof_text,
+            "WARRANTY_CLAIM": self._input_warranty_text,
             "LANG": self._input_lang,
         }.get(state)
         if state_handler:
@@ -481,9 +527,7 @@ class IntentRouter:
         if intent == "services":
             return self._menu_services()
         if intent == "warranty":
-            from ..constants import WARRANTY_TEXT
-
-            return [text(f"🛡️ {WARRANTY_TEXT}")] + [more_menu_reply()]
+            return self._menu_warranty()
         if intent == "stop":
             customer = self.conv.customer or self._customer_by_wa()
             if customer:
@@ -637,10 +681,16 @@ class IntentRouter:
             return [text(t("ask_desc", self.lang))]
         if previous == "QUOTE_CONTACT":
             return [text(t("ask_name", self.lang))]
+        if previous == "QUOTE_EMAIL":
+            return [text(t("ask_email", self.lang, name=""))]
         if previous == "TRACK_REF":
             return [text(t("ask_ref", self.lang))]
         if previous == "BOOK_SERVICE":
             return self._menu_book()
+        if previous == "BOOK_TIME":
+            day = self._parse_book_date(self.conv.ctx_get("book_date"))
+            slots = self._time_list(day) if day else None
+            return [slots] if slots else self._go_main_menu()
         return self._go_main_menu()
 
     # ── quotation approval (WhatsApp buttons) ────────────────────────────
@@ -713,10 +763,79 @@ class IntentRouter:
         return [reply, more_menu_reply()]
 
     def _menu_human(self) -> list[dict]:
+        """Hand the thread to a human *and* leave a ticket behind.
+
+        Setting ``human_takeover`` on its own only silenced the bot: nobody was
+        assigned the request and nothing timed it, so it depended entirely on
+        somebody watching the inbox. The Task is what puts it in the attention
+        panel and on the to-do board with a name against it.
+        """
+        previous_state = self.conv.state
         self.conv.human_takeover = True
         self.conv.state = "HUMAN"
+        task = self._log_callback(previous_state=previous_state)
         db.session.commit()
-        return [text(t("handoff", self.lang, hours=self.cfg["COMPANY_HOURS"]))]
+
+        body = t("handoff", self.lang, hours=self.cfg["COMPANY_HOURS"])
+        if task:
+            body += f"\n\n🎫 *Callback ref:* CALL-{task.id:04d}"
+        return [text(body)]
+
+    def _log_callback(self, *, previous_state: str) -> Task | None:
+        """Open a callback ticket, or reuse the one already pending.
+
+        A customer who taps "talk to a person" three times is one phone call, not
+        three — so an existing open ticket for this number wins.
+        """
+        customer = self.conv.customer or self._customer_by_wa()
+        # The WhatsApp profile name is all we have for a first-time caller, and
+        # "Call back Callback Tester" is a far better ticket than a bare number.
+        who = (customer.name if customer
+               else (self.conv.profile_name or f"+{self.conv.wa_id}"))
+        marker = f"WhatsApp +{self.conv.wa_id}"
+
+        existing = Task.query.filter(
+            Task.status != "DONE", Task.detail.like(f"%{marker}%")
+        ).first()
+        if existing:
+            return existing
+
+        detail = [
+            f"Requested from WhatsApp by {who}.",
+            marker,
+            f"Bot was at: {previous_state}",
+        ]
+        if customer and customer.email:
+            detail.append(f"Email: {customer.email}")
+        last = self.conv.messages[0] if self.conv.messages else None
+        if last and last.body:
+            detail.append(f'Their last message: "{last.body[:200]}"')
+
+        task = Task(
+            title=f"Call back {who}",
+            detail="\n".join(detail),
+            category="Front desk",
+            priority="HIGH",
+            status="OPEN",
+            due_date=date.today(),
+            custodian_id=self._front_desk_user_id(),
+        )
+        db.session.add(task)
+        db.session.flush()
+        return task
+
+    def _front_desk_user_id(self) -> int | None:
+        """Best effort. An unassigned ticket still beats no ticket, so a missing
+        front-desk account must not break the handoff."""
+        try:
+            from ..constants import ROLE_FRONT
+            from ..models import User
+
+            user = (User.query.filter_by(role=ROLE_FRONT, is_active_user=True)
+                    .order_by(User.id).first())
+            return user.id if user else None
+        except Exception:  # noqa: BLE001
+            return None
 
     # ── quote flow ───────────────────────────────────────────────────────
     def _menu_quote(self) -> list[dict]:
@@ -773,11 +892,32 @@ class IntentRouter:
         return [text(t("ask_name", self.lang))]
 
     def _input_quote_contact(self, raw: str) -> list[dict]:
+        # Only hold the name here — the email is one more question, and the lead
+        # is created once we have both. "skip" is still honoured, in which case
+        # we fall back to the WhatsApp profile name.
         name = raw.strip()[:120]
         if name.lower() in {"skip", "none", "-"}:
             customer = self.conv.customer or self._customer_by_wa()
             name = customer.name if customer else f"WhatsApp +{self.conv.wa_id}"
-        return self._create_lead(name)
+        self.conv.ctx_set(contact_name=name)
+        self.conv.state = "QUOTE_EMAIL"
+        db.session.commit()
+        first = name.split()[0] if name.split() else "there"
+        return [text(t("ask_email", self.lang, name=first))]
+
+    def _input_quote_email(self, raw: str) -> list[dict]:
+        """Optional. An address is kept; anything else counts as a skip.
+
+        Re-asking here would loop, and a missed address must not cost us the
+        enquiry — the desk can see the whole thread and ask again when it calls.
+        """
+        answer = raw.strip()
+        email = ""
+        if answer.lower() not in {"skip", "none", "-", "no", "n/a", "na"}:
+            match = EMAIL_PATTERN.search(answer)
+            if match:
+                email = match.group(0)[:160]
+        return self._create_lead(self.conv.ctx_get("contact_name") or "", email=email)
 
     @staticmethod
     def _parse_book_date(raw: str | None) -> date | None:
@@ -793,7 +933,7 @@ class IntentRouter:
             return None
         return parsed if parsed >= date.today() else None
 
-    def _create_lead(self, name: str) -> list[dict]:
+    def _create_lead(self, name: str, email: str = "") -> list[dict]:
         ctx = self.conv.context
         reg = ctx.get("reg") or "TBC"
         service = ctx.get("service") or "Panel Beating & Spray Painting"
@@ -801,11 +941,13 @@ class IntentRouter:
         # The booking flow asks which day suits the customer. That answer used to be
         # collected and then discarded, so every WhatsApp booking landed on tomorrow.
         booked_for = self._parse_book_date(ctx.get("book_date"))
+        booked_at = ctx.get("book_time") or None
 
         customer = self.conv.customer or self._customer_by_wa()
         if not customer:
             customer = Customer(
                 name=name, phone=f"+{self.conv.wa_id}", whatsapp=f"+{self.conv.wa_id}",
+                email=email or None,
                 notes="Created by WhatsApp bot", whatsapp_opt_in=True,
             )
             db.session.add(customer)
@@ -813,10 +955,14 @@ class IntentRouter:
             self.conv.customer_id = customer.id
         elif name and customer.name.startswith("WhatsApp +"):
             customer.name = name
+        # Fill a blank address, but never overwrite one the front desk typed in.
+        if email and not customer.email:
+            customer.email = email
 
         notes = f"Auto-created from WhatsApp.\n{damage}"
         if booked_for:
-            notes += f"\nPreferred day: {booked_for.isoformat()}"
+            slot_note = booked_for.isoformat() + (f" at {booked_at}" if booked_at else "")
+            notes += f"\nPreferred slot: {slot_note}"
 
         vehicle = Vehicle.query.filter_by(customer_id=customer.id, reg_no=reg).first()
         if not vehicle:
@@ -829,30 +975,49 @@ class IntentRouter:
             vehicle_id=vehicle.id,
             service=service,
             slot_date=booked_for or (date.today() + timedelta(days=1)),
-            slot_time=None,
+            slot_time=booked_at,
             status="REQUESTED",
             source="whatsapp",
             notes=notes,
             quoted_from=Decimal(str(quick_quote(service)["from_price"])),
         )
         db.session.add(booking)
+        db.session.flush()
+
+        # Photos sent anywhere during the conversation used to be parked in the
+        # context and then silently dropped here. They are the most useful thing
+        # the desk can receive, so each one becomes a row against the enquiry.
+        media = ctx.get("pending_media") or []
+        for url in media:
+            db.session.add(BookingPhoto(
+                booking_id=booking.id,
+                filename=url.rsplit("/", 1)[-1][:255] or "photo",
+                url=url, kind="DAMAGE", caption="Sent via WhatsApp",
+                source="whatsapp",
+            ))
+
         self.conv.state = "MAIN_MENU"
-        self.conv.ctx_clear("reg", "service", "damage", "book_date")
+        self.conv.ctx_clear("reg", "service", "damage", "book_date", "book_time",
+                            "contact_name", "contact_email", "pending_media")
         db.session.commit()
 
         estimate_note = ""
         if service in {"Car Detailing", "Ceramic Coating", "Paint Protection Film",
                        "Car Vinyl Wrapping"}:
             estimate_note = f"\nIndicative price: *from USD {booking.quoted_from:.0f}*."
-        day_note = (f"*Preferred day:* {booked_for.strftime('%a %d %b %Y')}\n"
-                    if booked_for else "")
+        day_note = ""
+        if booked_for:
+            day_note = (f"*Preferred slot:* {booked_for.strftime('%a %d %b %Y')}"
+                        + (f" at {booked_at}" if booked_at else "") + "\n")
+        photo_note = f"*Photos:* {len(media)} received ✅\n" if media else ""
+        email_note = f"*Email:* {customer.email}\n" if customer.email else ""
         return [
             text(
                 f"✅ Request logged, {customer.name.split()[0]}.\n\n"
                 f"*Reference:* {booking.reference}\n"
                 f"*Vehicle:* {reg}\n"
                 f"*Service:* {service}{estimate_note}\n"
-                f"{day_note}\n"
+                f"{day_note}{photo_note}{email_note}\n"
                 "Our front desk will confirm your booking and send the firm quotation during "
                 f"business hours ({self.cfg['COMPANY_HOURS']})."
             ),
@@ -925,6 +1090,11 @@ class IntentRouter:
         self.conv.ctx_set(service=service)
         self.conv.state = "BOOK_DATE"
         db.session.commit()
+        return [self._day_list(service)]
+
+    def _day_list(self, service: str) -> dict:
+        """The next six days. Saturday is called out honestly — the shop runs a
+        skeleton crew, so "Limited" is information, not a warning."""
         today = date.today()
         rows = []
         for offset in range(1, 7):
@@ -934,16 +1104,91 @@ class IntentRouter:
                 "title": day.strftime("%a %d %b"),
                 "description": "Available" if day.weekday() < 5 else "Limited (Saturday)",
             })
-        return [{"type": "list", "body": f"{service} — which day suits you?",
-                 "button": "Choose day", "sections": [{"title": "Next 6 days", "rows": rows}]}]
+        return {"type": "list", "body": f"{service} — which day suits you?",
+                "button": "Choose day", "sections": [{"title": "Next 6 days", "rows": rows}]}
+
+    def _slot_taken(self, day: date, slot: str) -> int:
+        """How many vehicles are already expected in this slot.
+
+        Cancelled and no-show appointments are excluded, so losing a booking
+        gives the time back instead of holding it for ever.
+        """
+        return Booking.query.filter(
+            Booking.slot_date == day,
+            Booking.slot_time == slot,
+            Booking.status.in_(("REQUESTED", "CONFIRMED", "ATTENDED")),
+        ).count()
+
+    def _time_list(self, day: date) -> dict | None:
+        """The times still free on ``day``, or None when the whole day is gone."""
+        rows = []
+        for slot in BOOKING_SLOTS:
+            taken = self._slot_taken(day, slot)
+            if taken >= BOOKING_SLOT_CAPACITY:
+                continue
+            rows.append({
+                "id": f"bslot:{day.isoformat()}:{slot}",
+                "title": slot,
+                "description": "Free" if not taken
+                               else f"{taken} of {BOOKING_SLOT_CAPACITY} taken",
+            })
+        if not rows:
+            return None
+        return {"type": "list",
+                "body": f"{day.strftime('%a %d %b')} — what time suits you?",
+                "button": "Choose time",
+                # WhatsApp trims a list at ten rows; BOOKING_SLOTS is nine.
+                "sections": [{"title": "Available times", "rows": rows[:10]}]}
 
     def _input_book_date(self, raw: str) -> list[dict]:
-        self.conv.ctx_set(book_date=raw.strip()[:20])
+        day = self._parse_book_date(raw)
+        service = self.conv.ctx_get("service") or "Your service"
+        if not day:
+            # A day we could not read, or one already past. Re-offer the picker
+            # rather than silently booking the customer into tomorrow.
+            return [text("Please choose one of these days."), self._day_list(service)]
+
+        self.conv.ctx_set(book_date=day.isoformat())
+        slots = self._time_list(day)
+        if not slots:
+            return [text(f"😕 {day.strftime('%a %d %b')} is fully booked. "
+                         "Would another day work?"), self._day_list(service)]
+
+        self.conv.state = "BOOK_TIME"
+        db.session.commit()
+        return [slots]
+
+    def _input_book_time(self, raw: str) -> list[dict]:
+        """Accept a tapped row, "09:00" or "9am" — people type both."""
+        payload = raw.split(":", 1)[1] if raw.startswith("bslot:") else raw
+        wanted = payload.strip().lower()
+        slot = None
+
+        match = re.search(r"(\d{1,2}):(\d{2})\s*$", wanted)
+        if match:
+            candidate = f"{int(match.group(1)):02d}:{match.group(2)}"
+            slot = candidate if candidate in BOOKING_SLOTS else None
+        else:
+            ampm = re.fullmatch(r"(\d{1,2})\s*(am|pm)", wanted)
+            if ampm:
+                hour = int(ampm.group(1)) % 12 + (12 if ampm.group(2) == "pm" else 0)
+                candidate = f"{hour:02d}:00"
+                slot = candidate if candidate in BOOKING_SLOTS else None
+
+        day = self._parse_book_date(self.conv.ctx_get("book_date"))
+        if not slot:
+            slots = self._time_list(day) if day else None
+            if not slots:
+                return self._fallback()
+            return [text("Sorry, that is not one of our times."), slots]
+
+        self.conv.ctx_set(book_time=slot)
         self.conv.state = "BOOK_CONTACT"
         db.session.commit()
         return [text(
-            "Almost done — please send your *name* and a contact number (or type *skip* to use "
-            "this WhatsApp number)."
+            f"📅 *{day.strftime('%a %d %b')} at {slot}* — noted.\n\n"
+            "Almost done — please send your *name* and a contact number "
+            "(or type *skip* to use this WhatsApp number)."
         )]
 
     def _input_book_contact(self, raw: str) -> list[dict]:
@@ -952,6 +1197,247 @@ class IntentRouter:
             customer = self.conv.customer or self._customer_by_wa()
             name = customer.name if customer else f"WhatsApp +{self.conv.wa_id}"
         return self._create_lead(name)
+
+    # ── payment proof ────────────────────────────────────────────────────
+    def _menu_pay(self) -> list[dict]:
+        """Bank details, then wait for the screenshot.
+
+        Customers send EcoCash confirmations whether or not we ask, and nothing
+        used to catch them: the picture landed in the chat and the payment was
+        never recorded until somebody noticed. Now the flow files it against the
+        invoice and puts a verification task on the front desk.
+        """
+        self.conv.state = "PAYMENT_PROOF"
+        db.session.commit()
+        invoice = self._customer_invoice()
+        owing = ""
+        if invoice:
+            owing = (f"\n\nOur records show *{invoice.invoice_no}* with "
+                     f"*{invoice.currency} {invoice.balance:,.2f}* outstanding.")
+        return [text(
+            f"💳 *How to pay*\n\n"
+            f"{self.cfg['BANK_DETAILS']}\n"
+            f"EcoCash: {self.cfg['ECONET_NUMBER']}{owing}\n\n"
+            "📷 If you have already paid, send a *photo or screenshot of the "
+            "confirmation* now and our front desk will verify it and send your receipt."
+        )]
+
+    def _lookup_invoice(self, raw: str) -> Invoice | None:
+        match = re.search(r"\b(INV-\d{4}-\d{3,5})\b", raw or "", re.I)
+        if not match:
+            return None
+        return Invoice.query.filter(
+            db.func.upper(Invoice.invoice_no) == match.group(1).upper()
+        ).first()
+
+    def _customer_invoice(self) -> Invoice | None:
+        """The invoice a payment proof most likely belongs to: the newest one
+        that is still owing. A settled invoice is not something to pay again."""
+        customer = self.conv.customer or self._customer_by_wa()
+        if not customer:
+            return None
+        rows = (Invoice.query.filter(Invoice.customer_id == customer.id)
+                .order_by(Invoice.id.desc()).limit(20).all())
+        for invoice in rows:
+            if invoice.status != "CANCELLED" and invoice.balance and invoice.balance > 0:
+                return invoice
+        return None
+
+    def _input_payment_proof_text(self, raw: str) -> list[dict]:
+        """They typed instead of sending a picture. Nudge, but stay in the state so
+        the screenshot they send next is still recognised as payment proof."""
+        invoice = self._lookup_invoice(raw) or self._customer_invoice()
+        if invoice:
+            return [text(
+                f"📷 Send a photo or screenshot of the payment for *{invoice.invoice_no}* "
+                f"(balance *{invoice.currency} {invoice.balance:,.2f}*) and our front desk "
+                "will verify it."
+            )]
+        return [text(
+            "📷 I need a picture — send the EcoCash confirmation or a photo of the "
+            "deposit slip. Type *menu* if you would rather do something else."
+        )]
+
+    def _attach_payment_proof(self, media_url: str) -> list[dict]:
+        invoice = self._customer_invoice()
+        if not invoice:
+            self.conv.state = "MAIN_MENU"
+            db.session.commit()
+            return [text(
+                "📷 Thank you. I could not find an invoice with a balance against this "
+                "number, so I have left it with our front desk — they will pick it up "
+                "from this chat."
+            ), more_menu_reply()]
+
+        customer = self.conv.customer or self._customer_by_wa()
+        db.session.add(PaymentProof(
+            invoice_id=invoice.id,
+            customer_id=customer.id if customer else None,
+            filename=media_url.rsplit("/", 1)[-1][:255] or "proof",
+            url=media_url,
+            note="Sent via WhatsApp",
+        ))
+        db.session.add(Task(
+            title=f"Verify payment proof — {invoice.invoice_no}",
+            detail="\n".join([
+                f"Proof of payment sent on WhatsApp by "
+                f"{customer.name if customer else 'a customer'}.",
+                f"WhatsApp +{self.conv.wa_id}",
+                f"Invoice {invoice.invoice_no}: balance "
+                f"{invoice.currency} {invoice.balance:,.2f}",
+                "Check it against the bank/EcoCash statement, then record the payment.",
+            ]),
+            category="Front desk",
+            priority="HIGH",
+            status="OPEN",
+            due_date=date.today(),
+            custodian_id=self._front_desk_user_id(),
+        ))
+
+        self.conv.state = "MAIN_MENU"
+        db.session.commit()
+        return [text(
+            f"✅ Proof received for *{invoice.invoice_no}*.\n\n"
+            f"Balance on record: *{invoice.currency} {invoice.balance:,.2f}*\n\n"
+            "Our front desk will check it against our statement and send your receipt. "
+            "If anything does not match up, we will call you."
+        ), more_menu_reply()]
+
+    # ── warranty claims ──────────────────────────────────────────────────
+    def _menu_warranty(self) -> list[dict]:
+        """Not just the small print: open a claim and give it an owner.
+
+        This used to answer with the warranty text and nothing else, so a genuine
+        comeback ("the paint is lifting already") was a chat message somebody had
+        to remember. Now the next thing the customer says becomes a workshop task
+        tied to their job card.
+        """
+        from ..constants import WARRANTY_TEXT
+
+        self.conv.state = "WARRANTY_CLAIM"
+        db.session.commit()
+        job = self._find_job()
+        context = (f"We have *{job.job_no}* on file for this number."
+                   if job else
+                   "I could not match a job card to this number — send the job number "
+                   "or registration if you have it.")
+        return [text(
+            f"🛡️ {WARRANTY_TEXT}\n\n"
+            f"{context}\n\n"
+            "If something has gone wrong, tell me what it is and send a photo if you can. "
+            "I will log it for the workshop manager."
+        )]
+
+    def _input_warranty_text(self, raw: str) -> list[dict]:
+        return self._log_warranty_claim(description=raw.strip()[:500])
+
+    def _log_warranty_claim(self, *, description: str = "",
+                            media_url: str | None = None) -> list[dict]:
+        """One open claim per conversation: further detail is added to it rather
+        than opening a second ticket."""
+        customer = self.conv.customer or self._customer_by_wa()
+        job = self._find_job()
+        marker = f"WhatsApp +{self.conv.wa_id}"
+
+        task = db.session.get(Task, self.conv.ctx_get("warranty_task_id") or 0)
+        is_new = task is None or task.status == "DONE"
+        if is_new:
+            task = Task(
+                title=f"Warranty claim — {job.job_no if job else 'unmatched job card'}",
+                detail="\n".join([
+                    f"Claim raised on WhatsApp by "
+                    f"{customer.name if customer else marker}.",
+                    marker,
+                    f"Job card: {job.job_no}" if job
+                    else "No job card matched this phone number — find it before booking "
+                         "anything in.",
+                ]),
+                category="Workshop",
+                priority="HIGH",
+                status="OPEN",
+                due_date=date.today(),
+                job_id=job.id if job else None,
+                custodian_id=self._front_desk_user_id(),
+            )
+            db.session.add(task)
+            db.session.flush()
+            self.conv.ctx_set(warranty_task_id=task.id)
+
+        if description:
+            task.detail = f"{task.detail or ''}\nCustomer says: {description}"
+        if media_url:
+            task.detail = f"{task.detail or ''}\nPhoto: {media_url}"
+            if job:
+                # On the job card the photo sits next to the original damage,
+                # which is exactly where the person assessing the claim wants it.
+                db.session.add(JobPhoto(
+                    job_id=job.id,
+                    filename=media_url.rsplit("/", 1)[-1][:255] or "warranty",
+                    url=media_url, kind="WARRANTY",
+                    caption="Warranty claim via WhatsApp", source="whatsapp",
+                ))
+
+        db.session.commit()
+        opening = "🛡️ Warranty claim logged" if is_new else "📝 Added to your warranty claim"
+        return [text(
+            f"{opening}"
+            + (f" against *{job.job_no}*" if job else "") + ".\n\n"
+            "Our workshop manager will review it and come back to you. Keep sending "
+            "photos here if that helps, or type *menu* when you are done."
+        ), more_menu_reply()]
+
+    # ── feedback ─────────────────────────────────────────────────────────
+    def _record_feedback(self, choice: str) -> list[dict]:
+        """A tapped rating button, from the post-collection ask."""
+        parts = choice.split(":")
+        try:
+            job_id, rating = int(parts[1]), int(parts[2])
+        except (IndexError, ValueError):
+            return self._fallback()
+
+        job = db.session.get(JobCard, job_id)
+        if not job or rating not in {1, 3, 5}:
+            return [text("Thank you — I have passed that on to the workshop."),
+                    more_menu_reply()]
+
+        job.feedback_rating = rating
+        job.feedback_at = utcnow()
+        # The body of the button ("Poor") is sent through as text_body but is not
+        # the customer's words, so it is not stored as feedback_text.
+        customer = job.customer
+        name = (customer.name.split(" ")[0] if customer and customer.name else "there")
+
+        if rating == 1:
+            # A bad rating is the only early warning that a job is coming back,
+            # so it gets a task rather than a line in a report.
+            db.session.add(Task(
+                title=f"Follow up unhappy customer — {job.job_no}",
+                detail=("\n".join([
+                    f"{customer.name if customer else 'Customer'} rated the job *Poor*.",
+                    f"WhatsApp +{self.conv.wa_id}",
+                    "Call them before they tell everyone else.",
+                ])),
+                category="Front desk", priority="HIGH", status="OPEN",
+                due_date=date.today(), job_id=job.id,
+                custodian_id=self._front_desk_user_id(),
+            ))
+            job.feedback_text = "Rated Poor via WhatsApp"
+        elif rating == 5:
+            job.feedback_text = "Rated Excellent via WhatsApp"
+        else:
+            job.feedback_text = "Rated Okay via WhatsApp"
+
+        db.session.commit()
+
+        if rating == 1:
+            body = (f"Thank you for telling us, {name} — and sorry. The workshop owner "
+                    "has been told and somebody will call you today.")
+        elif rating == 5:
+            body = f"That means a lot, {name} — thank you. 🙏"
+        else:
+            body = (f"Thanks for the honest answer, {name}. If there is anything we "
+                    "should put right, just reply here.")
+        return [text(body), more_menu_reply()]
 
     # ── helpers ──────────────────────────────────────────────────────────
     def _customer_by_wa(self) -> Customer | None:

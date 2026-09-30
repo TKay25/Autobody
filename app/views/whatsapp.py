@@ -52,6 +52,9 @@ def inbound():
     # Read the raw body before parsing: the signature is computed over the exact
     # bytes Meta sent, so re-serialising the JSON would break the comparison.
     raw = request.get_data()
+    if not _webhook_token_ok():
+        log.warning("Rejected WhatsApp webhook: bad or missing webhook token.")
+        return jsonify({"error": "invalid_webhook_token"}), 403
     if not _signature_ok(raw):
         log.warning("Rejected WhatsApp webhook: missing or invalid X-Hub-Signature-256.")
         return jsonify({"error": "invalid_signature"}), 403
@@ -88,6 +91,30 @@ def verify_alias():
 @alias.post("/webhook", strict_slashes=False)
 def inbound_alias():
     return inbound()
+
+
+def _webhook_token_ok() -> bool:
+    """Optional second lock on the webhook delivery URL.
+
+    ``hub.verify_token`` only answers *who configured the webhook* — it rides in
+    the GET handshake and never touches a POST body, so on its own it protects
+    nothing about the messages Meta delivers. Setting ``WA_WEBHOOK_TOKEN``
+    reuses that same shared secret as a query check on every delivery, which
+    turns "anyone who knows our domain" into "anyone who knows the exact URL we
+    pasted into Meta".
+
+    Deliberately opt-in: with the config empty, behaviour is unchanged. This is
+    **not** a substitute for ``WA_APP_SECRET`` — it proves the caller knows the
+    URL, not that Meta sent the payload, so a leaked URL is still a forged-message
+    hole. Set the app secret when you can.
+    """
+    expected = current_app.config.get("WA_WEBHOOK_TOKEN") or ""
+    if not expected:
+        return True
+    supplied = (request.args.get("token")
+                or request.headers.get("X-Webhook-Token")
+                or "")
+    return hmac.compare_digest(supplied, expected)
 
 
 def _signature_ok(raw: bytes) -> bool:

@@ -2645,6 +2645,22 @@ body.doc-body { background: #eef1f7; }
 .print-doc td.num, .print-doc th.num { text-align: right; }
 .print-doc .totals { margin-top: .75rem; width: 260px; margin-left: auto; }
 
+/* ── Enquiry photos (WhatsApp) ───────────────────────────────────────────────
+   The damage a customer sent before a job card existed. Thumbnails are square-ish
+   so a tall phone photo and a wide one still tile evenly. */
+.tc-photo-grid {
+  display: grid; gap: .5rem;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+.tc-photo-thumb {
+  width: 100%; aspect-ratio: 4 / 3; object-fit: cover;
+  border-radius: 10px; border: 1px solid #d8dee9; background: #f5f7fb;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.tc-photo-grid a:hover .tc-photo-thumb {
+  transform: translateY(-2px); box-shadow: 0 6px 18px rgba(8, 20, 44, .18);
+}
+
 @media print {
   .tc-sidebar, .tc-topbar, .no-print, .toast-host, .conn-banner,
   .modal-footer, .modal-header .btn-close { display: none !important; }

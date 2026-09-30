@@ -166,6 +166,16 @@
       value: m, label: methodLabel(m),
     }));
 
+    /* Proof-of-payment screenshots the customer sent. Nothing has been banked —
+       the desk still has to look at it and record the payment — so the pill is a
+       prompt to act, not a receipt. */
+    function proofPhotos(invoice) {
+      return T.photoViewer(invoice.proofs || [], {
+        title: `Payment proof · ${invoice.invoice_no}`,
+        subtitle: invoice.customer_name || '',
+      });
+    }
+
     async function load() {
       T.mount(host, T.skeletonTable(8, 6));
       const data = await api.get(`/api/invoices${state.status ? `?status=${state.status}` : ''}`);
@@ -186,7 +196,10 @@
       T.mount(host, T.dataTable({
         columns: [
           { label: 'Invoice', render: (r) => h('div', [h('div.fw-semibold', r.invoice_no),
-              h('div.small.text-secondary', r.job_no || '')]) },
+              h('div.small.text-secondary', r.job_no || ''),
+              T.photoPill(r, { cls: 'mt-1',
+                title: 'Payment proof sent by the customer',
+                onClick: proofPhotos })]) },
           { label: 'Customer', render: (r) => r.customer_name },
           { label: 'Total', class: 'text-end', render: (r) => money(r.total, r.currency) },
           { label: 'Paid', class: 'text-end d-none d-md-table-cell', render: (r) => money(r.amount_paid) },

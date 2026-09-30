@@ -962,7 +962,9 @@ def update_job_part(job_part_id: int):
 @login_required
 def list_invoices():
     status = want(request.args, "status")
-    query = Invoice.query
+    # Every row renders its proof count, so a lazy load here would be one extra
+    # SELECT per invoice on a list that polls.
+    query = Invoice.query.options(db.selectinload(Invoice.proofs))
     if status:
         query = query.filter(Invoice.status == status)
     invoices = query.order_by(Invoice.id.desc()).limit(300).all()
@@ -1119,10 +1121,54 @@ def list_bookings():
     # The attribution names are shown on every row, so join them up front
     # rather than letting each booking lazy-load its own two staff rows.
     query = query.options(
-        db.joinedload(Booking.confirmed_by), db.joinedload(Booking.attended_by)
+        db.joinedload(Booking.confirmed_by), db.joinedload(Booking.attended_by),
+        # Every row shows its photo count, so a lazy load here would be one extra
+        # SELECT per enquiry on a list that polls.
+        db.selectinload(Booking.photos),
     )
     bookings = query.order_by(Booking.slot_date.asc(), Booking.id.desc()).limit(300).all()
     return jsonify({"items": [b.to_dict() for b in bookings], "count": len(bookings)})
+
+
+@bp.post("/bookings/reminders")
+@login_required
+def run_booking_reminders():
+    """Send the day-before nudge for tomorrow's bookings.
+
+    Exposed as an endpoint as well as ``flask booking-reminders`` so a scheduler
+    that only speaks HTTP can drive it. Safe to call repeatedly: a booking that
+    has already been reminded is skipped rather than nudged twice.
+    """
+    if not current_user.is_manager:
+        return manager_only()
+
+    raw = want(request.args, "date") or want(payload(), "date")
+    try:
+        day = date.fromisoformat(raw) if raw else None
+    except (TypeError, ValueError):
+        return bad("date must look like YYYY-MM-DD.")
+
+    from ..services.notifications import send_due_booking_reminders
+
+    return jsonify(send_due_booking_reminders(day))
+
+
+@bp.post("/jobs/feedback-requests")
+@login_required
+def run_feedback_requests():
+    """Ask yesterday's customers how we did. Safe to run as often as you like."""
+    if not current_user.is_manager:
+        return manager_only()
+
+    raw = want(request.args, "date") or want(payload(), "date")
+    try:
+        day = date.fromisoformat(raw) if raw else None
+    except (TypeError, ValueError):
+        return bad("date must look like YYYY-MM-DD.")
+
+    from ..services.notifications import send_due_feedback_requests
+
+    return jsonify(send_due_feedback_requests(day))
 
 
 @bp.post("/bookings")
@@ -1529,6 +1575,28 @@ def _interactive_label(conversation, interactive_id: str) -> str | None:
                 if str(row.get("id")) == interactive_id:
                     return row.get("title")
     return None
+
+
+@bp.get("/whatsapp/status")
+@login_required
+def wa_status():
+    """Can this deployment actually send WhatsApp?
+
+    The inbox shows this, so nobody has to read a server log to discover that the
+    bot has been answering into a void. ``missing`` names the settings to fix.
+    """
+    from ..services.whatsapp_client import WhatsAppClient
+
+    client = WhatsAppClient()
+    return jsonify({
+        "live": client.is_live,
+        "mode": current_app.config.get("WA_MODE"),
+        "missing": client.missing_live_settings,
+        "phone_number_id": current_app.config.get("WA_PHONE_NUMBER_ID") or None,
+        "verify_token_set": bool(current_app.config.get("WA_VERIFY_TOKEN")),
+        "app_secret_set": bool(current_app.config.get("WA_APP_SECRET")),
+        "webhook_token_set": bool(current_app.config.get("WA_WEBHOOK_TOKEN")),
+    })
 
 
 @bp.post("/whatsapp/simulate")

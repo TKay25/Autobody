@@ -220,6 +220,10 @@ BOOKING_SLOTS = [
     "08:00", "09:00", "10:00", "11:00", "12:00",
     "13:00", "14:00", "15:00", "16:00",
 ]
+# How many vehicles the shop will take into one slot. Deliberately a constant
+# rather than a hard-coded number in the bot: two bays doing different work is a
+# workshop decision, and the bot must not promise a slot the floor cannot take.
+BOOKING_SLOT_CAPACITY = 2
 
 # ── Tasks (the day book) ─────────────────────────────────────────────────────
 # The work the shop has taken on that is not (yet) a job card: chase a part,
