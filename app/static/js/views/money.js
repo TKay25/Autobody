@@ -897,7 +897,7 @@
                 values: r,
                 fields: [
                   { name: 'full_name', label: 'Full name', col: 12, value: r.full_name },
-                  { name: 'phone', label: 'Phone', col: 12, value: r.phone },
+                  { name: 'phone', label: 'Phone', type: 'tel', col: 12, value: r.phone },
                   { name: 'role', label: 'Role', type: 'select', col: 12, value: r.role,
                     options: roleOptions },
                   { name: 'password', label: 'New password', type: 'password', col: 12,

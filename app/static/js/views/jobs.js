@@ -306,15 +306,38 @@
       /* "New customer name" is only a question for someone who is not on file.
          Asking for a name beside a customer that was just picked invites the
          operator to type a second, conflicting one, so the field goes away and
-         any value already typed is dropped rather than submitted. */
+         any value already typed is dropped rather than submitted. The ID number
+         belongs to the same question and goes with it. */
       newNameField.classList.toggle('d-none', !!picked);
-      if (picked && newNameInput.value) newNameInput.value = '';
+      newIdField.classList.toggle('d-none', !!picked);
+      if (picked) {
+        if (newNameInput.value) newNameInput.value = '';
+        if (newIdInput.value) newIdInput.value = '';
+      }
     }
 
     const newNameInput = h('input.form-control.form-control-sm', {
       name: 'customer_name', placeholder: 'Only if new',
     });
     const newNameField = h('div.col-md-3', field('New customer name', newNameInput));
+
+    /* Taken at intake when the desk can, and at collection when it cannot: the
+       vehicle is only handed over against the ID the person collecting it
+       presents, so it has to be on the record before then. */
+    const newIdInput = h('input.form-control.form-control-sm', {
+      name: 'customer_id_number', placeholder: '63-1234567 A 00',
+    });
+    const newIdField = h('div.col-md-3', field('ID number', newIdInput, {
+      hint: 'National ID or passport. Checked when the car is collected.',
+    }));
+
+    /* The hand-built form is read with T.formData, which would collect the
+       national part and the dial code as two unrelated fields. So the phone
+       control carries no `name` and is read explicitly instead — one value,
+       always international, which is what the API and the bot both need. */
+    const phoneField = T.telField({
+      id: 'f_customer_phone', placeholder: '77 000 0000',
+    });
 
     form = h('form.row.g-3', { onsubmit: (e) => e.preventDefault() }, [
       /* customer */
@@ -330,7 +353,9 @@
         { hint: 'Existing quotations for this customer are offered below.' })),
       h('div.col-md-3', field('Customer type', customerTypeHost)),
       newNameField,
-      h('div.col-md-3', field('Phone / WhatsApp', h('input.form-control.form-control-sm', { name: 'customer_phone', placeholder: '+263 77 000 0000' }))),
+      newIdField,
+      h('div.col-md-3', field('Phone / WhatsApp', phoneField.node,
+        { hint: 'Used for every update the bot sends.' })),
       h('div.col-md-3', field('Registration *', h('input.form-control.form-control-sm.text-uppercase', {
         name: 'reg_no', required: true, placeholder: 'ABC 1234',
         oninput: T.debounce(() => loadQuotations(''), 600),
@@ -411,6 +436,7 @@
 
       createBtn.addEventListener('click', async () => {
         const data = T.formData(form);
+        data.customer_phone = phoneField.read();
         data.keys_received = form.querySelector('[name=keys_received]').checked;
         data.parts = JSON.parse(form.dataset.parts || '[]');
 

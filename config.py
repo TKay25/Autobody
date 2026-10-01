@@ -63,6 +63,12 @@ class Config:
     COMPANY_HOURS = os.getenv("COMPANY_HOURS", "Mon - Fri: 08:00 - 17:00")
     COMPANY_WEBSITE = os.getenv("COMPANY_WEBSITE", "https://topclass.co.zw")
 
+    # The dial code the desk's phone fields default to, and the code the WhatsApp
+    # bot dials with when a number is stored in local form ("0775550555").
+    # Zimbabwe by default because that is where the customers are. See
+    # app/services/phone.py — this one setting covers the UI and the bot together.
+    DEFAULT_COUNTRY_CODE = os.getenv("DEFAULT_COUNTRY_CODE", "263")
+
     # ── Money ────────────────────────────────────────────────────────────
     VAT_RATE = Decimal(os.getenv("VAT_RATE", "0.15"))
     DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "USD")
@@ -171,6 +177,9 @@ class TestConfig(Config):
     WA_FLOW_ENQUIRY_SCREEN = "QUESTION_ONE"
     WA_FLOW_BOOKING_ID = ""
     WA_FLOW_BOOKING_SCREEN = "BOOKING"
+    # Pinned rather than inherited: a developer with DEFAULT_COUNTRY_CODE in .env
+    # must not shift every phone-number assertion in the suite.
+    DEFAULT_COUNTRY_CODE = "263"
     SECRET_KEY = "test-secret"
     # Keep hashing cheap in tests; production uses Werkzeug's scrypt default.
     PASSWORD_HASH_METHOD = "pbkdf2:sha256:1000"

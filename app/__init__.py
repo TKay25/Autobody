@@ -40,6 +40,7 @@ from .constants import (
     VEHICLE_MODELS_COMMON,
 )
 from .extensions import csrf, db, login_manager, migrate
+from .services import phone as phone_numbers
 
 __version__ = "1.0.0"
 
@@ -160,6 +161,12 @@ def _ensure_schema(app: Flask) -> None:
             "feedback_rating": "INTEGER",
             "feedback_text": "TEXT",
             "feedback_at": "TIMESTAMP",
+        })
+
+        # An ID number is verified against the physical document when the vehicle
+        # is collected, so it lives on the customer rather than the job card.
+        ensure_columns(db.engine, "customers", {
+            "id_number": "VARCHAR(60)",
         })
 
         # Insurance claims are no longer part of the product: every job is
@@ -539,4 +546,9 @@ def reference_meta() -> dict:
         "vehicle_models": VEHICLE_MODELS,
         "vehicle_models_common": VEHICLE_MODELS_COMMON,
         "vehicle_colours": VEHICLE_COLOURS,
+        # Phone numbers: the dial-code dropdown and the one the desk's fields
+        # default to. The same value the bot dials with, so the two can never
+        # disagree — see app/services/phone.py.
+        "countries": phone_numbers.dial_codes(),
+        "default_country_code": phone_numbers.default_country_code(),
     }

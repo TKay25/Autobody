@@ -17,6 +17,7 @@ from flask import current_app
 
 from ..extensions import db
 from ..models import WaConversation, WaMessage
+from . import phone as phone_numbers
 
 log = logging.getLogger(__name__)
 
@@ -26,15 +27,13 @@ class WhatsAppError(Exception):
 
 
 def normalise_msisdn(raw: str | None) -> str:
-    """+263 77 555 0555 / 0775550555 -> 263775550555"""
-    if not raw:
-        return ""
-    digits = re.sub(r"\D", "", raw)
-    if digits.startswith("00"):
-        digits = digits[2:]
-    if digits.startswith("0"):
-        digits = "263" + digits[1:]
-    return digits
+    """+263 77 555 0555 / 0775550555 -> 263775550555
+
+    Kept as a name here because a dozen call sites read it, but the rules and the
+    country code live in :mod:`app.services.phone` — the bot dials with exactly
+    the code the desk's phone fields use.
+    """
+    return phone_numbers.normalise_msisdn(raw)
 
 
 class WhatsAppClient:

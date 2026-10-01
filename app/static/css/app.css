@@ -2087,6 +2087,23 @@ input[type="file"].form-control::file-selector-button:hover { background: #e5eaf
 .input-group > .form-control,
 .input-group > .form-select { box-shadow: none; }
 
+/* ── Phone numbers ───────────────────────────────────────────────────
+   The country-code dropdown sits beside the national number so the desk can
+   type a number the way it is written on a job card, while what gets stored —
+   and dialled by the bot — is always a full international one. */
+.tc-tel > .tc-tel-cc {
+  flex: 0 0 auto;
+  width: 6.4rem;
+  padding-right: 1.6rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+.tc-tel > .form-control { min-width: 0; }
+/* Focus lifts the pair together — two controls, one field. */
+.tc-tel:focus-within > .tc-tel-cc { border-color: var(--tc-crimson-500); }
+.tc-field.has-error .tc-tel > .form-control,
+.tc-field.has-error .tc-tel > .tc-tel-cc { border-color: var(--tc-crimson-500); }
+
 .tc-segmented {
   display: inline-flex; padding: 3px; gap: 3px;
   background: #e8edf6;

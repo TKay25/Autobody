@@ -47,10 +47,12 @@ from ..models import (
     Vehicle,
     WaConversation,
     gen_ref,
+    normalise_id_number,
     utcnow,
 )
 from ..services import bookings as booking_ops
 from ..services import documents, job_flow, notifications, pricing, reporting
+from ..services import phone as phone_numbers
 from ..services.activity import log_activity, recent_activity
 from ..services.whatsapp_client import log_inbound, normalise_msisdn
 
@@ -227,8 +229,13 @@ def create_customer():
         return bad("Customer name is required.")
     customer = Customer(
         name=name,
-        phone=want(data, "phone"),
-        whatsapp=want(data, "whatsapp") or want(data, "phone"),
+        id_number=normalise_id_number(want(data, "id_number")),
+        # Stored in one canonical form (+263775550555) whichever way it was typed.
+        # The WhatsApp bot dials by normalising this, so a number saved the way
+        # it appears on a job card must not be a number it cannot reach.
+        phone=phone_numbers.format_msisdn(want(data, "phone")) or None,
+        whatsapp=phone_numbers.format_msisdn(
+            want(data, "whatsapp") or want(data, "phone")) or None,
         email=want(data, "email"),
         address=want(data, "address"),
         company=want(data, "company"),
@@ -256,9 +263,17 @@ def update_customer(cid: int):
     if not customer:
         return bad("Customer not found.", 404)
     data = payload()
-    for field in ("name", "phone", "whatsapp", "email", "address", "company", "notes"):
+    for field in ("name", "id_number", "phone", "whatsapp", "email", "address",
+                  "company", "notes"):
         if field in data:
-            setattr(customer, field, want(data, field))
+            value = want(data, field)
+            # Numbers are re-stored in canonical international form so the bot can
+            # dial them, whichever country code the desk's dropdown was set to.
+            if field in ("phone", "whatsapp"):
+                value = phone_numbers.format_msisdn(value)
+            elif field == "id_number":
+                value = normalise_id_number(value)
+            setattr(customer, field, value or None)
     if "is_fleet" in data:
         customer.is_fleet = bool(data["is_fleet"])
     if "whatsapp_opt_in" in data:
@@ -376,6 +391,7 @@ def create_job():
             whatsapp=want(data, "customer_whatsapp"),
             is_fleet=bool(data.get("is_fleet")),
             company=want(data, "customer_company"),
+            id_number=want(data, "customer_id_number"),
         )
 
     reg = want(data, "reg_no")
@@ -1201,7 +1217,8 @@ def create_booking():
         slot_date = date.today() + timedelta(days=1)
 
     customer = job_flow.find_or_create_customer(name=name, phone=phone, whatsapp=phone,
-                                                email=want(data, "email"))
+                                                email=want(data, "email"),
+                                                id_number=want(data, "id_number"))
     vehicle = None
     if want(data, "reg_no"):
         vehicle = job_flow.find_or_create_vehicle(customer, reg_no=data["reg_no"],

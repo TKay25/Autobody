@@ -37,6 +37,13 @@
             h('div.small.mt-1', [
               T.icon('person'), ' ', h('a.text-decoration-none', { href: `#/customers` }, j.customer_name),
               j.customer_phone ? h('span.text-secondary', ` · ${j.customer_phone}`) : null,
+              /* The ID is verified against the document at handover, so it sits
+                 with the customer's name rather than behind a click. Its absence
+                 is said out loud — a blank here is the thing that stops a
+                 vehicle being released. */
+              j.customer_id_number
+                ? h('span.text-secondary', [' · ID ', h('span.fw-semibold', j.customer_id_number)])
+                : h('span.text-warning', ' · no ID on file'),
             ]),
           ]),
           h('div.text-end', [
@@ -65,6 +72,23 @@
         h('button.btn.btn-brand.btn-sm.fw-semibold', {
           disabled: !j.is_open,
           onclick: async () => {
+            /* Handing the vehicle over is the one moment the ID is actually
+               checked, so it is put in front of whoever is releasing the car
+               rather than left for them to go and look up. No ID on file is a
+               warning, not a block — the desk knows things we do not. */
+            if (payload.next_stage === 'COLLECTED') {
+              const checked = await T.confirmDialog({
+                title: `Release ${j.reg_no}?`,
+                message: j.customer_id_number
+                  ? `Check the ID document against ${j.customer_id_number}.`
+                  : 'No ID number is on file for this customer.',
+                detail: `${j.customer_name || 'The customer'} · job card ${j.job_no}`,
+                confirmLabel: 'ID checked — release vehicle',
+                variant: j.customer_id_number ? 'success' : 'warning',
+                icon: 'person-vcard',
+              });
+              if (!checked) return;
+            }
             try {
               const res = await api.post(`/api/jobs/${j.id}/advance`, {});
               T.toast(`${res.job.job_no} moved to ${res.job.stage_label}${res.notified ? ' · customer notified' : ''}`);

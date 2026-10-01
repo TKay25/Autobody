@@ -40,15 +40,21 @@
     async function customerDetail(customer) {
       const full = await api.get(`/api/customers/${customer.id}`);
       const c = full.customer;
-      T.modal({
+      const m = T.modal({
         title: c.name,
         body: h('div', [
           h('div.row.g-2.small.mb-3', [
+            kv('ID number', c.id_number || 'Not recorded'),
             kv('Phone', c.phone || '—'), kv('WhatsApp', c.whatsapp || '—'),
             kv('Email', c.email || '—'), kv('Address', c.address || '—'),
             kv('Type', c.is_fleet ? 'Fleet / corporate' : 'Retail'),
             kv('WhatsApp updates', c.whatsapp_opt_in ? 'Opted in' : 'Opted out'),
           ]),
+          !c.id_number
+            ? h('div.alert.alert-warning.small.py-2',
+                'No ID on file. It is checked against the document when the '
+                + 'vehicle is collected, so record it before then.')
+            : null,
           h('h3.h6.text-uppercase.text-secondary', 'Vehicles'),
           c.vehicles.length ? h('ul.list-group.list-group-flush.mb-3', c.vehicles.map((v) =>
             h('li.list-group-item.d-flex.justify-content-between',
@@ -62,6 +68,9 @@
             : h('div.small.text-secondary', 'No job cards yet'),
         ]),
         footer: [
+          h('button.btn.btn-sm.btn-outline-secondary', {
+            onclick: () => { m.close(); editCustomer(c); },
+          }, T.icon('pencil-square'), ' Edit details'),
           h('a.btn.btn-sm.btn-outline-secondary', { href: `/portal/${c.portal_token}`, target: '_blank' },
             'Open customer portal'),
           h('button.btn.btn-sm.btn-brand', {
@@ -85,31 +94,60 @@
       oninput: T.debounce((e) => load(e.target.value), 350),
     });
 
+    /* Identity fields, shared by "New customer" and "Edit customer" so the two
+       can never come to ask for different things. `c` is empty for a new one. */
+    function identityFields(c = {}) {
+      return [
+        { name: 'name', label: 'Full name or company', col: 6, required: true,
+          icon: 'person', placeholder: 'Chipo Zvenyika', value: c.name },
+        { name: 'id_number', label: 'ID number', col: 6, icon: 'person-vcard',
+          value: c.id_number, placeholder: '63-1234567 A 00',
+          hint: 'National ID or passport. This is what the desk checks the '
+              + 'document against when the vehicle is collected.' },
+        { name: 'company', label: 'Company', col: 6, icon: 'building',
+          value: c.company, hint: 'Fleet or corporate account name.' },
+        { name: 'phone', label: 'Phone', type: 'tel', col: 6, value: c.phone,
+          placeholder: '77 000 0000',
+          hint: 'The code is picked for you — just type the number as it is written.' },
+        { name: 'whatsapp', label: 'WhatsApp', type: 'tel', col: 6, value: c.whatsapp,
+          placeholder: '77 000 0000',
+          hint: 'Leave blank to use the phone number. This is the number the bot messages.' },
+        { name: 'email', label: 'Email', type: 'email', col: 6, icon: 'envelope',
+          value: c.email },
+        { name: 'address', label: 'Address', col: 12, icon: 'geo-alt', value: c.address },
+        { name: 'is_fleet', label: 'Fleet / corporate account', type: 'switch', col: 12,
+          value: !!c.is_fleet,
+          help: 'Fleet customers get consolidated invoicing and priority slots.' },
+        { name: 'notes', label: 'Notes', type: 'textarea', col: 12, value: c.notes,
+          placeholder: 'Preferred contact times, special instructions…' },
+      ];
+    }
+
     async function newCustomer() {
       const res = await T.formModal({
         title: 'New customer',
         icon: 'person-plus',
-        fields: [
-          { name: 'name', label: 'Full name or company', col: 6, required: true,
-            icon: 'person', placeholder: 'Chipo Zvenyika' },
-          { name: 'company', label: 'Company', col: 6, icon: 'building',
-            hint: 'Fleet or corporate account name.' },
-          { name: 'phone', label: 'Phone', col: 4, icon: 'telephone',
-            placeholder: '+263 77 000 0000' },
-          { name: 'whatsapp', label: 'WhatsApp', col: 4, icon: 'whatsapp',
-            hint: 'Leave blank to use the phone number.' },
-          { name: 'email', label: 'Email', type: 'email', col: 4, icon: 'envelope' },
-          { name: 'address', label: 'Address', col: 12, icon: 'geo-alt' },
-          { name: 'is_fleet', label: 'Fleet / corporate account', type: 'switch', col: 12,
-            value: false, help: 'Fleet customers get consolidated invoicing and priority slots.' },
-          { name: 'notes', label: 'Notes', type: 'textarea', col: 12,
-            placeholder: 'Preferred contact times, special instructions…' },
-        ],
+        fields: identityFields(),
         submitLabel: 'Create customer',
       });
       if (!res) return;
       await api.post('/api/customers', res);
       T.toast('Customer created.');
+      load('');
+    }
+
+    /** Edit an identity record — including the ID, which is often only produced
+        at the counter when somebody turns up to collect a car. */
+    async function editCustomer(customer) {
+      const res = await T.formModal({
+        title: `Edit ${customer.name}`,
+        icon: 'pencil-square',
+        fields: identityFields(customer),
+        submitLabel: 'Save changes',
+      });
+      if (!res) return;
+      await api.patch(`/api/customers/${customer.id}`, res);
+      T.toast('Customer updated.');
       load('');
     }
 

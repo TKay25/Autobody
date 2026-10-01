@@ -24,8 +24,10 @@ from ..models import (
     StockMovement,
     Vehicle,
     gen_ref,
+    normalise_id_number,
     utcnow,
 )
+from . import phone as phone_numbers
 
 
 class JobFlowError(Exception):
@@ -85,23 +87,56 @@ def find_or_create_customer(
     email: str | None = None,
     is_fleet: bool = False,
     company: str | None = None,
+    id_number: str | None = None,
 ) -> Customer:
+    """The customer with this number, or a new one.
+
+    The number is stored in one canonical form (``+263775550555``) whichever way
+    it was typed, because the WhatsApp bot dials by normalising it — a number
+    saved as ``0775550555`` used to be a customer the bot could not reach.
+
+    The lookup deliberately accepts *any* spelling of the same number. Rows saved
+    before this canonicalisation existed still hold ``0775550555`` and
+    ``+263 77 555 0555``, and matching only the canonical form would quietly
+    create a second customer for somebody already on file.
+    """
+    phone = phone_numbers.format_msisdn(phone) or None
+    whatsapp = phone_numbers.format_msisdn(whatsapp) or phone
+    id_number = normalise_id_number(id_number)
+
     customer = None
     if phone:
+        variants = {phone, phone_numbers.normalise_msisdn(phone)}
+        variants.discard("")
         customer = Customer.query.filter(
-            db.or_(Customer.phone == phone, Customer.whatsapp == phone)
+            db.or_(Customer.phone.in_(variants), Customer.whatsapp.in_(variants))
         ).first()
+        if not customer:
+            # Fall back to a normalised comparison for rows stored in a form we
+            # cannot enumerate ("00263...", "+263 77 555 0555" with punctuation).
+            wanted = phone_numbers.normalise_msisdn(phone)
+            customer = next(
+                (c for c in Customer.query.all()
+                 if c.wa_number and c.wa_number == wanted),
+                None,
+            )
     if not customer:
         customer = Customer(
             name=name,
+            id_number=id_number,
             phone=phone,
-            whatsapp=whatsapp or phone,
+            whatsapp=whatsapp,
             email=email,
             is_fleet=is_fleet,
             company=company,
         )
         db.session.add(customer)
         db.session.flush()
+    elif id_number and not customer.id_number:
+        # Fill a blank ID, but never overwrite one already on file: the number
+        # recorded when somebody collected the car is the one that was checked
+        # against the document, and a later form must not quietly replace it.
+        customer.id_number = id_number
     return customer
 
 

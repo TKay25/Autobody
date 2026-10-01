@@ -243,6 +243,39 @@ BOOKING_SLOTS = [
 # workshop decision, and the bot must not promise a slot the floor cannot take.
 BOOKING_SLOT_CAPACITY = 2
 
+# ── Phone numbers ────────────────────────────────────────────────────────────
+# The dial codes the desk can pick from, in dropdown order. Zimbabwe leads
+# because it is where the customers are, and the first entry is what a number
+# typed without a code is assumed to use — see app/services/phone.py.
+#
+# The list is deliberately short and regional-first: a workshop books Harare
+# numbers and the occasional South African or UK one, and a 240-row ISO list
+# would make the common case slower to use, not faster. Add to it if a customer
+# outside this list turns up; the matching is by prefix, so nothing else changes.
+COUNTRIES = [
+    {"code": "263", "iso": "ZW", "name": "Zimbabwe"},
+    {"code": "27", "iso": "ZA", "name": "South Africa"},
+    {"code": "260", "iso": "ZM", "name": "Zambia"},
+    {"code": "267", "iso": "BW", "name": "Botswana"},
+    {"code": "258", "iso": "MZ", "name": "Mozambique"},
+    {"code": "264", "iso": "NA", "name": "Namibia"},
+    {"code": "265", "iso": "MW", "name": "Malawi"},
+    {"code": "255", "iso": "TZ", "name": "Tanzania"},
+    {"code": "254", "iso": "KE", "name": "Kenya"},
+    {"code": "44", "iso": "GB", "name": "United Kingdom"},
+    {"code": "1", "iso": "US", "name": "United States / Canada"},
+    {"code": "61", "iso": "AU", "name": "Australia"},
+    {"code": "971", "iso": "AE", "name": "United Arab Emirates"},
+    {"code": "91", "iso": "IN", "name": "India"},
+    {"code": "86", "iso": "CN", "name": "China"},
+]
+COUNTRY_CODES = [c["code"] for c in COUNTRIES]
+COUNTRY_NAMES = {c["code"]: c["name"] for c in COUNTRIES}
+# Fallback for when there is no app config to read (a bare script, a unit test).
+# The live default comes from DEFAULT_COUNTRY_CODE in the config — see
+# app/services/phone.py.
+DEFAULT_COUNTRY_CODE = "263"
+
 # ── Tasks (the day book) ─────────────────────────────────────────────────────
 # The work the shop has taken on that is not (yet) a job card: chase a part,
 # call a customer back, follow up a quote. Deliberately lightweight — a task has

@@ -706,6 +706,89 @@
     };
   }
 
+  /**
+   * A phone number: a country-code picker beside the national part.
+   *
+   * The desk types the number the way it is written on a job card ("077 555
+   * 0555") and the code comes from the dropdown, so what is stored — and what
+   * the WhatsApp bot dials — is always a full international number. Before
+   * this, a number saved as "0775550555" reached the API as-is and could not be
+   * dialled at all: the message was rejected and the desk saw only silence.
+   *
+   * The codes come from /api/meta, so the dropdown and the bot's dialling rule
+   * are the same list, read from the same config on the server.
+   */
+  function telField({ name, value, placeholder, disabled, id, onInput }) {
+    const meta = TCA.store.get('meta') || {};
+    const countries = (meta.countries || []).length
+      ? meta.countries
+      : [{ code: '263', iso: 'ZW', name: 'Zimbabwe' }];
+    const fallback = meta.default_country_code || countries[0].code;
+    const parts = splitPhoneNumber(value, countries, fallback);
+
+    const select = h('select.form-select.form-select-sm.tc-tel-cc', {
+      /* Named only when the caller asked for it: a hand-built form reads this
+         control with `.read()` instead, and a stray `...__cc` key would post a
+         country code as though it were a field of its own. */
+      name: name ? `${name}__cc` : undefined,
+      disabled: !!disabled, 'aria-label': 'Country code',
+      onchange: () => onInput && onInput(),
+    }, countries.map((c) => h('option', {
+      value: c.code, selected: c.code === parts.country_code,
+      title: `${c.name} +${c.code}`,
+    }, `+${c.code}`)));
+
+    const number = h('input.form-control.form-control-sm', {
+      id, name: name || undefined, type: 'tel', value: parts.national,
+      disabled: !!disabled, placeholder: placeholder || '77 000 0000',
+      inputmode: 'tel', autocomplete: 'tel-national',
+      oninput: () => onInput && onInput(),
+    });
+
+    return {
+      node: h('div.input-group.input-group-sm.tc-tel', [select, number]),
+      select, number,
+      focus: () => number.focus(),
+      /* One value, always international: the API and the bot both want the number
+         they can dial, not two fields they have to know how to join. */
+      read() {
+        const national = number.value.replace(/\D/g, '').replace(/^0+/, '');
+        return national ? `+${select.value}${national}` : '';
+      },
+    };
+  }
+
+  /** Take a stored number apart so the dropdown and box show the right things. */
+  function splitPhoneNumber(value, countries, fallback) {
+    const raw = String(value == null ? '' : value).trim();
+    const digits = raw.replace(/\D/g, '');
+    if (!digits) return { country_code: fallback, national: '' };
+
+    const explicit = raw.startsWith('+') || raw.startsWith('00');
+    const body = raw.startsWith('00') ? digits.slice(2) : digits;
+    /* Longest code first: 263 must be tried before 26, or Zimbabwe becomes
+       South Africa and the number gains a digit. */
+    const codes = countries.map((c) => c.code).sort((a, b) => b.length - a.length);
+
+    if (explicit) {
+      for (const code of codes) {
+        if (body.startsWith(code)) {
+          return { country_code: code, national: body.slice(code.length) };
+        }
+      }
+      return { country_code: fallback, national: body };
+    }
+    if (body.startsWith('0')) {
+      return { country_code: fallback, national: body.replace(/^0+/, '') };
+    }
+    for (const code of codes) {
+      if (body.startsWith(code) && body.length - code.length >= 5) {
+        return { country_code: code, national: body.slice(code.length) };
+      }
+    }
+    return { country_code: fallback, national: body };
+  }
+
   /** Standard helpers for the vehicle reference lists served by /api/meta. */
   function vehicleOptions() {
     const meta = TCA.store.get('meta') || {};
@@ -734,6 +817,10 @@
    * type — text · email · tel · url · number · money · password · date · time
    *        search · textarea · select · combo · checkbox · switch · radio
    *        segmented · options · static
+   *
+   * `tel` — a country-code picker beside the national number, submitted as one
+   *         international string (`+263775550555`). The codes come from
+   *         /api/meta, so the dropdown and the bot's dialling rule cannot drift.
    *
    * `optgroups` — for a grouped (native) select.
    * `combo`     — a select with an "Other…" escape hatch, plus an optional
@@ -905,7 +992,7 @@
             chooseLabel: f.chooseLabel,
             onChange: (v) => f.onComboChange && f.onComboChange(v, f.name, comboApi),
           });
-          refs[f.name] = { value: start, combo, focus: () => combo.select.focus() };
+          refs[f.name] = { value: start, combo, el: combo.select, focus: () => combo.select.focus() };
           combos[f.name] = combo;
           return shell(f, combo.node, { labelFor: null });
         }
@@ -927,6 +1014,17 @@
             ariaLabel: `Search ${labelText(f)}`,
           });
           return shell(f, iconWrap(picker.node), { labelFor: picker.inputId || common.id });
+        }
+
+        /* — phone: country code + national number, posted as one value — */
+        if (f.type === 'tel') {
+          const tel = telField({
+            name: f.name, value: start, placeholder: f.placeholder,
+            disabled: f.disabled, id: common.id,
+            onInput: () => gates[f.name] && gates[f.name].clear(),
+          });
+          refs[f.name] = { value: start, tel, el: tel.number, focus: () => tel.focus() };
+          return shell(f, tel.node, { labelFor: common.id });
         }
 
         /* — everything else is an <input> — */
@@ -994,6 +1092,7 @@
           let v;
           if (f.type === 'static') v = el.value;
           else if (f.type === 'combo') v = el.combo.read().trim();
+          else if (f.type === 'tel') v = el.tel.read();
           else if (f.type === 'switch' || f.type === 'checkbox') v = el.checked;
           else if (f.type === 'options' || f.type === 'radio') {
             v = form.querySelector(`[name="${f.name}"]:checked`)?.value ?? '';
@@ -1027,10 +1126,14 @@
 
         if (!ok) {
           toast('Please complete the highlighted fields.', 'warning');
-          const target = firstBad && firstBad.type !== 'hidden'
-            && !firstBad.classList.contains('d-none')
-            ? firstBad
-            : firstBad?.closest('.tc-field')
+          /* A composite control (combo, phone) registers a wrapper rather than the
+             element, so resolve to something focusable before asking the DOM about
+             it — `firstBad.classList` used to throw for a required combo. */
+          const el = firstBad && firstBad.el ? firstBad.el : firstBad;
+          const target = el && el.type !== 'hidden'
+            && !el.classList.contains('d-none')
+            ? el
+            : el?.closest('.tc-field')
                 ?.querySelector('input:not([type=hidden]),select:not(.d-none),textarea,button');
           target?.focus();
           return;
@@ -1334,6 +1437,8 @@
   TCA.photoPill = photoPill;
   TCA.confirmDialog = confirmDialog;
   TCA.formModal = formModal;
+  /** Exposed so a hand-built form can use the same phone control. */
+  TCA.telField = telField;
   TCA.comboField = comboField;
   TCA.vehicleOptions = vehicleOptions;
   TCA.badge = badge;

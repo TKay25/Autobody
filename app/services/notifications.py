@@ -16,6 +16,7 @@ from ..constants import (BOOKING_EXPECTED_STATUSES, STAGE_CUSTOMER_TEXT, STAGE_L
 from ..extensions import db
 from ..models import JobCard, NotificationLog, utcnow
 from .bookings import slot_text
+from . import phone as phone_numbers
 from .whatsapp_client import WhatsAppClient, get_or_create_conversation, log_outbound
 
 log = logging.getLogger(__name__)
@@ -94,6 +95,28 @@ def _customer(job: JobCard):
     return job.customer if job else None
 
 
+def _dialable(customer) -> str | None:
+    """The number to dial for this customer, or ``None`` if there is not one.
+
+    ``None`` covers two cases that used to be one. The first is no number on file,
+    which is obvious. The second is a number that is *present but is not a phone
+    number* — "123", or a country code typed without the rest — and that one is
+    dangerous: the send is attempted, Meta rejects it, and the desk sees only a
+    customer who never replies. Better to refuse it here, where a caller can log
+    why.
+    """
+    number = customer.wa_number if customer else None
+    if not number or not phone_numbers.is_dialable(number):
+        return None
+    return number
+
+
+def _undialable_reason(customer) -> str:
+    """What to record when :func:`_dialable` refuses a customer's number."""
+    typed = (customer.whatsapp or customer.phone) if customer else ""
+    return f"Not a dialable number: {typed or 'nothing on file'}"
+
+
 def _dispatch(job: JobCard | None, body: str, *, template: str, use_template: bool = False,
               params: list[str] | None = None, document: dict | None = None) -> bool:
     """Send a message (optionally with a PDF attachment) and log it."""
@@ -104,9 +127,10 @@ def _dispatch(job: JobCard | None, body: str, *, template: str, use_template: bo
         _log(job, customer.wa_number, template, body, "skipped_optout")
         return False
 
-    number = customer.wa_number
+    number = _dialable(customer)
     if not number:
-        _log(job, None, template, body, "failed", "No WhatsApp number on file")
+        _log(job, customer.wa_number, template, body, "failed",
+             _undialable_reason(customer))
         return False
 
     client = WhatsAppClient()
@@ -321,7 +345,7 @@ def send_receipt(payment) -> dict:
     invoice = payment.invoice
     job = invoice.job if invoice else None
     customer = invoice.customer if invoice else None
-    if not customer or not customer.wa_number:
+    if not _dialable(customer):
         return {"sent": False, "reason": "no_number"}
 
     currency = (invoice.currency if invoice else "USD") or "USD"
@@ -578,7 +602,7 @@ def _slot_text(booking) -> str:
 
 def notify_booking_confirmed(booking) -> bool:
     customer = booking.customer
-    if not customer or not customer.wa_number:
+    if not _dialable(customer):
         return False
     body = (
         f"*Booking confirmed*\n\n"
@@ -607,7 +631,7 @@ def notify_booking_rescheduled(booking, previous_slot: str) -> bool:
     date gives the customer nothing to check against.
     """
     customer = booking.customer
-    if not customer or not customer.wa_number:
+    if not _dialable(customer):
         return False
     body = (
         f"*Booking moved*\n\n"
@@ -683,7 +707,7 @@ def notify_feedback_request(job: JobCard) -> bool:
     is handled identically either way.
     """
     customer = job.customer
-    if not customer or not customer.wa_number:
+    if not _dialable(customer):
         return False
     if not customer.whatsapp_opt_in:
         _log(job, customer.wa_number, TEMPLATE_FEEDBACK, "", "skipped_optout")
@@ -754,7 +778,7 @@ def notify_booking_reminder(booking) -> bool:
     an appointment is worth more than the tap it takes to lose it.
     """
     customer = booking.customer
-    if not customer or not customer.wa_number:
+    if not _dialable(customer):
         return False
     if not customer.whatsapp_opt_in:
         _log(None, customer.wa_number, TEMPLATE_BOOKING_REMINDER, "", "skipped_optout")

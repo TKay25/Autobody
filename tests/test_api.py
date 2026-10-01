@@ -51,6 +51,231 @@ def test_vehicle_registration_is_normalised(auth_client, app):
         assert Vehicle.query.filter_by(reg_no="XYZ9999").first() is not None
 
 
+# ── phone numbers entering from the desk ─────────────────────────────────────
+def test_a_customer_number_is_stored_so_the_bot_can_dial_it(auth_client, app):
+    """What the desk types is stored as a number the bot can actually reach.
+
+    Typed the way it is written on a job card ("0775550555"), this used to be
+    saved verbatim. On screen it looked right; every message the bot sent to it
+    was rejected, and the desk saw only silence. The country code comes from the
+    same setting the bot dials with.
+    """
+    res = auth_client.post("/api/customers", json={
+        "name": "Local Format", "phone": "0775550555",
+    })
+    assert res.status_code == 201, res.get_json()
+
+    with app.app_context():
+        from app.models import Customer
+
+        customer = Customer.query.filter_by(name="Local Format").first()
+        assert customer.phone == "+263775550555", customer.phone
+        # The WhatsApp number the bot will dial.
+        assert customer.wa_number == "263775550555"
+
+
+def test_whatsapp_defaults_to_the_phone_number_but_is_normalised_too(auth_client, app):
+    res = auth_client.post("/api/customers", json={
+        "name": "No WhatsApp Given", "phone": "00263775551234",
+    })
+    with app.app_context():
+        from app.models import Customer
+
+        customer = Customer.query.filter_by(name="No WhatsApp Given").first()
+        assert customer.whatsapp == "+263775551234", customer.whatsapp
+
+
+def test_a_foreign_number_keeps_its_own_country_code(auth_client, app):
+    """The dropdown default must not re-home a number the desk gave a code to."""
+    auth_client.post("/api/customers", json={
+        "name": "UK Client", "phone": "+44 7911 123456",
+    })
+    with app.app_context():
+        from app.models import Customer
+
+        customer = Customer.query.filter_by(name="UK Client").first()
+        assert customer.phone == "+447911123456", customer.phone
+
+
+def test_editing_a_customer_tidies_the_number_it_was_given(auth_client, app):
+    with app.app_context():
+        from app.models import Customer
+
+        res = auth_client.post("/api/customers", json={
+            "name": "Tidy Me", "phone": "+263 77 555 0555",
+        })
+        assert res.status_code == 201
+        customer = Customer.query.filter_by(name="Tidy Me").first()
+        before = customer.phone
+
+        res = auth_client.patch(f"/api/customers/{customer.id}",
+                                json={"phone": "077 555 0999"})
+        assert res.status_code == 200
+        assert res.get_json()["customer"]["phone"] == "+263775550999", before
+
+
+def test_the_same_customer_is_not_created_twice_for_two_spellings(auth_client, app):
+    """Canonicalising on write must not orphan rows saved before it existed.
+
+    Rows already in the database hold "0775550555" and "+263 77 555 0555". A
+    lookup that only matched the new canonical form would create a second
+    customer for somebody already on file.
+    """
+    with app.app_context():
+        from app.models import Customer
+        from app.services import job_flow
+
+        legacy = Customer(name="Already On File", phone="0775550555")
+        db.session.add(legacy)
+        db.session.commit()
+        legacy_id = legacy.id
+
+        # The desk now types it with the code, from the dropdown.
+        found = job_flow.find_or_create_customer(
+            name="Already On File", phone="+263775550555")
+
+        assert found.id == legacy_id, "created a duplicate customer"
+        assert Customer.query.count() == 1
+
+
+def test_meta_gives_the_frontend_the_dial_codes(auth_client):
+    """Same list and same default the server dials with, so they cannot drift."""
+    meta = auth_client.get("/api/meta").get_json()
+    assert meta["default_country_code"] == "263"
+    assert meta["countries"][0] == {"code": "263", "iso": "ZW", "name": "Zimbabwe"}
+
+
+# ── ID numbers ───────────────────────────────────────────────────────────────
+def test_a_customer_id_number_is_recorded_and_tidied(auth_client, app):
+    """An ID is read aloud and compared to a document at the counter.
+
+    Storing ``63-1234567 a 00`` and ``63-1234567 A 00`` as two different strings
+    makes the desk think one customer gave two IDs.
+    """
+    res = auth_client.post("/api/customers", json={
+        "name": "Identified Client", "phone": "0775550111",
+        "id_number": "  63-1234567 a 00  ",
+    })
+    assert res.status_code == 201, res.get_json()
+    assert res.get_json()["customer"]["id_number"] == "63-1234567 A 00"
+
+    with app.app_context():
+        from app.models import Customer
+
+        assert Customer.query.filter_by(name="Identified Client").first().id_number \
+            == "63-1234567 A 00"
+
+
+def test_blank_id_numbers_are_stored_as_nothing_not_as_empty_text(auth_client, app):
+    """"No ID on file" has to be one value.
+
+    The collection check asks whether there is an ID; ``""``, ``"  "`` and ``None``
+    all answering differently is how a warning ends up not shown.
+    """
+    auth_client.post("/api/customers", json={
+        "name": "No ID Client", "phone": "0775550112", "id_number": "   ",
+    })
+    with app.app_context():
+        from app.models import Customer
+
+        assert Customer.query.filter_by(name="No ID Client").first().id_number is None
+
+
+def test_an_id_number_can_be_added_later_from_the_edit_form(auth_client, app):
+    """Often the ID only appears at the counter, when somebody collects a car."""
+    res = auth_client.post("/api/customers", json={
+        "name": "Late ID", "phone": "0775550113",
+    })
+    cid = res.get_json()["customer"]["id"]
+    assert res.get_json()["customer"]["id_number"] is None
+
+    res = auth_client.patch(f"/api/customers/{cid}",
+                            json={"id_number": "08-7654321 b 42"})
+    assert res.status_code == 200
+    assert res.get_json()["customer"]["id_number"] == "08-7654321 B 42"
+
+
+def test_the_job_card_carries_the_id_checked_at_collection(auth_client):
+    """The vehicle is released against the ID, so it travels with the job card.
+
+    Read from the job card payload rather than the customer record because that
+    is the screen the person handing the keys over is looking at.
+    """
+    res = auth_client.post("/api/jobs", json={
+        "customer_name": "Collecting Client", "customer_phone": "0775550114",
+        "customer_id_number": "63-9999999 C 00", "reg_no": "IDC1234",
+    })
+    assert res.status_code == 201, res.get_json()
+    job = res.get_json()["job"]
+    assert job["customer_id_number"] == "63-9999999 C 00"
+
+    fetched = auth_client.get(f"/api/jobs/{job['id']}").get_json()["job"]
+    assert fetched["customer_id_number"] == "63-9999999 C 00"
+
+
+def test_an_id_given_later_never_overwrites_one_already_on_file(app):
+    """The number on file is the one that was checked against the document.
+
+    A later form that happens to carry the customer's number again must not
+    quietly replace it — that is how the wrong ID ends up on a handover.
+    """
+    with app.app_context():
+        from app.models import Customer
+        from app.services import job_flow
+
+        first = job_flow.find_or_create_customer(
+            name="Existing ID", phone="0775550115", id_number="63-1111111 A 00")
+        assert first.id_number == "63-1111111 A 00"
+
+        again = job_flow.find_or_create_customer(
+            name="Existing ID", phone="+263775550115", id_number="63-2222222 B 00")
+        assert again.id == first.id, "created a duplicate customer"
+        assert again.id_number == "63-1111111 A 00", "the checked ID was overwritten"
+
+        # But a blank one is filled in.
+        blank = job_flow.find_or_create_customer(
+            name="No ID Yet", phone="0775550116")
+        assert blank.id_number is None
+        filled = job_flow.find_or_create_customer(
+            name="No ID Yet", phone="0775550116", id_number="63-3333333 C 00")
+        assert filled.id == blank.id
+        assert filled.id_number == "63-3333333 C 00"
+
+
+def test_a_booking_can_carry_the_id_number(auth_client, app):
+    """The enquiry desk is told the ID over the phone, so record it then."""
+    res = auth_client.post("/api/bookings", json={
+        "name": "Phone ID Lead", "phone": "0775550117",
+        "id_number": "63-4444444 D 00", "service": "Ceramic Coating",
+        "slot_date": date.today().isoformat(),
+    })
+    assert res.status_code == 201, res.get_json()
+
+    with app.app_context():
+        from app.models import Customer
+
+        assert Customer.query.filter_by(name="Phone ID Lead").first().id_number \
+            == "63-4444444 D 00"
+
+
+def test_the_customer_payload_carries_the_portal_token(auth_client):
+    """Otherwise every "Open customer portal" button links to /portal/undefined.
+
+    A 404 there reads as though the portal is broken, so the desk stops offering
+    it to customers — and nobody reports it, because the button looks fine.
+    """
+    res = auth_client.post("/api/customers", json={
+        "name": "Portal Client", "phone": "0775550118",
+    })
+    assert res.status_code == 201
+    token = res.get_json()["customer"]["portal_token"]
+    assert token, "the portal token was left out of the payload"
+
+    # And the link it builds actually resolves.
+    assert auth_client.get(f"/portal/{token}").status_code == 200
+    assert auth_client.get("/portal/undefined").status_code == 404
+
+
 def test_advance_blocked_until_the_customer_approves_the_estimate(auth_client, app):
     res = auth_client.post("/api/jobs", json={
         "customer_name": "Approval Client", "reg_no": "APP1111",

@@ -195,6 +195,75 @@ def test_a_cancelled_booking_is_not_reminded(app):
         assert NotificationLog.query.filter_by(template="booking_reminder").count() == 0
 
 
+def test_the_bot_dials_a_locally_written_number_with_the_configured_code(app):
+    """A customer saved the way the desk writes numbers must still be reachable.
+
+    Everything downstream of `Customer.wa_number` — the conversation row, the API
+    call, the log — is addressed with the normalised number. Store it in local
+    form and the bot dials "0775550555", which is not a phone number at all: the
+    send is rejected and the desk sees only a customer who never replies.
+    """
+    with app.app_context():
+        customer = Customer(name="Local Writer", phone="0775550555")
+        db.session.add(customer)
+        db.session.flush()
+        tomorrow = date.today() + timedelta(days=1)
+        db.session.add(Booking(customer_id=customer.id, service="Car Detailing",
+                               slot_date=tomorrow, slot_time="09:00",
+                               status="CONFIRMED", source="whatsapp"))
+        db.session.commit()
+
+        result = notifications.send_due_booking_reminders(tomorrow)
+        assert result["sent"] == 1
+
+        logged = NotificationLog.query.filter_by(template="booking_reminder").one()
+        assert logged.recipient == "263775550555", logged.recipient
+        # The thread the message went into is the dialled number.
+        assert WaConversation.query.filter_by(wa_id="263775550555").first() is not None
+
+
+def test_changing_the_country_code_changes_what_the_bot_dials(app):
+    """One setting moves the desk's dropdown and the bot's dialling together.
+
+    This is the point of the shared module: the two used to be separate hard-coded
+    "263"s, so a shop anywhere else could not be set up at all.
+    """
+    app.config["DEFAULT_COUNTRY_CODE"] = "27"
+    try:
+        with app.app_context():
+            customer = Customer(name="Joburg Client", phone="0791123456")
+            db.session.add(customer)
+            db.session.flush()
+            tomorrow = date.today() + timedelta(days=1)
+            db.session.add(Booking(customer_id=customer.id, service="Car Detailing",
+                                   slot_date=tomorrow, slot_time="09:00",
+                                   status="CONFIRMED", source="whatsapp"))
+            db.session.commit()
+
+            assert notifications.send_due_booking_reminders(tomorrow)["sent"] == 1
+            logged = NotificationLog.query.filter_by(template="booking_reminder").one()
+            assert logged.recipient == "27791123456", logged.recipient
+    finally:
+        app.config["DEFAULT_COUNTRY_CODE"] = "263"
+
+
+def test_a_customer_with_no_usable_number_is_not_dialled(app):
+    """Better a logged failure than an API call to nonsense."""
+    with app.app_context():
+        customer = Customer(name="No Number", phone="123")
+        db.session.add(customer)
+        db.session.flush()
+        tomorrow = date.today() + timedelta(days=1)
+        db.session.add(Booking(customer_id=customer.id, service="Car Detailing",
+                               slot_date=tomorrow, slot_time="09:00",
+                               status="CONFIRMED", source="whatsapp"))
+        db.session.commit()
+
+        # "123" normalises to 263123, which is too short to be a phone number.
+        assert notifications.send_due_booking_reminders(tomorrow)["sent"] == 0
+        assert NotificationLog.query.filter_by(template="booking_reminder").count() == 0
+
+
 def test_the_reminder_endpoint_runs_and_is_manager_only(app, auth_client):
     with app.app_context():
         customer = Customer(name="Endpoint Reminder", phone="+263771130003",

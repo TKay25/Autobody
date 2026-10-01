@@ -20,6 +20,10 @@ from .constants import (
     STAGE_PROGRESS,
 )
 from .extensions import db
+# Imported as a module, not a name: `services.phone` imports nothing from here, so
+# this stays a one-way dependency and `Customer.wa_number` has exactly one
+# implementation of the normalisation rules to agree with.
+from .services import phone as phone_numbers
 
 
 def utcnow() -> datetime:
@@ -33,6 +37,23 @@ def utcnow() -> datetime:
 
 def _now() -> datetime:
     return utcnow()
+
+
+def normalise_id_number(value: str | None) -> str | None:
+    """A national ID or passport number, tidied for the collection check.
+
+    Upper-cased and with runs of whitespace collapsed, because the number is read
+    aloud and compared against a document at the counter: ``63-1234567 a 00`` and
+    ``63-1234567 A 00`` are the same ID, and storing them differently makes the
+    desk think a customer gave two different ones.
+
+    ``None`` for anything blank, so "no ID on file" is one value rather than "",
+    " " and None — this is checked at the moment the vehicle is released.
+    """
+    if value is None:
+        return None
+    tidied = " ".join(str(value).split()).upper()
+    return tidied or None
 
 
 def _money(value) -> Decimal:
@@ -134,6 +155,11 @@ class Customer(TimestampMixin, db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(160), nullable=False, index=True)
+    # National ID or passport. Taken at intake where the desk can, and at
+    # collection where it cannot: a vehicle is only handed over against the ID
+    # the person collecting it presents, so the number has to be on the record
+    # the person doing the handover is looking at.
+    id_number = db.Column(db.String(60), index=True)
     phone = db.Column(db.String(40), index=True)
     whatsapp = db.Column(db.String(40), index=True)
     email = db.Column(db.String(160))
@@ -151,14 +177,14 @@ class Customer(TimestampMixin, db.Model):
 
     @property
     def wa_number(self) -> str | None:
-        """Normalised WhatsApp number in E.164-ish digits, e.g. 263775550555."""
-        raw = self.whatsapp or self.phone
-        if not raw:
-            return None
-        digits = "".join(ch for ch in raw if ch.isdigit())
-        if digits.startswith("0"):
-            digits = "263" + digits[1:]
-        return digits or None
+        """Normalised WhatsApp number in E.164-ish digits, e.g. 263775550555.
+
+        Delegates to :mod:`app.services.phone` rather than repeating the rules.
+        This used to be a second, subtly different copy — it did not understand
+        the ``00`` international prefix — so a number written that way could not
+        be dialled by the bot even though it looked correct on screen.
+        """
+        return phone_numbers.normalise_msisdn(self.whatsapp or self.phone) or None
 
     @property
     def open_jobs(self) -> int:
@@ -168,6 +194,7 @@ class Customer(TimestampMixin, db.Model):
         data = {
             "id": self.id,
             "name": self.name,
+            "id_number": self.id_number,
             "phone": self.phone,
             "whatsapp": self.whatsapp,
             "wa_number": self.wa_number,
@@ -179,6 +206,10 @@ class Customer(TimestampMixin, db.Model):
             "whatsapp_opt_in": self.whatsapp_opt_in,
             "open_jobs": self.open_jobs,
             "created_at": self.created_at.isoformat(),
+            # The desk shares this link with the customer. Leaving it out of the
+            # payload made every "portal" button open `/portal/undefined` — a
+            # 404 that looks like the portal itself is broken.
+            "portal_token": self.portal_token,
         }
         if deep:
             data["vehicles"] = [v.to_dict() for v in self.vehicles]
@@ -347,6 +378,8 @@ class JobCard(TimestampMixin, db.Model):
             "vehicle_id": self.vehicle_id,
             "customer_name": self.customer.name if self.customer else None,
             "customer_phone": self.customer.phone if self.customer else None,
+            # Read aloud at the counter when the vehicle is handed over.
+            "customer_id_number": self.customer.id_number if self.customer else None,
             "reg_no": self.vehicle.reg_no if self.vehicle else None,
             "vehicle_title": self.vehicle.title if self.vehicle else None,
             "service": self.service,
