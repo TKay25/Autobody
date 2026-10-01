@@ -186,7 +186,13 @@ def t(key: str, lang: str, **kwargs) -> str:
 
 
 # ── intent detection ─────────────────────────────────────────────────────────
+# Approve / decline first, deliberately. The loop below returns the FIRST match,
+# and a customer answering a quotation writes things like "approve the quote" —
+# with `quote` ahead of these that message opened the quote flow instead of
+# approving the quotation they already have.
 INTENT_PATTERNS = [
+    ("approve", r"\b(approve|approved|approval|authorise|authorize|go ahead|proceed|accept)\b"),
+    ("decline", r"\b(decline|declined|reject|refuse|do not proceed|don't proceed|cancel it)\b"),
     ("book", r"\b(book|booking|appointment|slot|schedule|bhuka)\b"),
     ("track", r"\b(track|status|progress|where is|how far|ready|collection|kupi)\b"),
     ("quote", r"\b(quote|quotation|estimate|price|cost|how much|charge|mari)\b"),
@@ -299,11 +305,18 @@ def main_menu_reply(company: str, lang: str, prefix: str = "") -> dict:
     # Tapping a row that opens nothing is worse than the row not being there.
     try:
         form_id = (current_app.config or {}).get("WA_FLOW_ENQUIRY_ID") or ""
+        booking_form_id = (current_app.config or {}).get("WA_FLOW_BOOKING_ID") or ""
     except RuntimeError:      # no app context, e.g. a text-only unit test
-        form_id = ""
+        form_id = booking_form_id = ""
     if form_id:
         rows.insert(1, {"id": "m_form", "title": "Enquiry form",
                         "description": "Fill it in, we call you back"})
+    if booking_form_id:
+        # Directly under "Book a service": both are the same journey, and the
+        # form is the tidier way through it. The list is now at WhatsApp's
+        # ten-row ceiling, so anything else added here has to displace something.
+        rows.insert(2, {"id": "m_bform", "title": "Booking form",
+                        "description": "Pick a day and time on a form"})
 
     return {
         "type": "list",
@@ -529,7 +542,36 @@ class IntentRouter:
                     "quotation. It takes about a minute.",
             "flow_id": flow_id,
             "flow_token": "enquiry",
+            "screen": "ENQUIRY",
             "header": "Enquiry form",
+            "footer": self.company,
+        }]
+
+    def _menu_book_form(self) -> list[dict]:
+        """Offer the booking Flow.
+
+        The chat booking flow works, but it takes six messages to book an
+        appointment and a customer who stops halfway leaves a half-filled
+        context. The form does the same work in one screen and arrives as a
+        single payload — so it is offered first, with the chat flow still there
+        for anyone who would rather just type.
+        """
+        flow_id = self.cfg.get("WA_FLOW_BOOKING_ID") or ""
+        if not flow_id:
+            # No booking form built on this install. The chat flow is the honest
+            # fallback — it exists and it finishes the job.
+            return self._menu_book()
+
+        self.conv.state = "MAIN_MENU"
+        db.session.commit()
+        return [{
+            "type": "flow",
+            "body": "Pick a service, a day and a time, and we will confirm your "
+                    "appointment. It takes about a minute.",
+            "flow_id": flow_id,
+            "flow_token": "booking",
+            "screen": "BOOKING",
+            "header": "Booking form",
             "footer": self.company,
         }]
 
@@ -561,8 +603,15 @@ class IntentRouter:
                 "once more — or type *menu* if you would rather just chat."
             ), more_menu_reply(self.lang)]
 
-        if kind in {"enquiry", "quote", "booking", "book"}:
+        if kind in {"enquiry", "quote"}:
             return self._lead_from_flow(data)
+        if kind in {"booking", "book"}:
+            # Same answers, different question. A booking form asks which day
+            # suits; the enquiry form asks what is wrong with the vehicle. Both
+            # end up as a Booking record, but a booking must not be told to
+            # "send photos of the damage" and an enquiry must not be told its
+            # slot is held.
+            return self._booking_from_flow(data)
 
         current_app.logger.warning("Flow response with an unknown token %r", token)
         return [text(
@@ -617,7 +666,9 @@ class IntentRouter:
             notes.append(f"Vehicle: {vehicle}")
 
         self.conv.ctx_set(
-            reg=reg or "TBC",
+            # No "TBC" placeholder: a plate-less form raises a booking with no
+            # vehicle rather than a vehicle called TBC. See :meth:`_create_lead`.
+            reg=reg,
             service=service,
             damage="\n".join(notes),
             book_date=day or None,
@@ -638,6 +689,67 @@ class IntentRouter:
         )
         return replies[:-1] + [invitation] + replies[-1:]
 
+    def _booking_from_flow(self, data: dict) -> list[dict]:
+        """Turn a submitted booking form into an appointment.
+
+        Shares ``_create_lead`` with the enquiry path, because that is where the
+        customer, the vehicle and the pending attachments are dealt with and a
+        second copy would drift. The difference is the last line: an enquiry is
+        told the desk will call, a booking is told when to turn up.
+
+        The slot is checked against capacity **before** the booking is written,
+        so a form that asks for a time the shop cannot take is not confirmed and
+        then quietly overbooked. The form's dropdown cannot know how full a slot
+        is; only we can.
+        """
+        name = self._flow_value(data, "contact_name", "name")
+        email = self._flow_value(data, "contact_email", "email")
+        reg = self._flow_value(data, "reg_no", "registration").upper().replace(" ", "")
+        service = self._flow_value(data, "service", "service_type")
+        day = self._flow_value(data, "preferred_date", "date")
+        slot = self._flow_value(data, "preferred_time", "time")
+        notes = self._flow_value(data, "notes", "damage", "description")
+
+        service = (service if service in SERVICE_NAMES else match_service(service)) \
+            or "Panel Beating & Spray Painting"
+
+        when = self._parse_book_date(day)
+        taken = self._slot_taken(when, slot) if (when and slot) else 0
+        slot_is_full = bool(when and slot and taken >= BOOKING_SLOT_CAPACITY)
+
+        self.conv.ctx_set(
+            reg=reg,
+            service=service,
+            damage=notes or "Booked an appointment on WhatsApp",
+            book_date=day or None,
+            book_time=slot or None,
+            contact_name=name,
+            contact_email=email,
+        )
+        replies = self._create_lead(name, email=email)
+
+        # ``_create_lead``'s confirmation already prints the slot it recorded, so
+        # this block carries only the decision the customer still needs: whether
+        # the time they asked for is actually theirs, or the desk will come back
+        # with an alternative.
+        lines: list[str] = []
+        if not when:
+            # The form's date picker is required, so this means a payload we could
+            # not read. Say so rather than promising a day nobody chose.
+            lines.append("The day did not come through on the form, so expect a "
+                         "message agreeing a date with you.")
+        elif slot_is_full:
+            lines.append(f"{slot} on {when.strftime('%a %d %b')} is already full "
+                         f"({taken} booked), so expect the desk to offer you the "
+                         "nearest alternative.")
+        else:
+            lines.append("Every appointment is confirmed by the desk, so watch for "
+                         "a message. Reply *menu* if anything changes.")
+
+        # Slotted ahead of the catch-all menu, the same shape as the enquiry path,
+        # so the order reads confirmation → the one thing to know → what next.
+        return replies[:-1] + [text("\n".join(lines))] + replies[-1:]
+
     # ── interactive replies (buttons / list rows) ────────────────────────
     def _handle_choice(self, choice: str) -> list[dict]:
         if choice.startswith("svc:"):
@@ -657,17 +769,16 @@ class IntentRouter:
         if choice.startswith("a_decline:"):
             return self._quotation_decision(choice.split(":", 1)[1], approve=False)
         if choice in {"a_approve", "a_decline", "doc_quote"}:
-            # The `quotation_share` template's quick-reply buttons carry a FIXED
-            # payload — Meta cannot interpolate the estimate id into an approved
-            # template — so the bare ids resolve against the quotation we last
-            # sent on this thread.
-            estimate_id = self.conv.ctx_get("last_estimate_id")
-            if not estimate_id:
-                return self._fallback()
-            if choice == "doc_quote":
-                return self._document_reply(f"doc:quote:{estimate_id}")
-            return self._quotation_decision(str(estimate_id),
-                                            approve=choice == "a_approve")
+            # The `quotation_share` and `quotation_ready` templates carry FIXED
+            # button payloads — Meta cannot interpolate an estimate id into an
+            # approved template — so the bare ids resolve against the quotation
+            # we last sent on this thread.
+            return self._decision_from_thread(approve=choice == "a_approve",
+                                              download=choice == "doc_quote")
+        if choice in {"doc_invoice", "doc_receipt"}:
+            # Same reason: `invoice_share` and `receipt_share` carry one fixed
+            # payload each, naming the document rather than a record id.
+            return self._document_from_thread(invoice=choice == "doc_invoice")
         if choice.startswith("doc:"):
             return self._document_reply(choice)
 
@@ -682,6 +793,7 @@ class IntentRouter:
             "m_menu": self._go_main_menu,
             "m_services": self._menu_services,
             "m_form": self._menu_form,
+            "m_bform": self._menu_book_form,
             "m_lang": self._menu_lang,
             "a_approve": lambda: [text(
                 "Great — thank you for approving. We will order the parts and start work. "
@@ -740,6 +852,11 @@ class IntentRouter:
             return self._apply_language(detected)
 
         intent = detect_intent(raw)
+        if intent in {"approve", "decline"}:
+            # The templates tell the customer to *reply* approve or decline, and
+            # nothing used to catch it — the phrase fell through to the fallback,
+            # so the instruction on the quotation was a dead end.
+            return self._decision_from_thread(approve=intent == "approve")
         if intent == "menu":
             return self._go_main_menu()
         if intent == "quote":
@@ -937,6 +1054,36 @@ class IntentRouter:
         return self._go_main_menu()
 
     # ── quotation approval (WhatsApp buttons) ────────────────────────────
+    def _decision_from_thread(self, *, approve: bool = False,
+                              download: bool = False) -> list[dict]:
+        """Resolve a quotation decision that arrived without an estimate id.
+
+        Three things land here: a bare template payload (`a_approve`,
+        `doc_quote`), a typed *approve* / *decline*, and nothing else — because a
+        template's buttons are frozen when Meta approves it and cannot carry an
+        id, and a typed reply has none either. All three resolve against the
+        quotation we last sent on this conversation.
+        """
+        estimate_id = self.conv.ctx_get("last_estimate_id")
+        if not estimate_id:
+            return self._fallback()
+        if download:
+            return self._document_reply(f"doc:quote:{estimate_id}")
+        return self._quotation_decision(str(estimate_id), approve=approve)
+
+    def _document_from_thread(self, *, invoice: bool) -> list[dict]:
+        """Resolve a bare Download payload against the thread's last document.
+
+        ``invoice_share`` and ``receipt_share`` each carry one fixed payload —
+        ``doc_invoice`` / ``doc_receipt`` — because a template's buttons cannot
+        interpolate a record id. Whichever of those the notification last sent is
+        recorded on the conversation, and that is what a tap resolves against.
+        """
+        record_id = self.conv.ctx_get("last_invoice_id" if invoice else "last_receipt_id")
+        if not record_id:
+            return self._fallback()
+        return self._document_reply(f"doc:{'invoice' if invoice else 'receipt'}:{record_id}")
+
     def _quotation_decision(self, raw_id: str, *, approve: bool) -> list[dict]:
         """Customer tapped Approve / Decline on a quotation we sent them."""
         from ..models import Estimate
@@ -1232,7 +1379,14 @@ class IntentRouter:
 
     def _create_lead(self, name: str, email: str = "") -> list[dict]:
         ctx = self.conv.context
-        reg = ctx.get("reg") or "TBC"
+        # A booking form has no registration field, and a detailing appointment
+        # does not need one. "TBC" used to be invented here and then turned into a
+        # real Vehicle row, so every plate-less booking littered the customer's
+        # vehicles with one called TBC. No plate now means no vehicle, which the
+        # model tolerates — Booking.vehicle_id is nullable.
+        reg = (ctx.get("reg") or "").strip()
+        if reg.upper() == "TBC":
+            reg = ""
         service = ctx.get("service") or "Panel Beating & Spray Painting"
         damage = ctx.get("damage") or "See WhatsApp conversation"
         # The booking flow asks which day suits the customer. That answer used to be
@@ -1261,15 +1415,17 @@ class IntentRouter:
             slot_note = booked_for.isoformat() + (f" at {booked_at}" if booked_at else "")
             notes += f"\nPreferred slot: {slot_note}"
 
-        vehicle = Vehicle.query.filter_by(customer_id=customer.id, reg_no=reg).first()
-        if not vehicle:
-            vehicle = Vehicle(customer_id=customer.id, reg_no=reg)
-            db.session.add(vehicle)
-            db.session.flush()
+        vehicle = None
+        if reg:
+            vehicle = Vehicle.query.filter_by(customer_id=customer.id, reg_no=reg).first()
+            if not vehicle:
+                vehicle = Vehicle(customer_id=customer.id, reg_no=reg)
+                db.session.add(vehicle)
+                db.session.flush()
 
         booking = Booking(
             customer_id=customer.id,
-            vehicle_id=vehicle.id,
+            vehicle_id=vehicle.id if vehicle else None,
             service=service,
             slot_date=booked_for or (date.today() + timedelta(days=1)),
             slot_time=booked_at,
@@ -1312,11 +1468,14 @@ class IntentRouter:
                         + (f" at {booked_at}" if booked_at else "") + "\n")
         photo_note = f"*Attachments:* {len(media)} received\n" if media else ""
         email_note = f"*Email:* {customer.email}\n" if customer.email else ""
+        # Omitted rather than printed as "Vehicle: " — a booking made from the form
+        # often has no plate, and an empty label reads like a missing field.
+        vehicle_note = f"*Vehicle:* {reg}\n" if reg else ""
         return [
             text(
                 f"Request logged, {customer.name.split()[0]}.\n\n"
                 f"*Reference:* {booking.reference}\n"
-                f"*Vehicle:* {reg}\n"
+                f"{vehicle_note}"
                 f"*Service:* {service}{estimate_note}\n"
                 f"{day_note}{photo_note}{email_note}\n"
                 "Our front desk will confirm your booking and send the firm quotation during "

@@ -91,6 +91,11 @@ class Config:
     # form" menu row is simply not offered until a form has actually been built —
     # a row that opens nothing is worse than no row.
     WA_FLOW_ENQUIRY_ID = os.getenv("WA_FLOW_ENQUIRY_ID", "")
+    # The booking Flow's id. A second Flow rather than a second screen on the
+    # first: one asks what is wrong with the vehicle and collects damage, the
+    # other asks which day suits and collects a slot. Each is offered in the menu
+    # only once its own id is configured.
+    WA_FLOW_BOOKING_ID = os.getenv("WA_FLOW_BOOKING_ID", "")
     WA_GRAPH_URL = os.getenv("WA_GRAPH_URL", "https://graph.facebook.com")
     WA_SESSION_WINDOW_HOURS = 24
 
@@ -154,6 +159,7 @@ class TestConfig(Config):
     # real secret leaking in here would 403 every unsigned webhook test.
     WA_APP_SECRET = ""
     WA_FLOW_ENQUIRY_ID = ""
+    WA_FLOW_BOOKING_ID = ""
     SECRET_KEY = "test-secret"
     # Keep hashing cheap in tests; production uses Werkzeug's scrypt default.
     PASSWORD_HASH_METHOD = "pbkdf2:sha256:1000"

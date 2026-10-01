@@ -186,7 +186,8 @@ class WhatsAppClient:
 
     def send_flow(self, to: str, body: str, flow_id: str, *, flow_token: str = "enquiry",
                   cta: str = "Open form", header: str | None = None,
-                  footer: str | None = None, conversation: WaConversation | None = None,
+                  footer: str | None = None, screen: str = "ENQUIRY",
+                  conversation: WaConversation | None = None,
                   intent: str | None = None, job_id: int | None = None) -> WaMessage | None:
         """Offer a WhatsApp Flow — a form that opens inside WhatsApp.
 
@@ -197,6 +198,11 @@ class WhatsAppClient:
 
         ``flow_token`` is returned to us untouched in the ``nfm_reply``, so it is
         what routes the answers. Anything before a colon names the form.
+
+        ``screen`` is the Flow's own first screen, by its API name. Each Flow has
+        its own — the enquiry form opens ``ENQUIRY``, the booking form opens
+        ``BOOKING`` — and it must match the builder exactly, because Meta rejects
+        a screen name the Flow does not define.
         """
         to = normalise_msisdn(to)
         interactive = {
@@ -210,7 +216,7 @@ class WhatsAppClient:
                     "flow_id": flow_id,
                     "flow_cta": cta[:20],
                     "flow_action": "navigate",
-                    "flow_action_payload": {"screen": "ENQUIRY"},
+                    "flow_action_payload": {"screen": screen},
                 },
             },
         }

@@ -421,20 +421,22 @@ def test_every_customer_document_offers_a_download_button(app, auth_client, monk
     """The PDF is sent once, when the document is raised.
 
     By the time somebody wants it again it has scrolled away, so each of the
-    three carries its own Download button that fetches the file on demand.
+    three carries its own Download button that fetches the file on demand. The
+    payloads are bare — the same ones the approved templates send — because a
+    template's buttons cannot carry a record id.
     """
     from app.services import notifications as service
 
     calls = _record_sends(monkeypatch, service)
-    built = _delivered_documents(app, auth_client)
+    _delivered_documents(app, auth_client)
     offered = [button["id"] for row in _button_rows(calls) for button in row]
 
-    for kind, (record_id, _token, _number) in built["documents"].items():
-        assert f"doc:{kind}:{record_id}" in offered, (kind, offered)
+    for payload in ("doc_quote", "doc_invoice", "doc_receipt"):
+        assert payload in offered, (payload, offered)
 
 
 def test_the_quotation_button_row_stays_within_metas_limit(app, auth_client, monkeypatch):
-    """Approve, Decline and Download is exactly Meta's ceiling of three.
+    """Approve, Decline and Download quotation is exactly Meta's ceiling of three.
 
     A fourth button is rejected outright by the API, so the download has to ride
     along with the decision rather than follow it in its own message.
@@ -449,7 +451,7 @@ def test_the_quotation_button_row_stays_within_metas_limit(app, auth_client, mon
     assert len(decision_rows) == 1, decision_rows
     row = decision_rows[0]
     assert len(row) <= 3, row
-    assert any(b["id"].startswith("doc:quote:") for b in row), row
+    assert [b["id"] for b in row] == ["a_approve", "a_decline", "doc_quote"], row
 
 
 def test_tapping_download_answers_with_the_document(app, auth_client):
@@ -840,8 +842,12 @@ def test_sending_a_quotation_logs_a_document_message(app, auth_client):
             for m in WaMessage.query.filter_by(direction="outbound", msg_type="interactive").all()
             for b in (m.payload.get("buttons") or [])
         ]
-        assert f"a_approve:{est_id}" in buttons, f"approve/decline buttons missing: {buttons}"
-        assert f"a_decline:{est_id}" in buttons
+        # Bare payloads, matching the approved `quotation_share` template. They
+        # carry no estimate id — a template's buttons cannot — so the sending code
+        # records the estimate on the thread and a tap resolves against that.
+        assert buttons == ["a_approve", "a_decline", "doc_quote"], buttons
+        conversation = get_or_create_conversation("+263771234567")
+        assert conversation.ctx_get("last_estimate_id") == est_id
         assert ActivityLog.query.filter_by(action="estimate.sent").count() == 1
 
 
@@ -1159,7 +1165,11 @@ def test_the_quotation_gets_its_own_buttoned_template(app, auth_client, payloads
 
     names = [p["template"]["name"] for p in payloads]
     assert service.TEMPLATE_QUOTATION in names, names
-    assert service.TEMPLATE_QUOTATION != service.TEMPLATE_DOCUMENT
+    # Three different documents, three different templates: each carries a button
+    # naming what it fetches, and a template's buttons are frozen at approval.
+    assert service.TEMPLATE_INVOICE not in {service.TEMPLATE_QUOTATION,
+                                            service.TEMPLATE_RECEIPT}
+    assert service.TEMPLATE_RECEIPT != service.TEMPLATE_QUOTATION
 
 
 def test_the_template_buttons_resolve_against_the_last_quotation(app, auth_client, payloads):

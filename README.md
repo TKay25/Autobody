@@ -416,7 +416,7 @@ Coverage:
 | Sign-in page | The demo shortcuts match the seeded accounts, are absent in production, `?next=` cannot become an open redirect, `SEED_PASSWORD` overrides the default, and only managers can create accounts |
 | Documents | PDF bytes for quotations, invoices and receipts; sequential receipt numbers; public `/doc/<kind>/<token>` pages and `.pdf` responses; junk tokens 404 |
 | Quotation attach | The picker's customer / registration / search filters, copying a quotation's lines with kinds and prices intact, insurance flag and excess inheritance, the `estimate.copied` activity entry, 404 on an unknown quotation, 400 on an empty one, attachment upload and its traversal guard |
-| Document delivery | `document_share` attachments logged in simulator mode, Approve/Decline buttons sent, `a_approve:`/`a_decline:` taps update the estimate and write a `quotation_decision` log |
+| Document delivery | `quotation_share` / `invoice_share` / `receipt_share` attachments logged in simulator mode, Approve/Decline/Download buttons sent, `a_approve`/`a_decline`/`doc_quote` taps resolved against the thread |
 | WhatsApp bot | Number normalisation, intent detection, full quote flow, fallback escalation, human takeover, language switching, opt-out, webhook verification and message processing |
 | Platform | Search, activity trail, CSV exports, part/vehicle edits |
 | Security | CSRF really is enforced on API writes, and exempted for the public booking form |

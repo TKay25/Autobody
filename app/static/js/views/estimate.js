@@ -123,11 +123,16 @@
           include_paint: paintBox.checked,
           include_consumables: consumablesBox.checked,
           notes: notesInput.value,
-          send: sendBox.checked,
+          // The box decides whether the customer is told, and the server reads
+          // `notify` — it does not look at `send` any more. Omitting it made the
+          // checkbox do nothing: the estimate was saved DRAFT and the customer
+          // still got messaged.
+          notify: sendBox.checked,
         });
         T.toast(
           `Estimate ${res.estimate.reference} saved · ${money(res.estimate.total)}`
-          + (sendBox.checked ? ' · quotation sent' : ''),
+          + (res.notified ? ' · customer notified' : '')
+          + ' · send the quotation from the job card',
           'success');
         T.navigate(`/jobs/${jobId}`);
       } catch (err) {
@@ -192,8 +197,9 @@
             h('label.tc-label', { for: 'estNotes' }, 'Notes on this estimate'),
             notesInput,
           ]),
-          h('div.mt-2', check(sendBox, 'Send the quotation to the customer',
-            'The customer gets the PDF on WhatsApp straight away.')),
+          h('div.mt-2', check(sendBox, 'Tell the customer the quotation is ready',
+            'Sends a WhatsApp notice with the total and Approve / Decline / Download '
+            + 'buttons. The PDF itself goes when you send the quotation from the job card.')),
         ]),
       })),
       h('div.tc-toolbar.mt-3', [

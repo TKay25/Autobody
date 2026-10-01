@@ -4,7 +4,7 @@ from __future__ import annotations
 from io import BytesIO
 
 from app.extensions import db
-from app.models import Estimate, JobPhoto
+from app.models import Estimate, JobCard, JobPhoto
 
 PDF = b"%PDF-1.4\n% test quotation\n%%EOF\n"
 
@@ -26,6 +26,93 @@ def _estimate_id(client, job_id):
     estimate = client.get(f"/api/jobs/{job_id}").get_json()["job"]["estimate"]
     assert estimate, f"job {job_id} has no estimate"
     return estimate["id"]
+
+
+# ── saving an estimate vs sending the quotation ──────────────────────────────
+def _save_estimate(client, job_id, *, notify=True):
+    """What the builder's Save button posts."""
+    res = client.post(f"/api/jobs/{job_id}/estimate", json={
+        "panels": ["Front Bumper"], "notify": notify,
+    })
+    assert res.status_code == 201, res.get_json()
+    return res.get_json()
+
+
+def test_saving_an_estimate_does_not_claim_it_was_sent(app, auth_client):
+    """SENT has to mean the customer is holding the document.
+
+    Saving used to mark the estimate SENT while the only thing that reached the
+    customer was a notice. The desk then read "sent" on a quotation nobody had,
+    and the PDF went out only if somebody remembered to click again on the job
+    card. Saving now leaves it DRAFT.
+    """
+    job = _job(auth_client, reg="DRF111")
+    body = _save_estimate(auth_client, job["id"])
+    assert body["estimate"]["status"] == "DRAFT"
+
+    with app.app_context():
+        assert db.session.get(Estimate, body["estimate"]["id"]).sent_at is None
+
+
+def _outbound_kinds(job_id):
+    """Message kinds sent to this job's customer, in order.
+
+    Scoped to that customer's own thread rather than every outbound row: the
+    seed can plant a demo conversation, so a bare count measures the wrong thing.
+    """
+    from app.models import WaConversation
+
+    job = db.session.get(JobCard, job_id)
+    number = job.customer.wa_number if job.customer else None
+    conversation = WaConversation.query.filter_by(wa_id=number).first()
+    if conversation is None:
+        return []
+    return [m.msg_type for m in sorted(conversation.messages, key=lambda m: m.id)
+            if m.direction == "outbound"]
+
+
+def test_sending_the_pdf_is_what_marks_it_sent(app, auth_client):
+    job = _job(auth_client, reg="SND222")
+    est_id = _save_estimate(auth_client, job["id"])["estimate"]["id"]
+
+    res = auth_client.post(f"/api/estimates/{est_id}/send", json={})
+    assert res.status_code == 200, res.get_json()
+
+    with app.app_context():
+        estimate = db.session.get(Estimate, est_id)
+        assert estimate.status == "SENT"
+        assert estimate.sent_at is not None
+
+
+def test_unticking_the_notify_box_keeps_the_customer_quiet(app, auth_client):
+    """The box says it tells the customer, so it has to be what decides.
+
+    The caller posted `send` and omitted `notify` entirely, and the server
+    defaulted `notify` to True — so unticking the box still messaged the
+    customer. The box now gates the notice for real.
+    """
+    job = _job(auth_client, reg="QUIET1")
+    body = _save_estimate(auth_client, job["id"], notify=False)
+
+    assert body["notified"] is False
+    with app.app_context():
+        assert _outbound_kinds(job["id"]) == []
+
+
+def test_ticking_it_sends_the_notice_but_never_the_pdf(app, auth_client):
+    """Two steps, and the first one is only a notice.
+
+    The PDF is deliberately not attached here: `quotation_share` is what hands
+    over the document, and conflating the two is what made the status lie.
+    """
+    job = _job(auth_client, reg="NOTIFY")
+    body = _save_estimate(auth_client, job["id"], notify=True)
+    assert body["notified"] is True
+
+    with app.app_context():
+        kinds = _outbound_kinds(job["id"])
+    assert kinds, "the customer was told nothing at all"
+    assert "document" not in kinds, f"the builder attached a PDF: {kinds}"
 
 
 # ── the quotation picker ─────────────────────────────────────────────────────

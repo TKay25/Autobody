@@ -300,8 +300,15 @@ def receive_job_part(job_part, *, user_id: int | None = None) -> None:
 # Estimating bridge
 # ─────────────────────────────────────────────────────────────────────────────
 def save_estimate(job: JobCard, lines: list[dict], *, vat_rate: Decimal = Decimal("0.15"),
-                  notes: str | None = None, mark_sent: bool = True) -> Estimate:
-    """Persist a new estimate version for a job."""
+                  notes: str | None = None, mark_sent: bool = False) -> Estimate:
+    """Persist a new estimate version for a job.
+
+    ``mark_sent`` defaults to **False**, and that is deliberate: an estimate is
+    not sent because somebody saved it. The only thing that sends it is
+    :func:`notifications.send_quotation`, and that is where the status flips.
+    Saving used to mark it SENT while the customer had received nothing but a
+    notice, so the desk read "sent" on a quotation the customer never held.
+    """
     from .pricing import summarise
 
     existing = job.estimates or []

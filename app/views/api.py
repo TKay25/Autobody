@@ -696,8 +696,14 @@ def create_estimate(job_id: int):
         job, lines,
         vat_rate=as_decimal(data.get("vat_rate"), Decimal("0.15")),
         notes=want(data, "notes"),
-        mark_sent=bool(data.get("send", True)),
+        # Never SENT here. Saving an estimate tells the customer it exists; it
+        # does not hand them the document, and the status must not claim it did.
+        # `send_quotation` flips it to SENT when the PDF actually goes out.
+        mark_sent=False,
     )
+    # The operator's choice, not a default: unticking "tell the customer" on the
+    # builder really does keep it quiet. This used to be omitted by the caller
+    # and silently default to True, so the box did nothing.
     notified = False
     if data.get("notify", True):
         notified = notifications.notify_quote_ready(job)

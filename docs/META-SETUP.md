@@ -30,15 +30,23 @@ Names must match exactly — they are the constants in
 |---|---|---|---|---|
 | 1 | `job_stage_update` | — | 3 | — |
 | 2 | `vehicle_ready` | — | 2 | 1 quick-reply |
-| 3 | `quotation_ready` | — | 3 | — |
+| 3 | `quotation_ready` | — | 3 | 3 quick-reply |
 | 4 | `quotation_share` | **Document** | 3 | 3 quick-reply |
-| 5 | `document_share` | **Document** | 1 | — |
-| 6 | `payment_due` | — | 3 | — |
-| 7 | `parts_received` | — | 2 | — |
-| 8 | `warranty_registered` | — | 2 | — |
-| 9 | `booking_reminder` | — | 3 | — |
-| 10 | `job_feedback` | — | 2 | 3 quick-reply |
-| 11 | `enquiry_form` | — | 0 | 1 Flow button |
+| 5 | `invoice_share` | **Document** | 1 | 1 quick-reply |
+| 6 | `receipt_share` | **Document** | 1 | 1 quick-reply |
+| 7 | `payment_due` | **Text** `INVOICE` | 3 | 2 quick-reply |
+| 8 | `parts_received` | — | 2 | — |
+| 9 | `warranty_registered` | — | 2 | — |
+| 10 | `booking_reminder` | — | 3 | — |
+| 11 | `job_feedback` | — | 2 | 3 quick-reply |
+| 12 | `enquiry_form` | — | 0 | 1 Flow button |
+| 13 | `booking_form` *(optional)* | — | 1 | 1 Flow button |
+
+**Thirteen templates** (twelve required, `booking_form` optional). Every one that
+delivers or refers to a document carries a Download button, and each button names
+what it fetches. `parts_received`,
+`warranty_registered` and `booking_reminder` have no button because there is no
+file behind them — don't add one.
 
 ---
 
@@ -90,21 +98,38 @@ Button (type: **Quick reply**):
 > the customer in the state that captures a payment proof. On a settled account
 > it simply omits the balance rather than showing USD 0.00.
 
-### 3. `quotation_ready`
+### 3. `quotation_ready` — the "it's ready" notice
 
-Sent when an estimate is raised, *without* the PDF (the "approve/decline" nudge).
+Sent when the desk **ticks "Tell the customer the quotation is ready"** on the
+estimate builder, *without* the PDF. It is a heads-up, not the document: the
+estimate stays **DRAFT** and only `quotation_share` hands over the PDF and flips
+it to **SENT**. Unticking the box sends nothing at all.
 
-- `{{1}}` customer name
-- `{{2}}` quotation reference
-- `{{3}}` total
+Three quick-reply buttons. `{{1}}` first name, `{{2}}` reference, `{{3}}` total
+(the number only — the body already says `USD`).
 
 ```
 Hello {{1}}, your quotation {{2}} is ready.
 
 Total: USD {{3}}
 
-Reply *approve* to authorise the repair, or *decline* and our team will call you.
+Tap *Approve* to authorise the repair, *Decline* if you would like to discuss it,
+or *Download quotation* to keep a copy.
 ```
+
+Buttons (type: **Quick reply**, in this order):
+
+| Button text | Payload |
+|---|---|
+| Approve | `a_approve` |
+| Decline | `a_decline` |
+| Download quotation | `doc_quote` |
+
+> **None of the three carries an id,** because a template's payload is frozen when
+> Meta approves it. Sending the notice records which estimate the thread is about,
+> and every tap resolves against that. Typing *approve* (or *decline*, *approved
+> thanks*, *please proceed*) resolves the same way, so the sentence above is true
+> whether the customer taps or types.
 
 ### 4. `quotation_share` — the important one
 
@@ -119,7 +144,8 @@ buttons.
 Hello {{1}}, here is your quotation {{2}} for USD {{3}}.
 
 Tap Approve to authorise the repair, Decline if you would like to discuss it, or
-Download to keep a copy. Vehicles are released on settlement of the account.
+Download quotation to keep a copy. Vehicles are released on settlement of the
+account.
 ```
 
 Buttons (type: **Quick reply**, in this order):
@@ -128,7 +154,7 @@ Buttons (type: **Quick reply**, in this order):
 |---|---|
 | Approve | `a_approve` |
 | Decline | `a_decline` |
-| Download | `doc_quote` |
+| Download quotation | `doc_quote` |
 
 > **Why the payloads have no id.** A template's payload is frozen at approval, so
 > it cannot carry `a_approve:17`. Sending the quotation records the estimate
@@ -136,27 +162,53 @@ Buttons (type: **Quick reply**, in this order):
 > (`IntentRouter._handle_choice`). Inside the 24-hour window the buttons are sent
 > free-form instead and *do* carry the id — both paths work.
 
-### 5. `document_share`
+### 5. `invoice_share`
 
-Header type **Document**. Used for the **invoice** and the **receipt** (anything
-with no buttons attached).
-
-- `{{1}}` customer name
+Header type **Document**. One quick-reply button. `{{1}}` customer name.
 
 ```
-Hello {{1}}, here is the document you asked for. Tap the file above to open or
-save it.
+Hello {{1}}, here is your invoice. Tap the file above to open or save it.
 
-Reply *menu* if you need anything else.
+Please quote the invoice number with any transfer.
 ```
 
-### 6. `payment_due`
+Button (type: **Quick reply**):
 
-Sent when an invoice is issued.
+| Button text | Payload |
+|---|---|
+| Download invoice | `doc_invoice` |
 
-- `{{1}}` customer name
-- `{{2}}` invoice number
-- `{{3}}` balance due
+> **Why this is separate from the receipt.** The Download button has to name what
+> it fetches, and a template's buttons are frozen when Meta approves it — so an
+> invoice and a receipt cannot share one template. This replaced the old
+> `document_share`.
+
+### 6. `receipt_share`
+
+Header type **Document**. One quick-reply button. `{{1}}` customer name.
+
+```
+Hello {{1}}, here is your receipt. Tap the file above to open or save it.
+
+Thank you for your business.
+```
+
+Button (type: **Quick reply**):
+
+| Button text | Payload |
+|---|---|
+| Download receipt | `doc_receipt` |
+
+### 7. `payment_due`
+
+Sent when an invoice is issued. **Two** quick-reply buttons — the invoice PDF is
+not attached to this notice, so one button fetches it and the other answers
+"how do I pay?".
+
+- **Header (text):** `INVOICE` — fixed text, so it needs no parameters
+- `{{1}}` customer **first name**, `{{2}}` invoice number, `{{3}}` balance due
+  (the number only — the body already says `USD`)
+- **Footer:** `TopClass Autobody • Client Notifications`
 
 ```
 Hello {{1}}, invoice {{2}} has been raised.
@@ -167,12 +219,22 @@ Payment: Cash, EcoCash, InnBucks, bank transfer or card at reception. Please
 quote the invoice number with any transfer.
 ```
 
-### 7. `parts_received`
+Buttons (type: **Quick reply**, in this order):
 
-Sent when the last blocking part lands.
+| Button text | Payload |
+|---|---|
+| Download Invoice | `doc_invoice` |
+| Pay via EcoCash | `m_pay` |
 
-- `{{1}}` customer name
-- `{{2}}` up to three part names, comma-separated
+> `m_pay` is the **same id the collection notice uses** for *Check balance*, and
+> it answers with the bank details, the EcoCash number and the outstanding
+> invoice, then waits for the customer's confirmation screenshot. Reusing it
+> means the payment path is one piece of code rather than two that can drift.
+
+### 8. `parts_received`
+
+No button — there is nothing to download.
+`{{1}}` customer name, `{{2}}` up to three part names, comma-separated.
 
 ```
 Good news {{1}} — the parts we were waiting for have arrived ({{2}}).
@@ -180,12 +242,9 @@ Good news {{1}} — the parts we were waiting for have arrived ({{2}}).
 Work continues and we will update you at the next stage.
 ```
 
-### 8. `warranty_registered`
+### 9. `warranty_registered`
 
-Sent on collection.
-
-- `{{1}}` customer name
-- `{{2}}` job card number
+No button. `{{1}}` customer name, `{{2}}` job card number.
 
 ```
 Hello {{1}}, the warranty on job card {{2}} is registered. Keep this message as
@@ -196,14 +255,10 @@ protection film carry the manufacturer's warranty subject to the maintenance
 schedule.
 ```
 
-### 9. `booking_reminder`
+### 10. `booking_reminder`
 
-The day-before nudge. This one is **designed** to land outside the window — the
-customer booked days ago and has said nothing since.
-
-- `{{1}}` customer name
-- `{{2}}` when, e.g. `Mon 06 Oct 2026 at 09:00`
-- `{{3}}` reference (`TC-ENQ-…` or `TC-BKG-…`)
+No button. `{{1}}` customer name, `{{2}}` when, `{{3}}` reference.
+**Note `{{3}}` prints before `{{2}}`** — deliberate, the reference sits by its label.
 
 ```
 Hello {{1}}, a reminder about your appointment.
@@ -214,16 +269,10 @@ When: {{2}}
 Reply *menu* if you need to move it.
 ```
 
-> Note the order: `{{3}}` is printed before `{{2}}`. That is deliberate and
-> matches the code — the reference is what the customer repeats back, so it sits
-> next to the label.
+### 11. `job_feedback`
 
-### 10. `job_feedback`
-
-The day-after-collection ask. Three quick-reply buttons.
-
-- `{{1}}` customer first name
-- `{{2}}` job card number
+No button — the three quick replies *are* the interaction.
+`{{1}}` first name, `{{2}}` job card number.
 
 ```
 Hello {{1}}, how did we do on job card {{2}}?
@@ -240,16 +289,11 @@ Buttons (type: **Quick reply**, in this order):
 | Okay | `rate:3` |
 | Poor | `rate:1` |
 
-> A **Poor** tap raises a HIGH-priority task for the front desk automatically. It
-> is the only early warning that a job is coming back, so it is a task rather
-> than a line in a report.
+> A **Poor** tap raises a HIGH-priority task for the front desk automatically.
 
-### 11. `enquiry_form`
+### 12. `enquiry_form`
 
-The template that **launches the enquiry Flow** from outside the 24-hour window
-(a Flow cannot be sent free-form to a cold customer).
-
-- No body variables.
+Launches the enquiry Flow. No body variables. Button type **Flow**.
 
 ```
 Hello, thank you for contacting Topclass Auto Body.
@@ -258,23 +302,33 @@ Tap the button below to tell us about your vehicle and what you need. It takes
 about a minute, and our front desk will call you back with a firm quotation.
 ```
 
-Button (type: **Flow**):
+Button → Flow action `Navigate`, screen `ENQUIRY`, flow token `enquiry`.
 
-| Field | Value |
-|---|---|
-| Button text | `Open form` |
-| Flow | the **Enquiry form** Flow created in Part 2 |
-| Flow action | `Navigate` |
-| Screen | `ENQUIRY` |
-| Flow token | `enquiry` |
+### 13. `booking_form` — optional
+
+Sends the **booking** Flow to a customer who has gone quiet. Only needed if you
+build the Booking form; the chat booking flow covers customers inside the
+window. No body variables. Button type **Flow**.
+
+```
+Hello {{1}}, still want to bring the vehicle in?
+
+Tap below to pick a service, a day and a time. It takes about a minute and our
+front desk will confirm the appointment.
+```
+
+Button → Flow action `Navigate`, screen `BOOKING`, flow token `booking`.
+`{{1}}` is the customer's first name.
 
 ---
 
-## Part 2 — The enquiry Flow
+## Part 2 — The Flows
 
-**WhatsApp Manager → Flows → Create flow → Custom.** Name it
-**Enquiry form**. The endpoint URL is not needed: this app only reads the
-answers, it does not serve the Flow.
+> **This part is superseded by `docs/META-FLOWS.md`.** There are now **two**
+> Flows — the Request form (`ENQUIRY`) and the Booking form (`BOOKING`) — and the
+> service list below is out of date. Build them from `docs/META-FLOWS.md`; this
+> section is kept only so a reader who follows an old link is pointed somewhere
+> useful.
 
 ### ⚠️ A Flow cannot upload a file
 
@@ -313,17 +367,17 @@ simply arrives empty.
 | Preferred day | `preferred_date` | Date picker | no |
 | Preferred time | `preferred_time` | Dropdown | no |
 
-**`service`** must offer the seven service lines exactly as they appear in the
-app (`app/constants.py → SERVICES`), because the answer is matched against them
+**`service`** must offer the service lines exactly as they appear in the app
+(`app/constants.py → SERVICES`), because the answer is matched against them
 to pick the rate card:
 
+- Auto Body
 - Panel Beating & Spray Painting
+- Rebuilds & Performance Upgrades
 - Car Detailing
 - Ceramic Coating
 - Paint Protection Film
 - Car Vinyl Wrapping
-- Mechanical Repairs
-- Auto Electrical
 
 **`preferred_time`** should offer the workshop's slots: `08:00`, `09:00`,
 `10:00`, `11:00`, `12:00`, `13:00`, `14:00`, `15:00`, `16:00`.
@@ -369,10 +423,10 @@ what Meta requires while you are building it. Once published, change
 |---|---|---|
 | Job changes stage | `notify_stage_change` | `job_stage_update` |
 | Job reaches READY | `notify_ready_for_collection` | `vehicle_ready` |
-| Estimate raised | `notify_quote_ready` | `quotation_ready` |
-| Quotation sent | `send_quotation` | `quotation_share` |
-| Invoice sent | `send_invoice` | `document_share` |
-| Payment recorded | `send_receipt` | `document_share` |
+| Estimate saved, box ticked | `notify_quote_ready` | `quotation_ready` (notice only) |
+| Quotation sent from the job card | `send_quotation` | `quotation_share` (the PDF) |
+| Invoice sent | `send_invoice` | `invoice_share` |
+| Payment recorded | `send_receipt` | `receipt_share` |
 | Parts arrive | `notify_parts_received` | `parts_received` |
 | Invoice issued | `notify_invoice_issued` | `payment_due` |
 | Vehicle collected | `notify_warranty` | `warranty_registered` |
@@ -387,8 +441,9 @@ what Meta requires while you are building it. Once published, change
 | `a_approve:<id>` / `a_approve` | quotation buttons | Estimate → `APPROVED` |
 | `a_decline:<id>` / `a_decline` | quotation buttons | Estimate → `DECLINED` |
 | `doc:quote:<id>` / `doc_quote` | quotation buttons | Sends the quotation PDF |
-| `doc:invoice:<id>` | invoice buttons | Sends the invoice PDF |
-| `doc:receipt:<id>` | receipt buttons | Sends the receipt PDF |
+| `doc_invoice` | invoice + payment buttons | Sends the invoice PDF |
+| `doc_receipt` | receipt buttons | Sends the receipt PDF |
+| `m_pay` | collection notice, invoice notice | Payment details, then waits for proof |
 | `rate:5` / `rate:3` / `rate:1` | feedback buttons | Records the rating |
 | `m_*` | the menus | Menu navigation |
 
@@ -400,14 +455,20 @@ are handled.
 
 ## Part 4 — Checklist
 
-- [ ] Create the 11 templates above (names exactly as written, `Utility`)
-- [ ] `quotation_share`: document header + Approve / Decline / Download quick replies
-- [ ] `document_share`: document header
-- [ ] `job_feedback`: Excellent / Okay / Poor quick replies
+- [ ] Create the 12 templates above (names exactly as written, `Utility`)
+- [ ] `quotation_share`: document header + Approve / Decline / Download quotation
+- [ ] `invoice_share`: document header + Download invoice
+- [ ] `receipt_share`: document header + Download receipt
+- [ ] `payment_due`: text header `INVOICE`, footer, and **Download Invoice**
+      (`doc_invoice`) + **Pay via EcoCash** (`m_pay`)
+- [ ] `vehicle_ready`: Check balance
+- [ ] `job_feedback`: Excellent / Okay / Poor
 - [ ] `enquiry_form`: Flow button pointing at the published Enquiry Flow
 - [ ] Create the **Enquiry form** Flow with screen `ENQUIRY` and the field names above
 - [ ] Publish the Flow, copy its id
 - [ ] Set `WA_FLOW_ENQUIRY_ID` on the host and restart
+- [ ] Build the **Booking form** Flow per `docs/META-FLOWS.md` and set
+      `WA_FLOW_BOOKING_ID`; each menu row appears only once its id is set
 - [ ] Set `WA_APP_SECRET` — still outstanding, and the webhook currently accepts
       unsigned posts, so anyone who learns the URL can forge a customer message
 - [ ] `PUBLIC_BASE_URL` must be public HTTPS: Meta fetches every PDF itself

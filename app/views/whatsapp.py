@@ -311,10 +311,13 @@ def _handle_message(message: dict, contacts: dict) -> str | None:
                                  caption=reply.get("caption"), conversation=conversation)
         elif kind == "flow":
             # A WhatsApp Flow: a form that opens inside WhatsApp. The answers come
-            # back as an ``nfm_reply``, handled above.
+            # back as an ``nfm_reply``, handled above. Each Flow opens on its own
+            # first screen — Meta rejects a screen name the Flow does not define,
+            # so the router names it rather than this loop assuming one.
             client.send_flow(wa_id, reply["body"], reply["flow_id"],
                              flow_token=reply.get("flow_token") or "enquiry",
                              header=reply.get("header"), footer=reply.get("footer"),
+                             screen=reply.get("screen") or "ENQUIRY",
                              conversation=conversation)
         else:
             client.send_text(wa_id, reply["body"], conversation=conversation)

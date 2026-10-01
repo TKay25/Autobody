@@ -25,7 +25,12 @@ TEMPLATE_QUOTE_READY = "quotation_ready"
 TEMPLATE_PARTS_IN = "parts_received"
 TEMPLATE_PAYMENT_DUE = "payment_due"
 TEMPLATE_WARRANTY = "warranty_registered"
-TEMPLATE_DOCUMENT = "document_share"
+# One template per document. Each carries a Download button, and the button has
+# to *name* what it fetches — a template's buttons are frozen when Meta approves
+# it, so an invoice and a receipt cannot share one template and still say
+# "Download invoice" / "Download receipt". This replaced a single `document_share`.
+TEMPLATE_INVOICE = "invoice_share"
+TEMPLATE_RECEIPT = "receipt_share"
 # Quotations need their own template: unlike an invoice or a receipt they go out
 # with Approve / Decline / Download buttons, and a template's buttons are fixed
 # at approval time, so the buttoned one cannot be shared with the other two.
@@ -130,8 +135,55 @@ def _dispatch(job: JobCard | None, body: str, *, template: str, use_template: bo
 
 
 # ── Document delivery ────────────────────────────────────────────────────────
+def _remember(job: JobCard | None = None, *, customer=None, **context):
+    """Record what a thread is about *before* the message goes out.
+
+    A template's buttons carry a fixed payload — Meta cannot interpolate a
+    record id into an approved template — so every tap is resolved against the
+    conversation. Recording that first is what lets a delivered template answer
+    its own buttons: the other order leaves the customer holding live Approve /
+    Download buttons that fall through to the fallback if the process dies
+    between the send and the commit.
+
+    ``notify_feedback_request`` already worked this way; this is that pattern,
+    shared.
+    """
+    customer = customer or _customer(job)
+    number = customer.wa_number if customer else None
+    if not number:
+        return None
+    conversation = get_or_create_conversation(number, profile_name=customer.name)
+    if context:
+        conversation.ctx_set(**context)
+        db.session.commit()
+    return conversation
+
+
+def _action_prompt(number: str, conversation, *, body: str, buttons: list[dict],
+                   job_id: int | None, intent: str) -> bool:
+    """A short prompt with buttons, under a message that has just gone out.
+
+    Stays quiet outside the service window: Meta refuses a free-form interactive
+    message there, and a templated delivery already carried its own buttons.
+    A failure here must not fail the delivery that already succeeded, so this
+    swallows its own errors and reports back instead.
+    """
+    if conversation is not None and not conversation.is_session_open:
+        return False
+    try:
+        WhatsAppClient().send_buttons(
+            number, body, buttons,
+            footer="Topclass Auto Body", conversation=conversation,
+            intent=intent, job_id=job_id,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.error("Button prompt failed: %s", exc)
+        return False
+
+
 def _download_prompt(number: str, conversation, *, body: str, doc_id: str,
-                     job_id: int | None, intent: str) -> bool:
+                     job_id: int | None, intent: str, title: str = "Download") -> bool:
     """A lone Download button under a document that has just been delivered.
 
     The customer may have scrolled past the attachment, opened it once and lost
@@ -140,25 +192,14 @@ def _download_prompt(number: str, conversation, *, body: str, doc_id: str,
     so a re-issued invoice is never handed out from a stale attachment, and the
     customer can come back for it a week later.
 
-    A failure here must not fail the delivery that already succeeded, so this
-    swallows its own errors and reports back instead.
+    ``title`` names the document ("Download invoice"), matching the button on the
+    approved template so the two paths offer the customer the same thing.
     """
-    if conversation is not None and not conversation.is_session_open:
-        # Two reasons to stay quiet. A templated delivery already carried the PDF
-        # as its document header, so there is nothing to re-fetch; and Meta
-        # refuses a free-form interactive message outside the service window, so
-        # sending one is a guaranteed 400 on every notification.
-        return False
-    try:
-        WhatsAppClient().send_buttons(
-            number, body, [{"id": doc_id, "title": "Download"}],
-            footer="Topclass Auto Body", conversation=conversation,
-            intent=intent, job_id=job_id,
-        )
-        return True
-    except Exception as exc:  # noqa: BLE001
-        log.error("Download prompt failed: %s", exc)
-        return False
+    return _action_prompt(
+        number, conversation, body=body,
+        buttons=[{"id": doc_id, "title": title}],
+        job_id=job_id, intent=intent,
+    )
 
 
 def send_quotation(job: JobCard, estimate, *, with_buttons: bool = True) -> dict:
@@ -181,6 +222,7 @@ def send_quotation(job: JobCard, estimate, *, with_buttons: bool = True) -> dict
         f"Valid until {estimate.expires_on.strftime('%d %b %Y')}"
     )
 
+    conversation = _remember(job, last_estimate_id=estimate.id)
     delivered = _dispatch(
         job, caption, template=TEMPLATE_QUOTATION, use_template=True,
         params=[customer.name, estimate.reference, f"{currency} {_money(estimate.total)}"],
@@ -193,14 +235,6 @@ def send_quotation(job: JobCard, estimate, *, with_buttons: bool = True) -> dict
     if delivered and with_buttons:
         number = customer.wa_number
         if number:
-            client = WhatsAppClient()
-            conversation = get_or_create_conversation(number, profile_name=customer.name)
-            # Record which quotation this thread is about before any tap can
-            # arrive. A template's quick-reply buttons carry a *fixed* payload —
-            # Meta cannot interpolate the estimate id into them — so the bare ids
-            # on `quotation_share` resolve against this.
-            conversation.ctx_set(last_estimate_id=estimate.id)
-            db.session.commit()
             if not conversation.is_session_open:
                 # The approved template carried its own Approve / Decline /
                 # Download buttons, and Meta refuses a free-form interactive
@@ -208,21 +242,20 @@ def send_quotation(job: JobCard, estimate, *, with_buttons: bool = True) -> dict
                 log.info("Quotation %s sent as a template; buttons ride on it",
                          estimate.reference)
             else:
-                try:
-                    client.send_buttons(
-                        number,
-                        "Shall we go ahead with this quotation?",
-                        [
-                            {"id": f"a_approve:{estimate.id}", "title": "Approve"},
-                            {"id": f"a_decline:{estimate.id}", "title": "Decline"},
-                            {"id": f"doc:quote:{estimate.id}", "title": "Download"},
-                        ],
-                        footer="Topclass Auto Body",
-                        conversation=conversation, intent="quotation_decision",
-                        job_id=job.id,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.error("Quotation buttons failed: %s", exc)
+                _action_prompt(
+                    number, conversation,
+                    body="Shall we go ahead with this quotation?",
+                    buttons=[
+                        # Bare payloads, identical to the ones on the approved
+                        # `quotation_share` template. Both paths then run the
+                        # same resolution code, so a bug in it cannot hide
+                        # behind the branch that only fires in production.
+                        {"id": "a_approve", "title": "Approve"},
+                        {"id": "a_decline", "title": "Decline"},
+                        {"id": "doc_quote", "title": "Download quotation"},
+                    ],
+                    job_id=job.id, intent="quotation_decision",
+                )
 
     if delivered:
         estimate.status = "SENT"
@@ -249,8 +282,10 @@ def send_invoice(job: JobCard, invoice) -> dict:
     else:
         caption += "\n\n Settled in full — thank you."
 
+    conversation = _remember(job, last_invoice_id=invoice.id)
     delivered = _dispatch(
-        job, caption, template=TEMPLATE_DOCUMENT, use_template=True,
+        job, caption, template=TEMPLATE_INVOICE, use_template=True,
+        params=[customer.name],
         document={"link": public_url(f"/doc/invoice/{invoice.public_token}.pdf"),
                   "filename": f"Invoice-{invoice.invoice_no}.pdf"},
     )
@@ -258,11 +293,10 @@ def send_invoice(job: JobCard, invoice) -> dict:
     if delivered:
         number = customer.wa_number
         if number:
-            conversation = get_or_create_conversation(number, profile_name=customer.name)
             _download_prompt(
                 number, conversation,
                 body="Keep a copy of this invoice for your records.",
-                doc_id=f"doc:invoice:{invoice.id}",
+                doc_id="doc_invoice", title="Download invoice",
                 job_id=job.id, intent="invoice_download",
             )
 
@@ -289,7 +323,10 @@ def send_receipt(payment) -> dict:
     )
 
     client = WhatsAppClient()
-    conversation = get_or_create_conversation(customer.wa_number, profile_name=customer.name)
+    # Which receipt this thread is about, recorded BEFORE the receipt goes out so
+    # the template's bare `doc_receipt` button always has something to resolve
+    # against.
+    conversation = _remember(customer=customer, last_receipt_id=payment.id)
     link = public_url(f"/doc/receipt/{payment.public_token}.pdf")
     filename = f"Receipt-{payment.receipt_no or payment.id}.pdf"
     try:
@@ -304,20 +341,20 @@ def send_receipt(payment) -> dict:
             # receipt rides on the approved template's document header instead.
             # Sending it anyway lost the receipt silently.
             client.send_template(
-                customer.wa_number, TEMPLATE_DOCUMENT, [customer.name],
+                customer.wa_number, TEMPLATE_RECEIPT, [customer.name],
                 document={"link": link, "filename": filename},
                 conversation=conversation,
             )
     except Exception as exc:  # noqa: BLE001
         log.error("Receipt send failed: %s", exc)
-        _log(job, customer.wa_number, TEMPLATE_DOCUMENT, caption, "failed", str(exc)[:250])
+        _log(job, customer.wa_number, TEMPLATE_RECEIPT, caption, "failed", str(exc)[:250])
         return {"sent": False, "reason": "send_failed"}
 
-    _log(job, customer.wa_number, TEMPLATE_DOCUMENT, caption, "sent")
+    _log(job, customer.wa_number, TEMPLATE_RECEIPT, caption, "sent")
     _download_prompt(
         customer.wa_number, conversation,
         body="Keep a copy of this receipt for your records.",
-        doc_id=f"doc:receipt:{payment.id}",
+        doc_id="doc_receipt", title="Download receipt",
         job_id=job.id if job else None, intent="receipt_download",
     )
     return {"sent": True, "link": public_url(f"/doc/receipt/{payment.public_token}")}
@@ -402,22 +439,57 @@ def notify_ready_for_collection(job: JobCard) -> bool:
 
 
 def notify_quote_ready(job: JobCard) -> bool:
+    """A quotation has been raised — approve it, decline it, or download it.
+
+    All three buttons carry **bare** payloads (`a_approve`, `a_decline`,
+    `doc_quote`), not this estimate's id: a template's payload is fixed when Meta
+    approves it and cannot interpolate one. So sending this message records the
+    estimate against the conversation, and every tap resolves against that — as
+    does a customer who types *approve* instead of tapping at all.
+    """
     estimate = job.latest_estimate
     if not estimate:
         return False
+
+    customer = _customer(job)
+    first = (customer.name.split(" ")[0] if customer and customer.name else "there")
+    currency = estimate.currency or "USD"
+
     body = (
-        f"*Quotation ready* — job card {job.job_no}\n\n"
-        f"Vehicle: {job.vehicle.reg_no if job.vehicle else '-'}\n"
-        f"Reference: {estimate.reference}\n"
-        f"Total: *{estimate.currency} {_money(estimate.total)}*"
+        f"Hello {first}, your quotation *{estimate.reference}* is ready.\n\n"
+        f"Total: {currency} {_money(estimate.total)}\n\n"
+        "Tap *Approve* to authorise the repair, *Decline* if you would like to "
+        "discuss it, or *Download quotation* to keep a copy."
     )
-    body += (
-        "\n\nReply *approve* to authorise the repair, or *decline* and our team will call you."
-    )
-    return _dispatch(
+
+    # Record which quotation this thread is about BEFORE the notice goes out.
+    # The bare payloads and a typed *approve* both resolve against this, and the
+    # conversation is the only record that survives a Meta redelivery. Writing it
+    # first is what stops the out-of-window notice arriving with Approve /
+    # Decline / Download buttons that resolve to nothing.
+    conversation = _remember(job, last_estimate_id=estimate.id)
+    delivered = _dispatch(
         job, body, template=TEMPLATE_QUOTE_READY, use_template=True,
-        params=[job.customer.name, estimate.reference, _money(estimate.total)],
+        params=[first, estimate.reference, _money(estimate.total)],
     )
+
+    if delivered:
+        number = customer.wa_number if customer else None
+        if number:
+            # Only in the window: outside it the approved template carries the
+            # same three buttons, and a free-form message is refused outright.
+            _action_prompt(
+                number, conversation,
+                body="What would you like to do?",
+                buttons=[
+                    {"id": "a_approve", "title": "Approve"},
+                    {"id": "a_decline", "title": "Decline"},
+                    {"id": "doc_quote", "title": "Download quotation"},
+                ],
+                job_id=job.id, intent="quotation_decision",
+            )
+
+    return delivered
 
 
 def notify_parts_received(job: JobCard, parts: list[str]) -> bool:
@@ -431,16 +503,50 @@ def notify_parts_received(job: JobCard, parts: list[str]) -> bool:
 
 
 def notify_invoice_issued(job: JobCard, invoice) -> bool:
+    """Invoice raised — the notice, with *Download invoice* and *Pay via EcoCash*.
+
+    Neither button carries an id: a template's payload is frozen when Meta
+    approves it, so `doc_invoice` and `m_pay` resolve against the invoice
+    recorded on the thread. That record is written before this goes out, so the
+    buttons on a delivered notice can always be resolved.
+
+    The balance is in the body because the desk has just issued the invoice and
+    the customer needs the figure to pay against. A balance that moves later is
+    answered by *Check balance* / the menu rather than by this snapshot.
+    """
+    customer = _customer(job)
+    first = (customer.name.split(" ")[0] if customer and customer.name else "there")
+    currency = invoice.currency or "USD"
+
     body = (
-        f"*Invoice {invoice.invoice_no}*\n\n"
-        f"Job: {job.job_no}\n"
-        f"Total: *{invoice.currency} {_money(invoice.total)}*"
-        f"\nBalance: *{invoice.currency} {_money(invoice.balance)}*"
-        f"\nDue: {invoice.due_date.strftime('%d %b %Y') if invoice.due_date else 'on collection'}"
-        "\n\nPayment methods: Cash, EcoCash, InnBucks, Bank Transfer, Card."
+        f"Hello {first}, invoice {invoice.invoice_no} has been raised.\n\n"
+        f"Balance due: {currency} {_money(invoice.balance)}\n\n"
+        "Payment: Cash, EcoCash, InnBucks, bank transfer or card at reception. "
+        "Please quote the invoice number with any transfer."
     )
-    return _dispatch(job, body, template=TEMPLATE_PAYMENT_DUE, use_template=True,
-                     params=[job.customer.name, invoice.invoice_no, _money(invoice.balance)])
+
+    conversation = _remember(job, last_invoice_id=invoice.id)
+    delivered = _dispatch(job, body, template=TEMPLATE_PAYMENT_DUE, use_template=True,
+                          params=[first, invoice.invoice_no, _money(invoice.balance)])
+
+    if delivered:
+        number = customer.wa_number if customer else None
+        if number:
+            # The same two buttons the approved template carries, so a tap means
+            # the identical thing either side of the service window.
+            _action_prompt(
+                number, conversation,
+                body="Download the invoice, or get the payment details.",
+                buttons=[
+                    # Titles match the approved template word for word, so the
+                    # customer sees the same pair either side of the window.
+                    {"id": "doc_invoice", "title": "Download Invoice"},
+                    {"id": "m_pay", "title": "Pay via EcoCash"},
+                ],
+                job_id=job.id, intent="invoice_actions",
+            )
+
+    return delivered
 
 
 def notify_warranty(job: JobCard) -> bool:

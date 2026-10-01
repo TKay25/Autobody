@@ -124,11 +124,16 @@ def seed_reference_data() -> None:
 
 
 def run_seed(with_demo: bool = True) -> None:
-    """Idempotent seed — safe to run repeatedly."""
+    """Idempotent seed — safe to run repeatedly.
+
+    ``with_demo=False`` means reference data and nothing else. The bot's sample
+    thread used to be planted unconditionally, so a "no demo" seed still left a
+    fake customer and four messages in the inbox.
+    """
     seed_reference_data()
     if with_demo:
         _seed_demo_work()
-    _seed_whatsapp_demo()
+        _seed_whatsapp_demo()
     db.session.commit()
 
 

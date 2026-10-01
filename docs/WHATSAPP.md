@@ -294,13 +294,13 @@ These fire from the web app, not from the bot. Every attempt is written to
 | Trigger | Template name | Body |
 |---|---|---|
 | Job moves stage | `job_stage_update` | New stage, plain-English meaning, promised date, blocking parts |
-| Job reaches `READY` | `vehicle_ready` | Balance due, payment methods, collection address |
-| Estimate created | `quotation_ready` | Reference, total, approve/decline |
-| **Quotation sent** | `document_share` | The quotation **PDF**, plus Approve / Decline buttons |
-| **Invoice sent** | `document_share` | The tax invoice **PDF** |
-| **Payment recorded** | `document_share` | The **receipt PDF** |
+| Job reaches `READY` | `vehicle_ready` | Collection notice, plus a **Check balance** button |
+| Estimate saved, "tell the customer" ticked | `quotation_ready` | Reference, total, plus **Approve** / **Decline** / **Download quotation**. Notice only — no PDF, and the estimate stays `DRAFT` |
+| **Quotation sent** | `quotation_share` | The quotation **PDF**, plus **Approve** / **Decline** / **Download quotation** |
+| **Invoice sent** | `invoice_share` | The tax invoice **PDF**, plus **Download invoice** |
+| **Payment recorded** | `receipt_share` | The **receipt PDF**, plus **Download receipt** |
 | Last blocking part received | `parts_received` | Part list, "work continues" |
-| Invoice issued | `payment_due` | Invoice no., total, balance, due date |
+| Invoice issued | `payment_due` | Invoice no., balance due, payment methods, plus **Download Invoice** and **Pay via EcoCash** |
 | Vehicle collected | `warranty_registered` | The 12-month workmanship terms |
 | **Day before an appointment** | `booking_reminder` | Reference, service, time, address |
 | **Day after collection** | `job_feedback` | The three rating buttons |
@@ -324,8 +324,14 @@ public link (`/doc/<kind>/<token>.pdf`). Meta downloads that link itself, so
 
 | Button | Reply id | Effect |
 |---|---|---|
-| Approve | `a_approve:<estimate_id>` | `approve_estimate()` → `APPROVED` |
-| Decline | `a_decline:<estimate_id>` | `DECLINED`, estimator follow-up |
+| Approve | `a_approve` | `approve_estimate()` → `APPROVED` |
+| Decline | `a_decline` | `DECLINED`, estimator follow-up |
+| Download quotation | `doc_quote` | The quotation PDF |
+
+The payloads are **bare** — no estimate id — because a template's payload is
+frozen when Meta approves it and cannot interpolate one. Sending the notice
+records `last_estimate_id` on the conversation, and every tap (and a typed
+*approve* / *decline*) resolves against that record.
 
 Tapping Approve twice says "already approved" rather than replaying the thank-you.
 

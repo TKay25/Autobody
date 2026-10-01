@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 
 from app.constants import BOOKING_SLOT_CAPACITY
 from app.extensions import db
-from app.models import (Booking, BookingPhoto, Customer, Invoice, JobCard, JobPhoto,
+from app.models import (Booking, BookingPhoto, Customer, Estimate, Invoice, JobCard, JobPhoto,
                         NotificationLog, PaymentProof, Task, Vehicle, WaConversation,
                         WaMessage)
 from app.services import intent_router, notifications
@@ -1486,7 +1486,7 @@ def test_a_flow_response_is_not_eaten_by_a_waiting_state(app):
 
 # ── offering the Flow ────────────────────────────────────────────────────────
 class _WithForm:
-    """TestConfig with an enquiry Flow built and its id configured."""
+    """TestConfig with both Flows built and their ids configured."""
 
     @staticmethod
     def config():
@@ -1494,6 +1494,7 @@ class _WithForm:
 
         class WithForm(TestConfig):
             WA_FLOW_ENQUIRY_ID = "1234567890123456"
+            WA_FLOW_BOOKING_ID = "9999999999999999"
 
         return WithForm
 
@@ -1553,7 +1554,12 @@ def test_tapping_the_form_row_sends_the_flow(app):
 
 
 def test_the_webhook_writes_the_flow_it_was_handed(app, client, monkeypatch):
-    """A `flow` reply has to reach the send loop, like `document` and `list`."""
+    """A `flow` reply has to reach the send loop, like `document` and `list`.
+
+    Both Flows, because the screen name is per-Flow: the send loop used to
+    hard-code ``ENQUIRY``, which would have opened the booking form on a screen
+    it does not define.
+    """
     from app.views import whatsapp as webhook
 
     sent: list[dict] = []
@@ -1563,25 +1569,37 @@ def test_the_webhook_writes_the_flow_it_was_handed(app, client, monkeypatch):
     )
     monkeypatch.setitem(webhook.current_app.config, "WA_FLOW_ENQUIRY_ID",
                         "1234567890123456")
+    monkeypatch.setitem(webhook.current_app.config, "WA_FLOW_BOOKING_ID",
+                        "9999999999999999")
 
-    res = client.post("/webhooks/whatsapp", json={
-        "object": "whatsapp_business_account",
-        "entry": [{"changes": [{"value": {
-            "contacts": [{"wa_id": "263774440004", "profile": {"name": "Wire"}}],
-            "messages": [{"from": "263774440004", "id": "wamid.FORMROW",
-                          "type": "interactive",
-                          "interactive": {"type": "list_reply",
-                                          "list_reply": {"id": "m_form",
-                                                         "title": "Enquiry form"}}}],
-        }}]}],
-    })
-    assert res.status_code == 200
+    def tap(wa_id: str, message_id: str, row_id: str, title: str):
+        return client.post("/webhooks/whatsapp", json={
+            "object": "whatsapp_business_account",
+            "entry": [{"changes": [{"value": {
+                "contacts": [{"wa_id": wa_id, "profile": {"name": "Wire"}}],
+                "messages": [{"from": wa_id, "id": message_id,
+                              "type": "interactive",
+                              "interactive": {"type": "list_reply",
+                                              "list_reply": {"id": row_id,
+                                                             "title": title}}}],
+            }}]}],
+        })
+
+    assert tap("263774440004", "wamid.FORMROW", "m_form", "Enquiry form").status_code == 200
+    assert tap("263774440014", "wamid.BFORMROW", "m_bform", "Booking form").status_code == 200
 
     flows = [p for p in sent if p["interactive"]["type"] == "flow"]
-    assert flows, [p.get("type") for p in sent]
-    parameters = flows[0]["interactive"]["action"]["parameters"]
-    assert parameters["flow_id"] == "1234567890123456"
-    assert parameters["flow_action_payload"] == {"screen": "ENQUIRY"}
+    assert len(flows) == 2, [p.get("type") for p in sent]
+
+    enquiry = flows[0]["interactive"]["action"]["parameters"]
+    assert enquiry["flow_id"] == "1234567890123456"
+    assert enquiry["flow_action_payload"] == {"screen": "ENQUIRY"}
+    assert enquiry["flow_token"] == "enquiry"
+
+    booking = flows[1]["interactive"]["action"]["parameters"]
+    assert booking["flow_id"] == "9999999999999999"
+    assert booking["flow_action_payload"] == {"screen": "BOOKING"}
+    assert booking["flow_token"] == "booking"
 
 
 def test_no_flow_is_configured_falls_back_to_the_chat_quote_flow(app):
@@ -1594,6 +1612,344 @@ def test_no_flow_is_configured_falls_back_to_the_chat_quote_flow(app):
         assert all(r["type"] != "flow" for r in replies), replies
         # The chat quote flow starts by asking for the registration.
         assert conversation.state == "QUOTE_REG"
+
+
+# ── the booking form (a second Flow) ─────────────────────────────────────────
+BOOKING_ANSWERS = {
+    "contact_name": "Rudo Chikafu",
+    "contact_email": "rudo@example.co.zw",
+    "service": "Ceramic Coating",
+    "preferred_date": (date.today() + timedelta(days=4)).isoformat(),
+    "preferred_time": "10:00",
+    "notes": "Silver BMW X3, parked under a tree for years.",
+}
+
+
+def test_a_booking_form_becomes_an_appointment_not_an_enquiry(app):
+    """Same plumbing, different closing line.
+
+    Both forms end up as a Booking — that is the model — but a booking must not
+    be told to send photographs of damage, and an enquiry must not be told its
+    slot is being held. The token is what tells them apart.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263775550001", "Rudo Chikafu")
+        replies = intent_router.handle_inbound(conv, flow_response={
+            "flow_token": "booking", "data": BOOKING_ANSWERS})
+
+        booking = Booking.query.first()
+        assert booking is not None, "the booking form raised nothing"
+        assert booking.service == "Ceramic Coating"
+        assert booking.slot_date == date.today() + timedelta(days=4)
+        assert booking.slot_time == "10:00"
+        assert booking.status == "REQUESTED"
+        assert conv.state == "MAIN_MENU"
+
+        spoken = "\n".join(r.get("body", "") for r in replies)
+        # The slot the customer chose comes back to them, and the closing line
+        # says what happens next.
+        assert "*Preferred slot:*" in spoken, spoken
+        assert (date.today() + timedelta(days=4)).strftime("%a %d %b %Y") in spoken, spoken
+        assert "watch for" in spoken, spoken
+        # The one thing it must NOT say: a booking is not a damage report.
+        assert "photographs of the damage" not in spoken, spoken
+
+
+def test_a_booking_with_no_plate_does_not_invent_a_vehicle(app):
+    """"TBC" used to be written into the context and became a real Vehicle row.
+
+    A detailing appointment does not need a registration, so a plate-less booking
+    has to leave the vehicles list alone — otherwise every one of them adds a
+    customer vehicle called TBC.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263775550002", "No Plate")
+        intent_router.handle_inbound(conv, flow_response={
+            "flow_token": "booking",
+            "data": {k: v for k, v in BOOKING_ANSWERS.items() if k != "reg_no"},
+        })
+
+        booking = Booking.query.first()
+        assert booking is not None
+        assert booking.vehicle_id is None, "a plate-less booking got a vehicle"
+        assert not Vehicle.query.filter_by(reg_no="TBC").first()
+        assert Vehicle.query.count() == 0
+
+
+def test_a_full_slot_is_not_confirmed_silently(app):
+    """The form's dropdown cannot know how full a slot is; only we can.
+
+    Capacity is checked before the booking is written, so a customer who asks for
+    a time the shop cannot take is told so rather than being promised it.
+    """
+    from app.models import Customer
+
+    day = (date.today() + timedelta(days=4)).isoformat()
+    with app.app_context():
+        customer = Customer(name="Already Booked", phone="+263775550003")
+        db.session.add(customer)
+        db.session.flush()
+        for _ in range(BOOKING_SLOT_CAPACITY):
+            db.session.add(Booking(customer_id=customer.id, service="Car Detailing",
+                                   slot_date=date.today() + timedelta(days=4),
+                                   slot_time="10:00", status="CONFIRMED"))
+        db.session.commit()
+
+        conv = get_or_create_conversation("263775550004", "Full Slot")
+        replies = intent_router.handle_inbound(conv, flow_response={
+            "flow_token": "booking", "data": BOOKING_ANSWERS})
+
+        spoken = "\n".join(r.get("body", "") for r in replies)
+        assert "already full" in spoken, spoken
+        # Still recorded — the desk decides, the bot does not silently drop it.
+        assert Booking.query.filter_by(slot_time="10:00").count() == 3
+
+
+def test_the_booking_form_is_offered_only_when_one_is_configured(app):
+    """Same rule as the enquiry form: no row that opens nothing."""
+    from app import create_app
+    from config import TestConfig
+
+    plain = create_app(TestConfig)
+    with plain.app_context():
+        db.create_all()
+        from app.seed import run_seed
+
+        run_seed(with_demo=False)
+        conversation = get_or_create_conversation("263774440006", "No Booking Form")
+        rows = intent_router.handle_inbound(conversation, text_body="hi")[0]
+        ids = [r["id"] for s in rows["sections"] for r in s["rows"]]
+        assert "m_bform" not in ids, ids
+
+    configured = create_app(_WithForm.config())
+    with configured.app_context():
+        db.create_all()
+        from app.seed import run_seed
+
+        run_seed(with_demo=False)
+        conversation = get_or_create_conversation("263774440007", "Has Booking Form")
+        rows = intent_router.handle_inbound(conversation, text_body="hi")[0]
+        ids = [r["id"] for s in rows["sections"] for r in s["rows"]]
+        assert "m_bform" in ids, ids
+        # WhatsApp trims a list at ten rows, and both forms are now offered.
+        assert len(ids) <= 10, ids
+
+
+def test_tapping_the_booking_row_opens_the_booking_screen(app):
+    """Each Flow opens on its own first screen, named by the router."""
+    from app import create_app
+
+    configured = create_app(_WithForm.config())
+    with configured.app_context():
+        db.create_all()
+        from app.seed import run_seed
+
+        run_seed(with_demo=False)
+        conversation = get_or_create_conversation("263774440008", "Booking Tapper")
+        replies = intent_router.handle_inbound(conversation, interactive_id="m_bform")
+
+    assert [r["type"] for r in replies] == ["flow"], replies
+    flow = replies[0]
+    assert flow["flow_id"] == "9999999999999999"
+    assert flow["flow_token"] == "booking"
+    assert flow["screen"] == "BOOKING"
+
+
+def test_a_booking_form_without_a_booking_flow_configured_still_helps(app):
+    """A stale row on an install with no booking Flow must not dead-end."""
+    with app.app_context():
+        conversation = get_or_create_conversation("263774440009", "No Booking Form Tap")
+        replies = intent_router.handle_inbound(conversation, interactive_id="m_bform")
+
+        assert replies, "tapping the booking row produced no reply at all"
+        assert all(r["type"] != "flow" for r in replies), replies
+        # The chat booking flow starts by asking which service.
+        assert conversation.state == "BOOK_SERVICE"
+
+
+# ── the quotation notice, its Download button, and typed replies ─────────────
+def _quotation_job(app, auth_client, *, reg="QT111"):
+    """A job card with a quotation raised, and the service window open."""
+    auth_client.post("/api/jobs", json={
+        "customer_name": "Tariro Moyo", "customer_phone": "+263772334455",
+        "reg_no": reg, "panels": ["Front Bumper"],
+    })
+    with app.app_context():
+        from app.models import utcnow
+
+        conversation = get_or_create_conversation("263772334455", profile_name="Tariro Moyo")
+        conversation.last_inbound_at = utcnow()
+        db.session.commit()
+
+
+def test_the_quotation_notice_carries_the_full_button_row(app, auth_client):
+    """Approve, decline or download — the customer never has to type.
+
+    All three carry **bare** payloads, because a template's buttons are frozen
+    when Meta approves it and cannot carry an estimate id. Sending the notice is
+    what gives a tap something to resolve against.
+    """
+    from app.services import notifications
+
+    _quotation_job(app, auth_client)
+    with app.app_context():
+        notifications.notify_quote_ready(JobCard.query.first())
+        conversation = get_or_create_conversation("263772334455")
+        sent = sorted(conversation.messages, key=lambda m: m.id)
+        # Which quotation the thread is about — the buttons carry no id, so this
+        # is the only thing a tap can resolve against.
+        assert conversation.ctx_get("last_estimate_id") == Estimate.query.first().id
+
+    message = next(m for m in sent if "is ready" in (m.body or ""))
+    assert "Hello Tariro" in message.body
+    assert "Tap *Approve*" in message.body
+
+    button = next(m for m in sent if m.msg_type == "interactive")
+    assert button.payload["buttons"] == [
+        {"id": "a_approve", "title": "Approve"},
+        {"id": "a_decline", "title": "Decline"},
+        {"id": "doc_quote", "title": "Download quotation"},
+    ]
+    # Three is Meta's ceiling for an interactive button message, not a choice.
+    assert len(button.payload["buttons"]) == 3
+
+
+def test_tapping_approve_on_the_notice_approves_it(app, auth_client):
+    """The bare payload path — what a real tap on an approved template sends."""
+    from app.services import notifications
+
+    _quotation_job(app, auth_client, reg="BTNA")
+    with app.app_context():
+        notifications.notify_quote_ready(JobCard.query.first())
+        conversation = get_or_create_conversation("263772334455")
+        intent_router.handle_inbound(conversation, interactive_id="a_approve")
+        assert Estimate.query.first().status == "APPROVED"
+
+
+def test_tapping_decline_on_the_notice_declines_it(app, auth_client):
+    from app.services import notifications
+
+    _quotation_job(app, auth_client, reg="BTND")
+    with app.app_context():
+        notifications.notify_quote_ready(JobCard.query.first())
+        conversation = get_or_create_conversation("263772334455")
+        intent_router.handle_inbound(conversation, interactive_id="a_decline")
+        assert Estimate.query.first().status == "DECLINED"
+
+
+def test_tapping_the_download_button_returns_the_quotation(app, auth_client):
+    """A template cannot carry an estimate id, so the bare payload resolves."""
+    from app.services import notifications
+
+    _quotation_job(app, auth_client, reg="QT222")
+    with app.app_context():
+        notifications.notify_quote_ready(JobCard.query.first())
+        conversation = get_or_create_conversation("263772334455")
+        replies = intent_router.handle_inbound(conversation, interactive_id="doc_quote")
+        token = Estimate.query.first().public_token
+
+    assert [r["type"] for r in replies] == ["text", "document"], replies
+    assert replies[1]["link"].endswith(f"/doc/quote/{token}.pdf")
+
+
+def test_a_quiet_customer_can_still_resolve_the_notice_buttons(app, auth_client):
+    """Out of the 24h window the notice goes as the approved template.
+
+    The PDF is deliberately *not* attached here: Option B keeps the notice and
+    the document apart, and a customer who has gone quiet is no exception — the
+    desk sends the quotation from the job card when it is ready to.
+
+    What has to hold either way is that the thread remembers which quotation it
+    is about. A template's payloads are fixed, so Approve / Decline / Download
+    resolve against that record. Written *after* the send, a notice that reached
+    the customer could arrive with three buttons that resolve to nothing.
+    """
+    from app.services import notifications
+
+    auth_client.post("/api/jobs", json={
+        "customer_name": "Tariro Moyo", "customer_phone": "+263772334455",
+        "reg_no": "QUIET9", "panels": ["Front Bumper"],
+    })
+    with app.app_context():
+        conversation = get_or_create_conversation("263772334455", profile_name="Tariro Moyo")
+        conversation.last_inbound_at = None
+        db.session.commit()
+        assert conversation.is_session_open is False
+
+        notifications.notify_quote_ready(JobCard.query.first())
+        db.session.expire_all()
+
+        sent = sorted(conversation.messages, key=lambda m: m.id)
+        kinds = [m.msg_type for m in sent]
+        # Outside the window the approved template is the only thing Meta will
+        # accept, so there is no second free-form button message.
+        assert "interactive" not in kinds, kinds
+        notice = next(m for m in sent if m.msg_type == "template")
+        # The template name is in the logged body — `send_template` logs
+        # "[template:<name>] param | param".
+        assert notice.body.startswith("[template:quotation_ready]"), notice.body
+        # Not `quotation_share`: the notice stays a notice, no PDF attached.
+        assert "quotation_share" not in notice.body
+        assert conversation.ctx_get("last_estimate_id") == Estimate.query.first().id
+
+        replies = intent_router.handle_inbound(conversation, interactive_id="doc_quote")
+        token = Estimate.query.first().public_token
+
+    assert [r["type"] for r in replies] == ["text", "document"], replies
+    assert replies[1]["link"].endswith(f"/doc/quote/{token}.pdf")
+
+
+def test_typing_approve_approves_the_quotation(app, auth_client):
+    """The notice tells the customer to *reply* approve — that used to do nothing.
+
+    There was no free-text handling for it at all, so following the instruction
+    printed on the quotation fell through to the fallback and the customer was
+    ignored. The wording shipped with the template, so the template was a lie.
+    """
+    from app.services import notifications
+
+    _quotation_job(app, auth_client, reg="QT333")
+    with app.app_context():
+        notifications.notify_quote_ready(JobCard.query.first())
+        conversation = get_or_create_conversation("263772334455")
+        intent_router.handle_inbound(conversation, text_body="approve")
+        assert Estimate.query.first().status == "APPROVED"
+
+
+def test_typing_decline_declines_the_quotation(app, auth_client):
+    from app.services import notifications
+
+    _quotation_job(app, auth_client, reg="QT444")
+    with app.app_context():
+        notifications.notify_quote_ready(JobCard.query.first())
+        conversation = get_or_create_conversation("263772334455")
+        intent_router.handle_inbound(conversation, text_body="decline")
+        assert Estimate.query.first().status == "DECLINED"
+
+
+def test_approve_the_quote_does_not_open_the_quote_flow(app):
+    """Order matters here, and getting it wrong is silent.
+
+    Approve/decline are matched before every other intent because the loop takes
+    the first hit. With `quote` ahead of them, "approve the quote" opened a new
+    quotation request instead of approving the one the customer already had.
+    """
+    assert intent_router.detect_intent("approve the quote") == "approve"
+    assert intent_router.detect_intent("approved thanks") == "approve"
+    assert intent_router.detect_intent("please proceed") == "approve"
+    assert intent_router.detect_intent("decline") == "decline"
+    # ...and asking for a price is still asking for a price.
+    assert intent_router.detect_intent("I want a quote") == "quote"
+    assert intent_router.detect_intent("how much for a respray") == "quote"
+
+
+def test_approve_with_no_quotation_on_the_thread_does_not_crash(app):
+    """A stale "approve" from an old thread must degrade, not raise."""
+    with app.app_context():
+        conversation = get_or_create_conversation("263779997777", "No Quotation")
+        replies = intent_router.handle_inbound(conversation, text_body="approve")
+        assert replies
+        assert all(r.get("type") != "document" for r in replies), replies
 
 
 # ── the collection notice and its button ─────────────────────────────────────
@@ -1686,3 +2042,62 @@ def test_a_settled_account_is_not_told_it_owes_money(app, auth_client):
         # It still offers the way to file a proof of payment.
         assert "already paid" in text, text
         assert Invoice.query.first().balance == 0
+
+
+# ── the invoice notice and its two buttons ──────────────────────────────────
+def test_the_invoice_notice_carries_download_and_pay_buttons(app, auth_client):
+    """The `payment_due` template, as approved in Meta.
+
+    It reads "Hello <first name>, invoice <no> has been raised", a balance, and
+    the payment methods — and it carries **two** quick-reply buttons, so the
+    customer can fetch the PDF or get the payment details without typing.
+    """
+    _ready_job(app, auth_client, reg="INV111")
+
+    with app.app_context():
+        invoice = Invoice.query.first()
+        # Snapshot the fields: the send commits, which expires the instance, and
+        # an expired ORM object cannot be read once the context is gone.
+        invoice_no = invoice.invoice_no
+        balance = f"{invoice.balance:,.2f}"
+        notifications.notify_invoice_issued(JobCard.query.first(), invoice)
+        conversation = get_or_create_conversation("263772334455")
+        sent = sorted(conversation.messages, key=lambda m: m.id)
+
+    notice = next(m for m in sent if "has been raised" in (m.body or ""))
+    assert "Hello Tariro," in notice.body, notice.body
+    # First name only: the approved opening is "Hello {{1}},".
+    assert "Tariro Moyo" not in notice.body, notice.body
+    assert f"invoice {invoice_no} has been raised" in notice.body
+    assert f"Balance due: USD {balance}" in notice.body
+    assert "Cash, EcoCash, InnBucks, bank transfer or card at reception" in notice.body
+    assert "quote the invoice number with any transfer" in notice.body
+
+    button = next(m for m in sent if m.msg_type == "interactive")
+    assert button.payload["buttons"] == [
+        {"id": "doc_invoice", "title": "Download Invoice"},
+        {"id": "m_pay", "title": "Pay via EcoCash"},
+    ], button.payload["buttons"]
+
+
+def test_the_pay_via_ecocash_button_answers_with_the_payment_details(app, auth_client):
+    """The second button on the invoice notice has to lead somewhere.
+
+    It carries ``m_pay`` — the same menu id the collection notice uses — so the
+    payment instructions and the proof-of-payment state come from code that is
+    already exercised, rather than a second handler that could drift.
+    """
+    _ready_job(app, auth_client, reg="INV222")
+
+    with app.app_context():
+        conversation = get_or_create_conversation("263772334455")
+        replies = intent_router.handle_inbound(conversation, interactive_id="m_pay")
+
+        invoice = Invoice.query.first()
+        text = replies[0]["body"]
+        assert "How to pay" in text, text
+        assert "EcoCash" in text, text
+        assert invoice.invoice_no in text, text
+        assert f"{invoice.balance:,.2f}" in text, text
+        # And it leaves the customer where a payment screenshot is captured.
+        assert conversation.state == "PAYMENT_PROOF"
