@@ -14,6 +14,7 @@ from app.models import (
     ActivityLog,
     Customer,
     Estimate,
+    Invoice,
     JobCard,
     NotificationLog,
     Payment,
@@ -233,22 +234,346 @@ def test_the_receipt_draws_nothing_past_the_edge_of_the_sheet(app, auth_client):
     assert high > width - 30 * mm, f"the receipt only draws out to {high}"
 
 
-def test_quotations_and_invoices_stay_on_a4(app, auth_client):
-    """Only the receipt changes paper — the filed documents stay A4."""
-    from reportlab.lib.pagesizes import A4, A5
+def _page_count(pdf: bytes) -> int:
+    return len(re.findall(rb"/MediaBox", pdf))
 
+
+def _documents(app, auth_client, *, reg="A5ALL"):
+    """A quotation, invoice and receipt built from one real job."""
     from app.models import Invoice
 
-    _receipt_payment(auth_client, reg="A4STAY")
+    job = _job_with_estimate(auth_client, reg=reg)
+    invoice = _ensure_invoice(auth_client, job["id"])
+    auth_client.post(f"/api/invoices/{invoice['id']}/payment", json={"amount": 5})
     with app.app_context():
-        quote = documents.build_quotation_pdf(Estimate.query.first())
-        invoice = documents.build_invoice_pdf(Invoice.query.first())
+        return {
+            "quote": documents.build_quotation_pdf(Estimate.query.first()),
+            "invoice": documents.build_invoice_pdf(Invoice.query.first()),
+            "receipt": documents.build_receipt_pdf(Payment.query.first()),
+        }
 
-    for pdf in (quote, invoice):
+
+def test_all_three_customer_documents_print_on_a5(app, auth_client):
+    """Quotation, invoice and receipt are all handed to the customer.
+
+    A5 is a sheet that fits a glovebox or a folder pocket, which is where these
+    actually end up. The three must agree on the paper or the set looks improvised.
+    """
+    from reportlab.lib.pagesizes import A5
+
+    for kind, pdf in _documents(app, auth_client).items():
         width, height = _page_size(pdf)
-        assert abs(width - A4[0]) < 1, (width, height)
-        assert abs(height - A4[1]) < 1, (width, height)
-        assert (width, height) != (A5[0], A5[1])
+        assert abs(width - A5[0]) < 1, (kind, width, height)
+        assert abs(height - A5[1]) < 1, (kind, width, height)
+
+
+def test_quotations_and_invoices_draw_nothing_past_the_edge_of_the_sheet(app, auth_client):
+    """The wide blocks are drawn to A4's 174mm body, and A5 leaves 124mm.
+
+    ReportLab does not object to a block that overruns the sheet — it just puts
+    ink past the paper — so the only way to catch it is to measure where the ink
+    actually lands. The receipt has its own test; the other two need the same
+    proof, because they carry the item table and the payments ledger.
+    """
+    from reportlab.lib.units import mm
+
+    for kind, pdf in _documents(app, auth_client, reg="A5EDGE").items():
+        width, _height = _page_size(pdf)
+        low, high = _ink_extent(pdf)
+        assert low >= 0, f"{kind} ink starts off the left edge at {low}"
+        assert high <= width, f"{kind} ink runs to {high} on a {width:.1f}pt page"
+        # And it uses the sheet rather than collapsing into a narrow column.
+        assert high > width - 30 * mm, f"{kind} only draws out to {high}"
+
+
+def test_a_short_quotation_stays_on_one_sheet(app, auth_client):
+    """A5 holds 186mm of body against A4's 266mm, so the shared blocks had to
+    give up some of their air. A three-line quotation is the common case and it
+    has to be one sheet — a second sheet carrying only the signature lines is
+    worse than a slightly tighter first one.
+    """
+    from app.models import EstimateItem
+
+    job = _job_with_estimate(auth_client, reg="A5ONE")
+    with app.app_context():
+        estimate = Estimate.query.first()
+        # The panels on the job already raised lines; this test is about three.
+        estimate.items.clear()
+        db.session.flush()
+        for index in range(3):
+            estimate.items.append(EstimateItem(
+                kind="LABOUR", description=f"Panel beating - panel {index + 1}",
+                quantity=3.5, unit="hrs", unit_price=45,
+            ))
+        db.session.commit()
+
+        assert len(estimate.items) == 3
+        assert _page_count(documents.build_quotation_pdf(estimate)) == 1
+
+
+def test_the_totals_panel_keeps_its_half_width(app):
+    """_fit scales a block to fill the frame, which is right for the letterhead
+    and the item table and wrong for this panel.
+
+    The totals are a deliberate 86mm half-block set to the right. Handing it the
+    A5 frame stretched it to the full 124mm and made every document's summary
+    span the sheet like a second masthead.
+    """
+    from reportlab.lib.units import mm
+
+    with app.app_context():
+        panel = documents._totals_block(
+            [("Subtotal", "1.00", False), ("Total (USD)", "1.00", True)],
+        )
+        assert abs(sum(panel._argW) - 86 * mm) < 0.5
+
+
+def test_the_totals_panel_is_tighter_on_a_narrow_sheet(app):
+    """The compact metrics are the only reason a short document fits one sheet."""
+    lines = [(f"Line {index}", "1.00", index == 5) for index in range(6)]
+    with app.app_context():
+        roomy = documents._totals_block(lines)
+        tight = documents._totals_block(lines, narrow=True)
+
+        assert tight.wrap(351.5, 527.2)[1] < roomy.wrap(351.5, 527.2)[1]
+
+
+def test_the_letterhead_still_spans_the_a5_frame(app):
+    """The counterpart to the totals panel: anything that *should* fill the sheet
+    still does, or the fix for one block would quietly break the other.
+    """
+    from reportlab.lib.pagesizes import A5
+
+    geometry = documents._page(A5)
+    with app.app_context():
+        letterhead = documents._letterhead([("Quotation", "QT-1")],
+                                           width=geometry["width"])
+    assert abs(sum(letterhead._argW) - geometry["width"]) < 0.5
+
+
+# ── the download button ──────────────────────────────────────────────────────
+def _record_sends(monkeypatch, module):
+    """Swap the WhatsApp client in ``module`` for one that writes the calls down.
+
+    The row keeps the body the customer reads, not the payload that produced it,
+    so the only way to assert what was actually offered is to watch the call.
+    """
+    calls: list[tuple[str, tuple, dict]] = []
+
+    class Recorder:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __getattr__(self, name):
+            def record(*args, **kwargs):
+                calls.append((name, args, kwargs))
+                return {"simulated": True}
+            return record
+
+    monkeypatch.setattr(module, "WhatsAppClient", Recorder)
+    return calls
+
+
+def _button_rows(calls) -> list[list[dict]]:
+    """The button rows that were sent, in order: send_buttons(to, body, buttons)."""
+    return [call[1][2] for call in calls if call[0] == "send_buttons"]
+
+
+def _delivered_documents(app, auth_client, *, reg="DLBTN"):
+    """Send all three documents and report their ids, tokens and buttons."""
+    from app.models import Invoice
+
+    job = _job_with_estimate(auth_client, reg=reg)
+    created = _ensure_invoice(auth_client, job["id"])
+    auth_client.post(f"/api/invoices/{created['id']}/payment", json={"amount": 5})
+
+    with app.app_context():
+        job_card = JobCard.query.first()
+        estimate = Estimate.query.first()
+        invoice = Invoice.query.first()
+        payment = Payment.query.first()
+        # Open the 24h service window. These tests are about the free-form path;
+        # with the window shut everything correctly goes as a template instead,
+        # and there are no ids in a template's buttons to assert on.
+        from app.models import utcnow
+        from app.services.whatsapp_client import get_or_create_conversation
+
+        conversation = get_or_create_conversation(job_card.customer.wa_number,
+                                                  profile_name=job_card.customer.name)
+        conversation.last_inbound_at = utcnow()
+        db.session.commit()
+
+        notifications.send_quotation(job_card, estimate)
+        notifications.send_invoice(job_card, invoice)
+        notifications.send_receipt(payment)
+
+        return {
+            "customer": Customer.query.first(),
+            "documents": {
+                "quote": (estimate.id, estimate.public_token, estimate.reference),
+                "invoice": (invoice.id, invoice.public_token, invoice.invoice_no),
+                "receipt": (payment.id, payment.public_token, payment.receipt_no),
+            },
+        }
+
+
+def test_every_customer_document_offers_a_download_button(app, auth_client, monkeypatch):
+    """The PDF is sent once, when the document is raised.
+
+    By the time somebody wants it again it has scrolled away, so each of the
+    three carries its own Download button that fetches the file on demand.
+    """
+    from app.services import notifications as service
+
+    calls = _record_sends(monkeypatch, service)
+    built = _delivered_documents(app, auth_client)
+    offered = [button["id"] for row in _button_rows(calls) for button in row]
+
+    for kind, (record_id, _token, _number) in built["documents"].items():
+        assert f"doc:{kind}:{record_id}" in offered, (kind, offered)
+
+
+def test_the_quotation_button_row_stays_within_metas_limit(app, auth_client, monkeypatch):
+    """Approve, Decline and Download is exactly Meta's ceiling of three.
+
+    A fourth button is rejected outright by the API, so the download has to ride
+    along with the decision rather than follow it in its own message.
+    """
+    from app.services import notifications as service
+
+    calls = _record_sends(monkeypatch, service)
+    _delivered_documents(app, auth_client, reg="DLBTN3")
+
+    decision_rows = [row for row in _button_rows(calls)
+                     if any(b["id"].startswith("a_approve") for b in row)]
+    assert len(decision_rows) == 1, decision_rows
+    row = decision_rows[0]
+    assert len(row) <= 3, row
+    assert any(b["id"].startswith("doc:quote:") for b in row), row
+
+
+def test_tapping_download_answers_with_the_document(app, auth_client):
+    """The reply says what it is doing, then hands over the file.
+
+    Nothing is attached in the reply itself: Meta fetches the link when it
+    delivers the message, and the /doc route builds the PDF on demand.
+    """
+    built = _delivered_documents(app, auth_client, reg="DLTAP")
+    labels = {"quote": "Quotation", "invoice": "Invoice", "receipt": "Receipt"}
+
+    for kind, (record_id, token, number) in built["documents"].items():
+        with app.app_context():
+            conversation = get_or_create_conversation(built["customer"].wa_number)
+            replies = intent_router.handle_inbound(
+                conversation, interactive_id=f"doc:{kind}:{record_id}")
+
+        assert replies[0]["type"] == "text", replies
+        assert "Generating" in replies[0]["body"], replies[0]
+
+        document = replies[1]
+        assert document["type"] == "document", replies
+        assert document["filename"] == f"{labels[kind]}-{number}.pdf"
+        assert document["link"].endswith(f"/doc/{kind}/{token}.pdf")
+
+
+def test_the_downloaded_link_serves_the_real_document(app, auth_client):
+    """The link the customer taps has to resolve for somebody with no login.
+
+    Meta fetches it from its own servers, so a link that only works inside a
+    session would leave the customer with a button that does nothing.
+    """
+    from reportlab.lib.pagesizes import A5
+
+    built = _delivered_documents(app, auth_client, reg="DLLINK")
+    anonymous = app.test_client()          # the customer's phone, no session
+
+    for kind, (_record_id, token, _number) in built["documents"].items():
+        res = anonymous.get(f"/doc/{kind}/{token}.pdf")
+        assert res.status_code == 200, kind
+        assert res.data[:4] == b"%PDF", kind
+        width, height = _page_size(res.data)
+        assert abs(width - A5[0]) < 1, (kind, width, height)
+        assert abs(height - A5[1]) < 1, (kind, width, height)
+
+
+def test_a_download_button_for_a_vanished_document_says_so(app, auth_client):
+    """A button outlives the thread it was sent in.
+
+    Tapping one for a document that has since gone must say so and offer a way
+    out — not crash, and not leak a link to whatever now holds that row id.
+    """
+    built = _delivered_documents(app, auth_client, reg="DLGONE")
+
+    with app.app_context():
+        conversation = get_or_create_conversation(built["customer"].wa_number)
+        replies = intent_router.handle_inbound(
+            conversation, interactive_id="doc:invoice:999999")
+
+    assert [r["type"] for r in replies] == ["text"], replies
+    assert "no longer available" in replies[0]["body"]
+    assert "menu" in replies[0]["body"].lower()
+
+
+def test_a_malformed_download_button_is_not_a_crash(app, auth_client):
+    """Ids arrive from outside, so a bad one has to degrade rather than raise.
+
+    An unusable id gets silence, which is the safe answer: there is nothing
+    useful to say, and saying nothing cannot mislead anybody.
+    """
+    built = _delivered_documents(app, auth_client, reg="DLBAD")
+
+    with app.app_context():
+        conversation = get_or_create_conversation(built["customer"].wa_number)
+        for bad in ("doc:receipt:abc", "doc:widget:1", "doc:", "doc:quote:1:2"):
+            replies = intent_router.handle_inbound(conversation, interactive_id=bad)
+            # Whatever it does, it must never hand out a file on a bad id.
+            assert all(r.get("type") != "document" for r in replies), (bad, replies)
+
+
+def test_the_webhook_sends_the_document_the_customer_asked_for(app, client, auth_client,
+                                                              monkeypatch):
+    """The button tap has to reach the send loop, not just the router.
+
+    The router returning a document reply is only half of it: the webhook has to
+    know how to put one on the wire.
+    """
+    from app.views import whatsapp as webhook
+
+    built = _delivered_documents(app, auth_client, reg="DLHOOK")
+    record_id = built["documents"]["receipt"][0]
+    wa_id = built["customer"].wa_number
+    calls = _record_sends(monkeypatch, webhook)
+
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "changes": [{
+                "value": {
+                    "contacts": [{"wa_id": wa_id, "profile": {"name": "Downloader"}}],
+                    "messages": [{
+                        "from": wa_id,
+                        "id": "wamid.DOWNLOADTAP",
+                        "type": "interactive",
+                        "interactive": {
+                            "type": "button_reply",
+                            "button_reply": {"id": f"doc:receipt:{record_id}",
+                                             "title": "Download"},
+                        },
+                    }],
+                },
+            }],
+        }],
+    }
+    assert client.post("/webhooks/whatsapp", json=payload).status_code == 200
+
+    documents = [call for call in calls if call[0] == "send_document"]
+    assert documents, calls
+    _name, args, _kwargs = documents[0]
+    assert args[1].endswith(f"/doc/receipt/{built['documents']['receipt'][1]}.pdf"), args
+    assert args[2].startswith("Receipt-") and args[2].endswith(".pdf"), args
+
+    spoken = [call[1][1] for call in calls if call[0] == "send_text"]
+    assert any("Generating" in body for body in spoken), calls
 
 
 def test_the_closing_sheet_carries_the_day_book(app, auth_client):
@@ -488,6 +813,15 @@ def test_sending_a_quotation_logs_a_document_message(app, auth_client):
     job = _job_with_estimate(auth_client, reg="SND888")
     with app.app_context():
         est_id = Estimate.query.first().id
+        # The customer has spoken recently, so the free-form document is allowed.
+        from app.models import utcnow
+        from app.services.whatsapp_client import get_or_create_conversation
+
+        customer = Customer.query.first()
+        conversation = get_or_create_conversation(customer.wa_number,
+                                                  profile_name=customer.name)
+        conversation.last_inbound_at = utcnow()
+        db.session.commit()
 
     res = auth_client.post(f"/api/estimates/{est_id}/send", json={})
     assert res.status_code == 200, res.get_json()
@@ -717,3 +1051,161 @@ def test_desk_invoice_creation_is_validated(app, auth_client):
 
     with app.app_context():
         assert Invoice.query.count() == 0, "a rejected request must not leave a row behind"
+
+
+# ── outside the 24-hour service window ───────────────────────────────────────
+@pytest.fixture()
+def payloads(monkeypatch):
+    """Everything the WhatsApp client tries to put on the wire, in order.
+
+    The message row keeps only the body and a summary, so the only way to prove
+    *which* Meta message type was used is to watch the payload. Meta rejects a
+    free-form message outside the service window, so this is the difference
+    between a quotation arriving and a silent 400.
+    """
+    from app.services.whatsapp_client import WhatsAppClient
+
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        WhatsAppClient, "_post",
+        lambda self, payload: (captured.append(payload), {"simulated": True})[1],
+    )
+    return captured
+
+
+def _closed_window(app, auth_client, *, reg="COLD1") -> dict:
+    """A job with a quotation, invoice and receipt, and a shut service window.
+
+    The window is shut by simply never receiving an inbound message, which is the
+    real state of a thread the workshop starts after the customer went quiet.
+    Returns primary keys, because ORM instances do not survive the context.
+    """
+    from app.models import Invoice
+
+    job = _job_with_estimate(auth_client, reg=reg)
+    created = _ensure_invoice(auth_client, job["id"])
+    auth_client.post(f"/api/invoices/{created['id']}/payment", json={"amount": 5})
+    with app.app_context():
+        return {
+            "job": JobCard.query.first().id,
+            "estimate": Estimate.query.first().id,
+            "invoice": Invoice.query.first().id,
+            "payment": Payment.query.first().id,
+            "customer": Customer.query.first().id,
+        }
+
+
+def _load(ids: dict):
+    """Re-fetch the records inside the caller's app context."""
+    return (db.session.get(JobCard, ids["job"]), db.session.get(Estimate, ids["estimate"]),
+            db.session.get(Invoice, ids["invoice"]), db.session.get(Payment, ids["payment"]),
+            db.session.get(Customer, ids["customer"]))
+
+
+def test_notifications_outside_the_window_are_never_free_form(app, auth_client, payloads):
+    """Everything the workshop initiates goes out as an approved template.
+
+    Meta refuses a free-form message more than 24 hours after the customer's last
+    one, so a quotation or a receipt sent to a quiet thread would fail — and fail
+    silently, because a 400 is not visible to the desk.
+    """
+    ids = _closed_window(app, auth_client)
+    with app.app_context():
+        job, estimate, invoice, payment, _customer = _load(ids)
+        notifications.send_quotation(job, estimate)
+        notifications.send_invoice(job, invoice)
+        notifications.send_receipt(payment)
+
+    assert payloads, "nothing was sent at all"
+    free_form = [p for p in payloads if p.get("type") != "template"]
+    assert not free_form, f"free-form outside the window: {[p.get('type') for p in free_form]}"
+
+
+def test_the_pdfs_ride_on_the_templates_document_header(app, auth_client, payloads):
+    """A template is the only way to deliver a PDF outside the window.
+
+    Meta carries it as a *document header* on the approved template, so the
+    template has to be built with one and the link must be publicly fetchable.
+    """
+    ids = _closed_window(app, auth_client, reg="COLD2")
+    with app.app_context():
+        job, estimate, _invoice, payment, _customer = _load(ids)
+        notifications.send_quotation(job, estimate)
+        notifications.send_receipt(payment)
+
+    for payload in payloads:
+        components = payload["template"]["components"]
+        header = next((c for c in components if c["type"] == "header"), None)
+        assert header, f"no document header on {payload['template']['name']}"
+        document = header["parameters"][0]
+        assert document["type"] == "document"
+        assert document["document"]["link"].startswith("http")
+        assert document["document"]["filename"].endswith(".pdf")
+
+
+def test_the_quotation_gets_its_own_buttoned_template(app, auth_client, payloads):
+    """Approve / Decline / Download must survive a shut window.
+
+    A template's quick-reply buttons are fixed when it is approved — Meta cannot
+    interpolate the estimate id into them — so the quotation cannot share the
+    plain document template used for invoices and receipts. It gets its own.
+    """
+    from app.services import notifications as service
+
+    ids = _closed_window(app, auth_client, reg="COLD3")
+    with app.app_context():
+        notifications.send_quotation(db.session.get(JobCard, ids["job"]),
+                                     db.session.get(Estimate, ids["estimate"]))
+
+    names = [p["template"]["name"] for p in payloads]
+    assert service.TEMPLATE_QUOTATION in names, names
+    assert service.TEMPLATE_QUOTATION != service.TEMPLATE_DOCUMENT
+
+
+def test_the_template_buttons_resolve_against_the_last_quotation(app, auth_client, payloads):
+    """The buttoned template sends bare payloads, so they must still resolve.
+
+    The customer taps "Approve" on the *approved template*, which cannot carry
+    `a_approve:<id>`. Sending the quotation records which estimate the thread is
+    about, and that is what the bare payload is resolved against.
+    """
+    from app.services.whatsapp_client import get_or_create_conversation
+
+    ids = _closed_window(app, auth_client, reg="COLD4")
+    with app.app_context():
+        job, estimate, _invoice, _payment, customer = _load(ids)
+        notifications.send_quotation(job, estimate)
+        assert estimate.status == "SENT"
+
+        conversation = get_or_create_conversation(customer.wa_number)
+        replies = intent_router.handle_inbound(conversation, interactive_id="a_approve")
+
+        assert estimate.status == "APPROVED", replies
+        assert any("approved" in (r.get("body") or "") for r in replies), replies
+
+
+def test_download_still_works_from_the_templates_fixed_button(app, auth_client, payloads):
+    """`doc_quote` is the template's Download payload and carries no id either."""
+    from app.services.whatsapp_client import get_or_create_conversation
+
+    ids = _closed_window(app, auth_client, reg="COLD5")
+    with app.app_context():
+        job, estimate, _invoice, _payment, customer = _load(ids)
+        notifications.send_quotation(job, estimate)
+        token = estimate.public_token
+        conversation = get_or_create_conversation(customer.wa_number)
+        replies = intent_router.handle_inbound(conversation, interactive_id="doc_quote")
+
+    assert [r["type"] for r in replies] == ["text", "document"], replies
+    assert replies[1]["link"].endswith(f"/doc/quote/{token}.pdf")
+
+
+def test_a_bare_button_on_a_thread_with_no_quotation_is_not_a_crash(app):
+    """A stale template button from an old thread must degrade, not raise."""
+    from app.services.whatsapp_client import get_or_create_conversation
+
+    with app.app_context():
+        conversation = get_or_create_conversation("263779990001", "No Quotation")
+        for tap in ("a_approve", "a_decline", "doc_quote"):
+            replies = intent_router.handle_inbound(conversation, interactive_id=tap)
+            assert all(r.get("type") != "document" for r in replies), (tap, replies)

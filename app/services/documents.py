@@ -232,8 +232,10 @@ def _letterhead(meta: list[tuple[str, str]], accent: str = CRIMSON, doc_title: s
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(NAVY)),
         ("LEFTPADDING", (0, 0), (0, -1), 6 * mm),
         ("RIGHTPADDING", (-1, 0), (-1, -1), 6 * mm),
-        ("TOPPADDING", (0, 0), (-1, -1), 5.5 * mm),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5.5 * mm),
+        # 5.5mm of band above and below is 11mm of a 186mm body. On A5 the
+        # masthead comes in to 4mm so the sheet is spent on the document.
+        ("TOPPADDING", (0, 0), (-1, -1), 4 * mm if narrow else 5.5 * mm),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4 * mm if narrow else 5.5 * mm),
         # The accent runs the full width of the band, in the colour that belongs
         # to this kind of document.
         ("LINEBELOW", (0, 0), (-1, -1), 2.4, colors.HexColor(accent)),
@@ -255,6 +257,13 @@ def _party_block(pairs: list[tuple[str, str, str]], width: float | None = None):
     outer_widths = _fit([85 * mm, 85 * mm], width)
     # Leave a gutter before the next panel, inside the outer column.
     inner_width = outer_widths[0] - 4 * mm
+    narrow = bool(width) and width < 150 * mm
+    # Each row is a label over its value, so 11pt of leading is 22pt a row and
+    # three rows a panel. A5 has room for the address block, not for 12pt of it.
+    cell = styles["cell"]
+    if narrow:
+        from reportlab.lib.styles import ParagraphStyle
+        cell = ParagraphStyle("PartyNarrow", parent=cell, fontSize=8, leading=10)
 
     cells = []
     for heading, rows in pairs:
@@ -264,7 +273,7 @@ def _party_block(pairs: list[tuple[str, str, str]], width: float | None = None):
                 Paragraph(
                     f"<font color='{GREY}' size='6.8'><b>{label.upper()}</b></font><br/>"
                     f"<font color='{NAVY}'><b>{value or '—'}</b></font>",
-                    styles["cell"],
+                    cell,
                 )
             ])
         table = Table(inner, colWidths=[inner_width])
@@ -274,7 +283,7 @@ def _party_block(pairs: list[tuple[str, str, str]], width: float | None = None):
             ("LEFTPADDING", (0, 0), (-1, -1), 3 * mm),
             ("RIGHTPADDING", (0, 0), (-1, -1), 3 * mm),
             ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5 if narrow else 3.5),
         ]))
         cells.append(table)
 
@@ -283,7 +292,7 @@ def _party_block(pairs: list[tuple[str, str, str]], width: float | None = None):
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4 if narrow else 8),
     ]))
     return outer
 
@@ -302,6 +311,9 @@ def _items_table(items: list[dict], currency: str, show_markup: bool = False,
     if show_markup:
         widths = [66 * mm, 20 * mm, 14 * mm, 20 * mm, 18 * mm, 26 * mm]
     widths = _fit(widths, width)
+    narrow = bool(width) and width < 150 * mm
+    head_pad = 3.0 if narrow else 3.8
+    row_pad = 2.9 if narrow else 3.6
 
     # Solid navy header with the money columns aligned the same way as the
     # figures beneath them.
@@ -332,10 +344,10 @@ def _items_table(items: list[dict], currency: str, show_markup: bool = False,
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(NAVY)),
         ("LINEBELOW", (0, 0), (-1, 0), 1.6, colors.HexColor(accent)),
-        ("TOPPADDING", (0, 0), (-1, 0), 3.8),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 3.8),
-        ("TOPPADDING", (0, 1), (-1, -1), 3.6),
-        ("BOTTOMPADDING", (0, 1), (-1, -1), 3.6),
+        ("TOPPADDING", (0, 0), (-1, 0), head_pad),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), head_pad),
+        ("TOPPADDING", (0, 1), (-1, -1), row_pad),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), row_pad),
         ("LINEBELOW", (0, 1), (-1, -1), 0.35, colors.HexColor(LINE)),
         ("LEFTPADDING", (0, 0), (0, -1), 2 * mm),
         ("RIGHTPADDING", (-1, 0), (-1, -1), 2 * mm),
@@ -345,7 +357,8 @@ def _items_table(items: list[dict], currency: str, show_markup: bool = False,
 
 
 def _totals_block(lines: list[tuple[str, str, bool]], accent: str = CRIMSON,
-                  width: float | None = None, band: bool = True):
+                  width: float | None = None, band: bool = True,
+                  narrow: bool = False):
     """The money summary, as a panel that closes with the figure that matters.
 
     Only the *last* strong line is emphasised. An invoice carries two of them —
@@ -355,19 +368,36 @@ def _totals_block(lines: list[tuple[str, str, bool]], accent: str = CRIMSON,
     ``band=False`` keeps the emphasis as a tint instead of a solid accent fill.
     A closing sheet is full of figures that are not badges, and "Overdue 0" in a
     crimson band reads as an alarm when nothing is actually wrong.
+
+    ``narrow`` asks for the compact metrics. The panel is not given the frame
+    width — ``_fit`` would stretch this 86mm half-block to fill an A5 page — so
+    it cannot work out the sheet for itself and is told instead.
     """
     from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, Table, TableStyle
 
     styles = _styles()
+    if narrow:
+        # Six rows at 12pt leading with 3.5pt of padding is 19pt of air per row,
+        # which is an A4 habit. On A5 it is the difference between the totals
+        # closing the sheet and the signature block being pushed onto a second.
+        styles = dict(styles)
+        for key, leading in (("rowlabel", 11), ("rowvalue", 11),
+                             ("rowlabelstrong", 12), ("rowvaluestrong", 12),
+                             ("rowlabelsub", 11), ("rowvaluesub", 11)):
+            styles[key] = ParagraphStyle(f"Narrow{key}", parent=styles[key],
+                                         leading=leading)
+    pad = 2.5 if narrow else 3.5
+    strong_pad = 4 if narrow else 5.5
     final = max((index for index, line in enumerate(lines) if line[2]), default=None)
 
     rows = []
     style = [
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 3.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+        ("TOPPADDING", (0, 0), (-1, -1), pad),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), pad),
         ("LEFTPADDING", (0, 0), (-1, -1), 3 * mm),
         ("RIGHTPADDING", (0, 0), (-1, -1), 3 * mm),
     ]
@@ -376,8 +406,8 @@ def _totals_block(lines: list[tuple[str, str, bool]], accent: str = CRIMSON,
             label_style, value_style = "rowlabelstrong", "rowvaluestrong"
             style += [
                 ("BACKGROUND", (0, index), (-1, index), colors.HexColor(accent)),
-                ("TOPPADDING", (0, index), (-1, index), 5.5),
-                ("BOTTOMPADDING", (0, index), (-1, index), 5.5),
+                ("TOPPADDING", (0, index), (-1, index), strong_pad),
+                ("BOTTOMPADDING", (0, index), (-1, index), strong_pad),
             ]
         elif strong:
             label_style, value_style = "rowlabelsub", "rowvaluesub"
@@ -449,13 +479,28 @@ def _section_heading(title: str, accent: str = NAVY, width: float | None = None)
 
 
 def _footer(text: str, width: float | None = None):
-    """Terms, above a hairline that separates them from the document proper."""
+    """Terms, above a hairline that separates them from the document proper.
+
+    The terms are the same words on either sheet, but A5 has 186mm of body
+    against A4's 266mm and 8pt on 11pt leading is an A4 habit. On a narrow sheet
+    they step down to 7.2pt on 9.4pt and the rule hugs them, which is the single
+    biggest saving on the page and the difference between one sheet and two on a
+    short document.
+    """
     from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
     styles = _styles()
-    rule = Table([[" "]], colWidths=[width or _page()["width"]], rowHeights=[0.1])
+    frame = width or _page()["width"]
+    narrow = frame < 150 * mm
+    style = styles["small"]
+    if narrow:
+        style = ParagraphStyle("SmallNarrow", parent=style, fontSize=7.2, leading=9.4)
+    gap_above, gap_below = (3 * mm, 2 * mm) if narrow else (5 * mm, 3 * mm)
+
+    rule = Table([[" "]], colWidths=[frame], rowHeights=[0.1])
     rule.setStyle(TableStyle([
         ("LINEABOVE", (0, 0), (-1, 0), 0.7, colors.HexColor(LINE)),
         ("TOPPADDING", (0, 0), (-1, -1), 0),
@@ -463,7 +508,7 @@ def _footer(text: str, width: float | None = None):
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
-    return [Spacer(1, 5 * mm), rule, Spacer(1, 3 * mm), Paragraph(text, styles["small"])]
+    return [Spacer(1, gap_above), rule, Spacer(1, gap_below), Paragraph(text, style)]
 
 
 def _fit(widths: list[float], width: float | None) -> list[float]:
@@ -555,8 +600,9 @@ def _render(story: list, title: str, accent: str = CRIMSON, pagesize=None) -> by
 # Quotation
 # ─────────────────────────────────────────────────────────────────────────────
 def build_quotation_pdf(estimate: Estimate) -> bytes:
+    from reportlab.lib.pagesizes import A5
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, Spacer
+    from reportlab.platypus import KeepTogether, Paragraph, Spacer
 
     if estimate is None:
         raise DocumentError("Quotation not found.")
@@ -566,6 +612,12 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
     customer = job.customer if job else None
     styles = _styles()
     currency = estimate.currency or "USD"
+    # A5, matching the invoice and the receipt: one sheet the customer can hold
+    # without unfolding it. Every width-aware block has to be told the narrower
+    # frame, or the blocks drawn against A4's 174mm body run off the paper.
+    page = _page(A5)
+    width = page["width"]
+    narrow = page["narrow"]
 
     meta = [
         ("Quotation", estimate.reference),
@@ -577,8 +629,8 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
     items = [i.to_dict() for i in estimate.items]
 
     story = [
-        _letterhead(meta),
-        Spacer(1, 6 * mm),
+        _letterhead(meta, width=width),
+        Spacer(1, 4 * mm if narrow else 6 * mm),
         _party_block([
             ("Prepared for", [
                 ("Customer", customer.name if customer else "—"),
@@ -590,10 +642,12 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
                 ("Vehicle", vehicle.title if vehicle else "—"),
                 ("Service", job.service if job else "—"),
             ]),
-        ]),
-        Spacer(1, 2 * mm),
-        _items_table(items, currency),
-        Spacer(1, 4 * mm),
+        ], width=width),
+        Spacer(1, 1.5 * mm if narrow else 2 * mm),
+        _items_table(items, currency, width=width),
+        Spacer(1, 3 * mm if narrow else 4 * mm),
+        # Left at its natural 86mm: _fit scales a block to fill the frame, which
+        # is right for things that span the sheet and wrong for this panel.
         _totals_block([
             ("Labour", _money(estimate.labour_total), False),
             ("Materials", _money(estimate.materials_total), False),
@@ -601,20 +655,23 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
             ("Subtotal", _money(estimate.subtotal), False),
             (f"VAT ({int(current_app.config['VAT_RATE'] * 100)}%)", _money(estimate.vat), False),
             (f"Total ({currency})", _money(estimate.total), True),
-        ]),
+        ], accent=CRIMSON, narrow=narrow),
     ]
-    story += _footer(
+    # The terms and the signature are one closing block, and they travel
+    # together. Left to break on its own, a seven-line quotation fills the first
+    # sheet to the totals panel and drops a lone signature table onto the second;
+    # held back, the second sheet becomes the closing page it reads as.
+    tail: list = list(_footer(
         "<b>Terms</b> — This quotation is valid for "
         f"{estimate.valid_days} days and assumes no hidden damage is found on strip-down. "
         "Any additional work will be re-quoted for approval before proceeding. "
         "Parts carry the manufacturer's warranty; workmanship is warranted for 12 months. "
         "<br/><br/>"
         f"<b>Acceptance</b> — Approve on WhatsApp, reply to {_company()['email']}, "
-        f"or sign below. Vehicles are released on settlement of the account."
-    )
-    story += [
-        Spacer(1, 6 * mm),
-    ]
+        f"or sign below. Vehicles are released on settlement of the account.",
+        width=width,
+    ))
+    tail.append(Spacer(1, 3.5 * mm if narrow else 6 * mm))
 
     from reportlab.lib import colors
     from reportlab.platypus import Table, TableStyle
@@ -623,7 +680,8 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
         [Paragraph("Customer acceptance / signature", styles["small"]),
          Paragraph("For and on behalf of the workshop", styles["small"])],
         ["", ""],
-    ], colWidths=[85 * mm, 85 * mm], rowHeights=[None, 14 * mm])
+    ], colWidths=_fit([85 * mm, 85 * mm], width),
+        rowHeights=[None, 9 * mm if narrow else 14 * mm])
     signature.setStyle(TableStyle([
         ("LINEBELOW", (0, 1), (0, 1), 0.7, colors.HexColor(NAVY)),
         ("LINEBELOW", (1, 1), (1, 1), 0.7, colors.HexColor(NAVY)),
@@ -631,17 +689,19 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
         ("TOPPADDING", (0, 0), (-1, -1), 0),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
     ]))
-    story.append(signature)
+    tail.append(signature)
+    story.append(KeepTogether(tail))
 
-    return _render(story, f"Quotation {estimate.reference}")
+    return _render(story, f"Quotation {estimate.reference}", pagesize=A5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Invoice
 # ─────────────────────────────────────────────────────────────────────────────
 def build_invoice_pdf(invoice: Invoice) -> bytes:
+    from reportlab.lib.pagesizes import A5
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, Spacer
+    from reportlab.platypus import KeepTogether, Paragraph, Spacer
 
     if invoice is None:
         raise DocumentError("Invoice not found.")
@@ -656,6 +716,10 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
     # A settled account is good news and takes the green; anything outstanding
     # takes the brand crimson so it is the first thing seen on the page.
     accent = GREEN if balance <= 0 else CRIMSON
+    # A5, matching the quotation and the receipt.
+    page = _page(A5)
+    width = page["width"]
+    narrow = page["narrow"]
 
     meta = [
         ("Invoice", invoice.invoice_no),
@@ -665,8 +729,8 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
     ]
 
     story = [
-        _letterhead(meta),
-        Spacer(1, 6 * mm),
+        _letterhead(meta, width=width),
+        Spacer(1, 4 * mm if narrow else 6 * mm),
         _party_block([
             ("Billed to", [
                 ("Customer", customer.name if customer else "—"),
@@ -678,15 +742,16 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
                 ("Vehicle", vehicle.title if vehicle else "—"),
                 ("Stage", STAGE_LABELS.get(job.stage, job.stage) if job else "—"),
             ]),
-        ]),
-        Spacer(1, 2 * mm),
+        ], width=width),
+        Spacer(1, 1.5 * mm if narrow else 2 * mm),
     ]
 
     estimate = job.latest_estimate if job else None
     if estimate and estimate.items:
         story += [
-            _items_table([i.to_dict() for i in estimate.items], currency, accent=accent),
-            Spacer(1, 4 * mm),
+            _items_table([i.to_dict() for i in estimate.items], currency,
+                         accent=accent, width=width),
+            Spacer(1, 3 * mm if narrow else 4 * mm),
         ]
     elif invoice.notes:
         # Raised straight from the desk: there is no estimate behind it, so its own
@@ -700,51 +765,68 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
                 "unit": "",
                 "unit_price": float(invoice.subtotal or 0),
                 "line_total": float(invoice.subtotal or 0),
-            }], currency, accent=accent),
-            Spacer(1, 4 * mm),
+            }], currency, accent=accent, width=width),
+            Spacer(1, 3 * mm if narrow else 4 * mm),
         ]
 
     # The state of the account is stamped above the summary, not under it: below,
     # the stamp landed directly against the colour-banded balance.
     if balance <= 0:
-        story += [_pill("PAID IN FULL", GREEN, align="RIGHT"), Spacer(1, 3 * mm)]
+        story += [_pill("PAID IN FULL", GREEN, align="RIGHT", width=width),
+                  Spacer(1, 2 * mm if narrow else 3 * mm)]
     elif paid > 0:
         story += [_pill(f"PART PAID · {currency} {_money(balance)} OUTSTANDING", AMBER,
-                        align="RIGHT"), Spacer(1, 3 * mm)]
+                        align="RIGHT", width=width), Spacer(1, 2 * mm if narrow else 3 * mm)]
     else:
-        story += [_pill(f"{currency} {_money(balance)} DUE", CRIMSON, align="RIGHT"),
-                  Spacer(1, 3 * mm)]
+        story += [_pill(f"{currency} {_money(balance)} DUE", CRIMSON,
+                        align="RIGHT", width=width), Spacer(1, 2 * mm if narrow else 3 * mm)]
 
+    # Left at its natural 86mm — see the note in the quotation builder.
     story.append(_totals_block([
         ("Subtotal", _money(invoice.subtotal), False),
         (f"VAT ({int(current_app.config['VAT_RATE'] * 100)}%)", _money(invoice.vat), False),
         (f"Invoice total ({currency})", _money(invoice.total), True),
         ("Paid to date", _money(paid), False),
         ("Balance due", _money(balance), True),
-    ], accent=accent))
+    ], accent=accent, narrow=narrow))
 
     if invoice.payments:
         story += [
-            Spacer(1, 6 * mm),
-            _section_heading("PAYMENTS RECEIVED"),
-            Spacer(1, 2 * mm),
+            Spacer(1, 4 * mm if narrow else 6 * mm),
+            _section_heading("PAYMENTS RECEIVED", width=width),
+            Spacer(1, 1.5 * mm if narrow else 2 * mm),
         ]
         from reportlab.lib.units import mm as _mm
         from reportlab.platypus import Table, TableStyle
         from reportlab.lib import colors
 
-        rows = [[Paragraph(h, styles["cellheadright"] if index == 4 else styles["cellhead"])
+        # "RCT-2026-0001" is the longest thing in this table, so the receipt
+        # column gets the room and the reference gives it up. On A5 the row type
+        # steps down too, or the receipt number breaks across two lines and the
+        # ledger reads as though there were two payments.
+        cell, money = styles["cell"], styles["cellmoney"]
+        head, head_right = styles["cellhead"], styles["cellheadright"]
+        if narrow:
+            from reportlab.lib.styles import ParagraphStyle
+            cell = ParagraphStyle("PaidNarrow", parent=cell, fontSize=8, leading=10)
+            money = ParagraphStyle("PaidNarrowMoney", parent=money, fontSize=8, leading=10)
+            head = ParagraphStyle("PaidNarrowHead", parent=head, fontSize=7, leading=9)
+            head_right = ParagraphStyle("PaidNarrowHeadRight", parent=head_right,
+                                        fontSize=7, leading=9)
+
+        rows = [[Paragraph(h, head_right if index == 4 else head)
                  for index, h in enumerate(
                      ["Receipt", "Date", "Method", "Reference", "Amount"])]]
         for payment in sorted(invoice.payments, key=lambda p: p.id):
             rows.append([
-                Paragraph(payment.receipt_no or "—", styles["cell"]),
-                Paragraph(payment.created_at.strftime("%d %b %Y"), styles["cell"]),
-                Paragraph((payment.method or "").replace("_", " ").title(), styles["cell"]),
-                Paragraph(payment.reference or "—", styles["cell"]),
-                Paragraph(_money(payment.amount), styles["cellmoney"]),
+                Paragraph(payment.receipt_no or "—", cell),
+                Paragraph(payment.created_at.strftime("%d %b %Y"), cell),
+                Paragraph((payment.method or "").replace("_", " ").title(), cell),
+                Paragraph(payment.reference or "—", cell),
+                Paragraph(_money(payment.amount), money),
             ])
-        paid_table = Table(rows, colWidths=[30 * _mm, 24 * _mm, 30 * _mm, 46 * _mm, 24 * _mm])
+        paid_table = Table(rows, colWidths=_fit(
+            [33 * _mm, 23 * _mm, 26 * _mm, 22 * _mm, 20 * _mm], width))
         paid_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(NAVY)),
             ("LINEBELOW", (0, 0), (-1, 0), 1.4, colors.HexColor(accent)),
@@ -759,12 +841,15 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
         ]))
         story.append(paid_table)
 
-    story += _footer(
+    # Kept whole: the payment instructions and the warranty terms are one
+    # notice, and half of it on either side of a page break is worse than none.
+    story.append(KeepTogether(list(_footer(
         "<b>Payment</b> — Cash, EcoCash, InnBucks, bank transfer or card at reception. "
         "Please quote the invoice number with any transfer. "
-        f"<br/><br/><b>Warranty</b> — {WARRANTY_TEXT}"
-    )
-    return _render(story, f"Invoice {invoice.invoice_no}", accent=accent)
+        f"<br/><br/><b>Warranty</b> — {WARRANTY_TEXT}",
+        width=width,
+    ))))
+    return _render(story, f"Invoice {invoice.invoice_no}", accent=accent, pagesize=A5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

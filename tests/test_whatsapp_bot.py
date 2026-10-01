@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from datetime import date, datetime, timedelta
 
 from app.constants import BOOKING_SLOT_CAPACITY
 from app.extensions import db
-from app.models import (Booking, Customer, Invoice, JobCard, JobPhoto, NotificationLog,
-                        PaymentProof, Task, Vehicle, WaConversation)
+from app.models import (Booking, BookingPhoto, Customer, Invoice, JobCard, JobPhoto,
+                        NotificationLog, PaymentProof, Task, Vehicle, WaConversation,
+                        WaMessage)
 from app.services import intent_router, notifications
 from app.services.whatsapp_client import get_or_create_conversation
 
@@ -301,7 +303,8 @@ def test_a_damage_photo_is_not_mistaken_for_payment_proof(app):
         conv = get_or_create_conversation("263771140004", "Photo Only")
         intent_router.handle_inbound(conv, media_url="/uploads/whatsapp/damage.jpg")
         assert PaymentProof.query.count() == 0
-        assert conv.ctx_get("pending_media") == ["/uploads/whatsapp/damage.jpg"]
+        pending = conv.ctx_get("pending_media")
+        assert [m["url"] for m in pending] == ["/uploads/whatsapp/damage.jpg"]
 
 
 def _collected_job(customer, job_no: str, reg: str = "WRK1000", collected=None):
@@ -521,6 +524,174 @@ def test_a_manual_reply_says_so_when_it_was_not_sent(app):
         assert send_custom(conv, "We will call you back.") is False
 
 
+def test_an_enquiry_keeps_photos_and_pdfs_with_their_original_names(app):
+    """A customer sends damage photos and an assessor's PDF in one go.
+
+    Both must survive onto the enquiry, and the PDF must keep the name the
+    customer's file actually had — otherwise the desk sees an anonymous link.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263771110008", "Mixed Media")
+        intent_router.handle_inbound(conv, interactive_id="m_quote")
+        intent_router.handle_inbound(conv, text_body="ABC 4321")
+        intent_router.handle_inbound(
+            conv, interactive_id="svc:Panel Beating & Spray Painting")
+
+        intent_router.handle_inbound(conv, media_url="/uploads/wa_1.jpg")
+        intent_router.handle_inbound(conv, media_url="/uploads/wa_2.png",
+                                     media_name="IMG_0431.PNG")
+        intent_router.handle_inbound(conv, media_url="/uploads/wa_3.pdf",
+                                     media_name="assessor report - ABC1234.pdf")
+
+        intent_router.handle_inbound(conv, text_body="Bumper and bonnet")
+        intent_router.handle_inbound(conv, text_body="Mixed Media Person")
+        intent_router.handle_inbound(conv, text_body="skip")
+
+        booking = (Booking.query.filter_by(source="whatsapp")
+                   .order_by(Booking.id.desc()).first())
+        assert booking is not None
+        assert booking.photo_count == 3
+
+        kinds = [p.kind for p in booking.photos]
+        assert kinds == ["DAMAGE", "DAMAGE", "DOCUMENT"], kinds
+
+        names = [p.caption for p in booking.photos]
+        assert names[0] == "Sent via WhatsApp"
+        assert names[1] == "IMG_0431.PNG"
+        assert names[2] == "assessor report - ABC1234.pdf"
+
+
+def test_a_caption_becomes_the_damage_description(app):
+    """The words a customer types with a photo are the best description we get.
+
+    The media branch runs before the state handlers, so the caption used to be
+    discarded even though it had already been parsed off the message.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263771110009", "Caption Tester")
+        intent_router.handle_inbound(conv, interactive_id="m_quote")
+        intent_router.handle_inbound(conv, text_body="ABC 7777")
+        intent_router.handle_inbound(
+            conv, interactive_id="svc:Panel Beating & Spray Painting")
+
+        intent_router.handle_inbound(
+            conv, media_url="/uploads/whatsapp/dent.jpg",
+            text_body="Rear door caved in after a taxi reversed into it")
+
+        assert "taxi reversed" in (conv.ctx_get("damage") or "")
+
+        # A description the customer already typed must not be overwritten by a
+        # later attachment's caption.
+        intent_router.handle_inbound(conv, text_body="And the sill is rusted")
+        intent_router.handle_inbound(conv, media_url="/uploads/whatsapp/x.jpg",
+                                     text_body="another angle")
+        assert conv.ctx_get("damage") == "And the sill is rusted"
+
+
+def test_attachments_are_capped(app):
+    with app.app_context():
+        conv = get_or_create_conversation("263771110010", "Album Sender")
+        for n in range(intent_router.IntentRouter.MAX_PENDING_MEDIA + 4):
+            intent_router.handle_inbound(conv, media_url=f"/uploads/whatsapp/{n}.jpg")
+
+        pending = conv.ctx_get("pending_media")
+        assert len(pending) == intent_router.IntentRouter.MAX_PENDING_MEDIA
+        # The most recent ones are kept, not the first.
+        assert pending[-1]["url"].endswith("11.jpg")
+
+
+def test_a_pdf_caption_is_kept_on_the_job_card_attachment(app):
+    """The warranty job photo should say what the file was called."""
+    with app.app_context():
+        customer = Customer(name="Warranty Pdf", phone="+263771150009",
+                            whatsapp="+263771150009")
+        db.session.add(customer)
+        db.session.flush()
+        job = _collected_job(customer, "TC-2026-9110", "WPDF100")
+
+        conv = get_or_create_conversation("263771150009", "Warranty Pdf")
+        intent_router.handle_inbound(conv, text_body="warranty")
+        intent_router.handle_inbound(conv, media_url="/uploads/wa_9.pdf",
+                                     media_name="paint report.pdf")
+
+        photo = JobPhoto.query.filter_by(job_id=job.id, kind="WARRANTY").first()
+        assert photo is not None
+        assert photo.caption == "paint report.pdf"
+        task = Task.query.filter_by(category="Workshop").first()
+        assert "paint report.pdf" in task.detail
+
+
+def test_the_services_list_does_not_trap_the_customer(app):
+    """Showing the price list must not leave them stuck choosing a service.
+
+    An earlier version entered QUOTE_SERVICE so that typed numbers would work —
+    which meant "track my repair" typed next was read as a bad service choice and
+    answered with the same list again.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263771110011", "Not Trapped")
+        intent_router.handle_inbound(conv, interactive_id="m_services")
+        assert conv.state == "MAIN_MENU", conv.state
+
+        replies = intent_router.handle_inbound(conv, text_body="track my repair")
+        assert conv.state == "TRACK_REF", conv.state
+        assert "job number" in replies[0]["body"].lower()
+
+
+def test_service_rows_fit_whatsapps_limits(app):
+    """WhatsApp caps a list row title at 24 characters and the description at 72.
+
+    "Panel Beating & Spray Painting" is 30, so the rows carry a short label and
+    the full name moves into the description.
+    """
+    with app.app_context():
+        picker = intent_router.service_list_reply("en")
+        rows = [r for s in picker["sections"] for r in s["rows"]]
+        assert len(rows) == len(intent_router.SERVICE_NAMES)
+        for row in rows:
+            assert len(row["title"]) <= 24, row
+            assert len(row.get("description", "")) <= 72, row
+        titles = [r["title"] for r in rows]
+        assert len(set(titles)) == len(titles), "two rows would read identically"
+
+        priced = {r["title"]: r.get("description", "") for r in rows}
+        assert "from USD 45" in priced["Car Detailing"]
+        assert "Panel Beating & Spray Painting" in priced["Panel & Paint"]
+
+
+def _emoji(chunk: str) -> list[str]:
+    """Anything at or above U+2190 is a symbol or emoji.
+
+    General punctuation (em dash U+2014, curly quotes, ellipsis) sits below that
+    and is ordinary English typography, so it is allowed — the house rule is no
+    icons, not pure ASCII.
+    """
+    return [c for c in chunk if ord(c) >= 0x2190]
+
+
+def test_no_message_the_bot_sends_contains_an_emoji(app):
+    """House style: no emoji in anything the customer receives."""
+    with app.app_context():
+        conv = get_or_create_conversation("263771110012", "Plain Text")
+        emitted = []
+        for step in ("hi", "menu", "warranty", "how much for a respray"):
+            emitted += intent_router.handle_inbound(conv, text_body=step)
+        emitted.append(intent_router.service_list_reply("en"))
+        emitted.append(intent_router.main_menu_reply("Topclass", "en"))
+        emitted.append(intent_router.more_menu_reply("en"))
+
+        for reply in emitted:
+            for chunk in (reply.get("body", ""), reply.get("footer", ""),
+                          reply.get("button", "")):
+                bad = _emoji(chunk)
+                assert not bad, f"emoji {bad} in {chunk!r}"
+            for section in reply.get("sections") or []:
+                for row in section["rows"]:
+                    for key in ("title", "description"):
+                        bad = _emoji(row.get(key, ""))
+                        assert not bad, f"emoji {bad} in row {row!r}"
+
+
 def test_intent_detection():
     assert intent_router.detect_intent("how much for a respray?") == "quote"
     assert intent_router.detect_intent("where is my car") == "track"
@@ -661,13 +832,15 @@ def test_an_unparseable_email_does_not_lose_the_enquiry(app):
 
 
 def test_a_photo_without_a_job_card_is_not_attached_to_a_job(app):
-    """With no open job the photo waits for the enquiry, and says so."""
+    """With no open job the attachment waits for the enquiry, and says so."""
     with app.app_context():
         conv = get_or_create_conversation("263771110004", "Loose Photo")
         replies = intent_router.handle_inbound(
             conv, media_url="/uploads/whatsapp/stray.jpg")
-        assert "1 so far" in replies[0]["body"]
-        assert conv.ctx_get("pending_media") == ["/uploads/whatsapp/stray.jpg"]
+        assert "1 attachment so far" in replies[0]["body"]
+        pending = conv.ctx_get("pending_media")
+        assert [m["url"] for m in pending] == ["/uploads/whatsapp/stray.jpg"]
+        assert pending[0]["kind"] == "DAMAGE"
 
 
 def test_tracking_replies_with_stage_progress(app):
@@ -1092,3 +1265,424 @@ def test_an_empty_webhook_token_leaves_behaviour_unchanged(app, client):
     res = client.post("/webhooks/whatsapp",
                       json={"object": "whatsapp_business_account", "entry": []})
     assert res.status_code == 200
+
+
+# ── WhatsApp Flows ───────────────────────────────────────────────────────────
+def _flow_payload(wa_id: str, answers: dict, *, token="enquiry:2026-10-01",
+                  response_json: str | None = None, message_id="wamid.FLOW"):
+    """A Meta nfm_reply, as Meta actually sends it.
+
+    ``response_json`` is a JSON **string**, not an object — building the fixture
+    with a real dict would pass against a parser that cannot read Meta's payload.
+    """
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [{"changes": [{"value": {
+            "contacts": [{"wa_id": wa_id, "profile": {"name": "Form Filler"}}],
+            "messages": [{
+                "from": wa_id, "id": message_id, "type": "interactive",
+                "interactive": {
+                    "type": "nfm_reply",
+                    "nfm_reply": {
+                        "response_json": (response_json if response_json is not None
+                                          else json.dumps(answers)),
+                        "flow_token": token,
+                    },
+                },
+            }],
+        }}]}],
+    }
+
+
+ENQUIRY_ANSWERS = {
+    "contact_name": "Tariro Moyo",
+    "contact_email": "tariro@example.co.zw",
+    "reg_no": "adz 4477",
+    "service": "Panel Beating & Spray Painting",
+    "vehicle": "Toyota Hilux 2019",
+    "damage": "Front bumper cracked, bonnet dented on the left.",
+    "preferred_date": (date.today() + timedelta(days=5)).isoformat(),
+    "preferred_time": "09:00",
+}
+
+
+def test_a_submitted_enquiry_form_raises_an_enquiry(app, client):
+    """The answers become a real record, not a chat message.
+
+    A Flow is only worth building if the form fields land in the database as
+    fields — otherwise the desk still has to read them off the thread.
+    """
+    res = client.post("/webhooks/whatsapp", json=_flow_payload("263773330001",
+                                                             ENQUIRY_ANSWERS))
+    assert res.status_code == 200
+
+    with app.app_context():
+        booking = Booking.query.first()
+        assert booking is not None, "the form created no enquiry"
+        assert booking.status == "REQUESTED"
+        assert booking.source == "whatsapp"
+        assert booking.reference.startswith("TC-ENQ-")
+        assert booking.service == "Panel Beating & Spray Painting"
+
+        customer = Customer.query.first()
+        assert customer.name == "Tariro Moyo"
+        assert customer.email == "tariro@example.co.zw"
+        # The plate is normalised the same way the desk and the chat path do it.
+        assert Vehicle.query.first().reg_no == "ADZ4477"
+
+        # The form's own words are kept, plus what it adds about the vehicle.
+        assert "Front bumper cracked" in booking.notes
+        assert "Toyota Hilux 2019" in booking.notes
+        assert booking.slot_time == "09:00"
+
+
+def test_attachments_sent_before_the_form_land_on_the_enquiry(app, client):
+    """A Flow cannot upload a file, so the pictures come in the chat.
+
+    They arrive *before* the form is submitted, which means they are sitting in
+    the conversation context. Losing them here would throw away the most useful
+    thing the desk receives.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263773330002", "Picture Sender")
+        for index in range(3):
+            intent_router.handle_inbound(conv, media_url=f"/uploads/x/p{index}.jpg",
+                                         media_name=f"damage{index}.jpg",
+                                         text_body="Front end damage")
+        intent_router.handle_inbound(conv, media_url="/uploads/x/report.pdf",
+                                     media_name="assessor report.pdf")
+
+    assert client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330002", ENQUIRY_ANSWERS, message_id="wamid.FLOW2")).status_code == 200
+
+    with app.app_context():
+        booking = Booking.query.first()
+        photos = BookingPhoto.query.filter_by(booking_id=booking.id).all()
+        assert len(photos) == 4, [p.filename for p in photos]
+        kinds = sorted(p.kind for p in photos)
+        assert kinds == ["DAMAGE", "DAMAGE", "DAMAGE", "DOCUMENT"]
+        # The customer's own filename survives — "assessor report.pdf" is the
+        # only clue the desk has about what the PDF is.
+        assert any(p.caption == "assessor report.pdf" for p in photos)
+
+
+def test_the_form_prompts_for_the_photographs(app, client):
+    """The Flow cannot carry a file, so the bot has to ask for one."""
+    client.post("/webhooks/whatsapp", json=_flow_payload("263773330003",
+                                                        ENQUIRY_ANSWERS))
+    with app.app_context():
+        conv = WaConversation.query.filter_by(wa_id="263773330003").first()
+        spoken = [m.body or "" for m in
+                  WaMessage.query.filter_by(conversation_id=conv.id,
+                                            direction="outbound")
+                  .order_by(WaMessage.id).all()]
+
+    confirmation = next((b for b in spoken if "Request logged" in b), None)
+    assert confirmation, spoken
+    assert "TC-ENQ-" in confirmation
+    invitation = next(index for index, body in enumerate(spoken)
+                      if "photographs of the damage" in body)
+    # Confirmation first, then the ask — the other order reads as a non-sequitur.
+    assert spoken.index(confirmation) < invitation, spoken
+
+
+def test_the_enquiry_form_is_readable_in_the_thread(app, client):
+    """The row keeps the body the desk reads, so the answers belong in it."""
+    client.post("/webhooks/whatsapp", json=_flow_payload("263773330004",
+                                                        ENQUIRY_ANSWERS))
+    with app.app_context():
+        bodies = [m.body or "" for m in WaConversation.query.filter_by(
+            wa_id="263773330004").first().messages if m.direction == "inbound"]
+
+    assert any("reg no: adz 4477" in body for body in bodies), bodies
+    assert any("contact name: Tariro Moyo" in body for body in bodies), bodies
+
+
+def test_a_flow_whose_answers_are_not_json_does_not_crash(app, client):
+    """Meta owns the payload, so a malformed one has to degrade quietly.
+
+    The message is still accepted (Meta retries a non-200 for ever), but nothing
+    is invented from it — a record reading "reg TBC, service Panel Beating" on
+    the desk's list is worse than no record at all.
+    """
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330005", {}, response_json="{not json at all"))
+    assert res.status_code == 200
+
+    with app.app_context():
+        assert Booking.query.count() == 0
+        assert Customer.query.count() == 0
+        spoken = [m.body or "" for m in
+                  WaMessage.query.filter_by(direction="outbound").all()]
+    assert any("came through empty" in body for body in spoken), spoken
+
+
+def test_a_form_that_arrives_empty_is_not_turned_into_an_enquiry(app, client):
+    """Valid JSON with nothing in it is the same problem as invalid JSON."""
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330009", {}, message_id="wamid.EMPTY"))
+    assert res.status_code == 200
+
+    with app.app_context():
+        assert Booking.query.count() == 0
+        assert Customer.query.count() == 0
+
+
+def test_a_flow_with_an_unknown_token_still_answers(app, client):
+    """A form we do not recognise must not leave the customer talking to a wall."""
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330006", {"anything": "at all"}, token="something-else"))
+    assert res.status_code == 200
+
+    with app.app_context():
+        spoken = [m.body or "" for m in
+                  WaMessage.query.filter_by(direction="outbound").all()]
+    assert spoken, "an unrecognised form got no reply at all"
+    assert Booking.query.count() == 0
+
+
+def test_an_unknown_service_on_the_form_still_logs_the_enquiry(app):
+    """A dropdown carries whatever was typed into the Flow builder.
+
+    An unrecognised option must not raise inside the pricing lookup and lose the
+    enquiry — the desk would rather have it with the default service than not.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263773330007", "Odd Service")
+        replies = intent_router.handle_inbound(conv, flow_response={
+            "flow_token": "enquiry",
+            "data": {"contact_name": "Odd Service", "reg_no": "ABC123",
+                     "service": "Respray", "damage": "Scratched door"},
+        })
+        assert replies, "no reply for an unrecognised service"
+        booking = Booking.query.first()
+        assert booking is not None
+        assert booking.service  # fell back to something real
+        assert booking.service in intent_router.SERVICE_NAMES
+
+
+def test_a_flow_response_is_not_eaten_by_a_waiting_state(app):
+    """A form can be submitted while the bot is mid-question.
+
+    The answers must be read as a form, not matched against the pending step —
+    otherwise "abc123" submitted during the registration prompt becomes a plate
+    and the rest of the form is silently dropped.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263773330008", "Mid Flow")
+        intent_router.handle_inbound(conv, interactive_id="m_quote")
+        assert conv.state == "QUOTE_REG"
+
+        intent_router.handle_inbound(conv, flow_response={
+            "flow_token": "enquiry",
+            "data": {"contact_name": "Mid Flow", "reg_no": "XYZ999",
+                     "service": "Car Detailing", "damage": "Interior deep clean"},
+        })
+        booking = Booking.query.first()
+        assert booking is not None, "the form was swallowed by the waiting state"
+        assert booking.vehicle.reg_no == "XYZ999"
+        assert conv.state == "MAIN_MENU"
+
+
+# ── offering the Flow ────────────────────────────────────────────────────────
+class _WithForm:
+    """TestConfig with an enquiry Flow built and its id configured."""
+
+    @staticmethod
+    def config():
+        from config import TestConfig
+
+        class WithForm(TestConfig):
+            WA_FLOW_ENQUIRY_ID = "1234567890123456"
+
+        return WithForm
+
+
+def test_the_enquiry_form_is_offered_only_when_one_is_configured(app):
+    """A menu row that opens nothing is worse than no row at all.
+
+    The form's id comes from Meta, so an install without a Flow built must not
+    advertise one — and the row has to appear as soon as it is configured.
+    """
+    from app import create_app
+    from config import TestConfig
+
+    plain = create_app(TestConfig)
+    with plain.app_context():
+        db.create_all()
+        from app.seed import run_seed
+
+        run_seed(with_demo=False)
+        conversation = get_or_create_conversation("263774440001", "No Form")
+        rows = intent_router.handle_inbound(conversation, text_body="hi")[0]
+        ids = [r["id"] for s in rows["sections"] for r in s["rows"]]
+        assert "m_form" not in ids, ids
+
+    configured = create_app(_WithForm.config())
+    with configured.app_context():
+        db.create_all()
+        from app.seed import run_seed
+
+        run_seed(with_demo=False)
+        conversation = get_or_create_conversation("263774440002", "Has Form")
+        rows = intent_router.handle_inbound(conversation, text_body="hi")[0]
+        ids = [r["id"] for s in rows["sections"] for r in s["rows"]]
+        assert "m_form" in ids, ids
+
+
+def test_tapping_the_form_row_sends_the_flow(app):
+    """The router answers with a flow reply; the webhook is what puts it on the wire."""
+    from app import create_app
+
+    configured = create_app(_WithForm.config())
+    with configured.app_context():
+        db.create_all()
+        from app.seed import run_seed
+
+        run_seed(with_demo=False)
+        conversation = get_or_create_conversation("263774440003", "Form Tapper")
+        replies = intent_router.handle_inbound(conversation, interactive_id="m_form")
+
+    assert [r["type"] for r in replies] == ["flow"], replies
+    flow = replies[0]
+    assert flow["flow_id"] == "1234567890123456"
+    # The token is echoed back in the nfm_reply and is what routes the answers,
+    # so it must be the one the handler recognises.
+    assert flow["flow_token"] == "enquiry"
+    assert flow["header"]
+
+
+def test_the_webhook_writes_the_flow_it_was_handed(app, client, monkeypatch):
+    """A `flow` reply has to reach the send loop, like `document` and `list`."""
+    from app.views import whatsapp as webhook
+
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        webhook.WhatsAppClient, "_post",
+        lambda self, payload: (sent.append(payload), {"simulated": True})[1],
+    )
+    monkeypatch.setitem(webhook.current_app.config, "WA_FLOW_ENQUIRY_ID",
+                        "1234567890123456")
+
+    res = client.post("/webhooks/whatsapp", json={
+        "object": "whatsapp_business_account",
+        "entry": [{"changes": [{"value": {
+            "contacts": [{"wa_id": "263774440004", "profile": {"name": "Wire"}}],
+            "messages": [{"from": "263774440004", "id": "wamid.FORMROW",
+                          "type": "interactive",
+                          "interactive": {"type": "list_reply",
+                                          "list_reply": {"id": "m_form",
+                                                         "title": "Enquiry form"}}}],
+        }}]}],
+    })
+    assert res.status_code == 200
+
+    flows = [p for p in sent if p["interactive"]["type"] == "flow"]
+    assert flows, [p.get("type") for p in sent]
+    parameters = flows[0]["interactive"]["action"]["parameters"]
+    assert parameters["flow_id"] == "1234567890123456"
+    assert parameters["flow_action_payload"] == {"screen": "ENQUIRY"}
+
+
+def test_no_flow_is_configured_falls_back_to_the_chat_quote_flow(app):
+    """Tapping a stale form row on an install without a Flow must still help."""
+    with app.app_context():
+        conversation = get_or_create_conversation("263774440005", "No Form Tap")
+        replies = intent_router.handle_inbound(conversation, interactive_id="m_form")
+
+        assert replies, "tapping the form row produced no reply at all"
+        assert all(r["type"] != "flow" for r in replies), replies
+        # The chat quote flow starts by asking for the registration.
+        assert conversation.state == "QUOTE_REG"
+
+
+# ── the collection notice and its button ─────────────────────────────────────
+def _ready_job(app, auth_client, *, reg="RDY111"):
+    """A job card with an invoice raised, and the service window open."""
+    job = auth_client.post("/api/jobs", json={
+        "customer_name": "Tariro Moyo", "customer_phone": "+263772334455",
+        "reg_no": reg, "panels": ["Front Bumper"],
+    }).get_json()["job"]
+    invoice = auth_client.post(f"/api/jobs/{job['id']}/invoice", json={}).get_json()["invoice"]
+    with app.app_context():
+        from app.models import utcnow
+
+        conversation = get_or_create_conversation("263772334455", profile_name="Tariro Moyo")
+        conversation.last_inbound_at = utcnow()
+        db.session.commit()
+    return invoice
+
+
+def test_the_collection_notice_puts_the_balance_behind_a_button(app, auth_client):
+    """The money is **not** in the message, and that is the point.
+
+    A Meta template's body is frozen when it is approved, so a balance written
+    into the template is a snapshot taken the moment it was sent — a fortnight
+    later the customer would still be reading that figure. Behind the button,
+    the balance is answered from the invoice as it stands.
+    """
+    from app.services import notifications
+
+    _ready_job(app, auth_client)
+    with app.app_context():
+        notifications.notify_ready_for_collection(JobCard.query.first())
+        conversation = get_or_create_conversation("263772334455")
+        sent = sorted(conversation.messages, key=lambda m: m.id)
+
+    notice = next(m for m in sent if "ready for collection" in (m.body or ""))
+    assert "Good news Tariro" in notice.body
+    assert "(RDY111)" in notice.body
+    assert "Check balance" in notice.body
+    # No figure in the body — it would go stale.
+    assert "USD" not in notice.body, notice.body
+
+    button = next(m for m in sent if m.msg_type == "interactive")
+    assert button.payload["buttons"] == [{"id": "m_pay", "title": "Check balance"}]
+
+
+def test_the_check_balance_button_answers_with_the_live_balance(app, auth_client):
+    """The button has to actually produce the figure, or it is a dead end.
+
+    It carries the menu id ``m_pay`` rather than an invoice id, because a
+    template's payload cannot interpolate one. That is fine here: the customer
+    asking about their balance wants their newest unpaid invoice, which is what
+    that handler already answers with.
+    """
+    from app.models import Invoice
+
+    _ready_job(app, auth_client, reg="RDY222")
+    with app.app_context():
+        conversation = get_or_create_conversation("263772334455")
+        replies = intent_router.handle_inbound(conversation, interactive_id="m_pay")
+
+        invoice = Invoice.query.first()
+        text = replies[0]["body"]
+        assert "Outstanding" in text, text
+        assert invoice.invoice_no in text, text
+        assert f"{invoice.balance:,.2f}" in text, text
+        # And the customer is left in the state that captures a payment proof.
+        assert conversation.state == "PAYMENT_PROOF"
+
+
+def test_a_settled_account_is_not_told_it_owes_money(app, auth_client):
+    """The same button, on an account already paid.
+
+    Tapping it must not present a balance, and must not leave the customer
+    thinking they still owe something.
+    """
+    from app.models import Invoice
+
+    invoice = _ready_job(app, auth_client, reg="RDY333")
+    auth_client.post(f"/api/invoices/{invoice['id']}/payment",
+                     json={"amount": float(invoice["total"])})
+
+    with app.app_context():
+        conversation = get_or_create_conversation("263772334455")
+        replies = intent_router.handle_inbound(conversation, interactive_id="m_pay")
+
+        text = replies[0]["body"]
+        assert "Outstanding" not in text, text
+        assert "USD" not in text, text
+        # It still offers the way to file a proof of payment.
+        assert "already paid" in text, text
+        assert Invoice.query.first().balance == 0

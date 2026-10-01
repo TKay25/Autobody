@@ -26,6 +26,10 @@ TEMPLATE_PARTS_IN = "parts_received"
 TEMPLATE_PAYMENT_DUE = "payment_due"
 TEMPLATE_WARRANTY = "warranty_registered"
 TEMPLATE_DOCUMENT = "document_share"
+# Quotations need their own template: unlike an invoice or a receipt they go out
+# with Approve / Decline / Download buttons, and a template's buttons are fixed
+# at approval time, so the buttoned one cannot be shared with the other two.
+TEMPLATE_QUOTATION = "quotation_share"
 TEMPLATE_BOOKING_REMINDER = "booking_reminder"
 TEMPLATE_FEEDBACK = "job_feedback"
 
@@ -92,10 +96,21 @@ def _dispatch(job: JobCard | None, body: str, *, template: str, use_template: bo
 
     try:
         if document and document.get("link"):
-            client.send_document(
-                number, document["link"], document.get("filename") or "document.pdf",
-                caption=body, conversation=conversation, job_id=job.id if job else None,
-            )
+            if use_template and not conversation.is_session_open:
+                # Outside the 24h service window Meta refuses a free-form
+                # document message outright, so the PDF rides on the approved
+                # template's document header instead. Dropping it (or sending
+                # it anyway and getting a 400) would silently lose the quotation.
+                client.send_template(
+                    number, template, params or [customer.name],
+                    document=document, conversation=conversation,
+                    job_id=job.id if job else None,
+                )
+            else:
+                client.send_document(
+                    number, document["link"], document.get("filename") or "document.pdf",
+                    caption=body, conversation=conversation, job_id=job.id if job else None,
+                )
         elif use_template and not conversation.is_session_open:
             # Outside the 24h service window Meta requires an approved template.
             client.send_template(
@@ -115,6 +130,37 @@ def _dispatch(job: JobCard | None, body: str, *, template: str, use_template: bo
 
 
 # ── Document delivery ────────────────────────────────────────────────────────
+def _download_prompt(number: str, conversation, *, body: str, doc_id: str,
+                     job_id: int | None, intent: str) -> bool:
+    """A lone Download button under a document that has just been delivered.
+
+    The customer may have scrolled past the attachment, opened it once and lost
+    it, or been on a phone that quietly saved it nowhere. Asking for the file on
+    demand beats sending the same PDF twice: the tap rebuilds it from the record,
+    so a re-issued invoice is never handed out from a stale attachment, and the
+    customer can come back for it a week later.
+
+    A failure here must not fail the delivery that already succeeded, so this
+    swallows its own errors and reports back instead.
+    """
+    if conversation is not None and not conversation.is_session_open:
+        # Two reasons to stay quiet. A templated delivery already carried the PDF
+        # as its document header, so there is nothing to re-fetch; and Meta
+        # refuses a free-form interactive message outside the service window, so
+        # sending one is a guaranteed 400 on every notification.
+        return False
+    try:
+        WhatsAppClient().send_buttons(
+            number, body, [{"id": doc_id, "title": "Download"}],
+            footer="Topclass Auto Body", conversation=conversation,
+            intent=intent, job_id=job_id,
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.error("Download prompt failed: %s", exc)
+        return False
+
+
 def send_quotation(job: JobCard, estimate, *, with_buttons: bool = True) -> dict:
     """Send the quotation PDF plus an approve/decline prompt.
 
@@ -129,37 +175,54 @@ def send_quotation(job: JobCard, estimate, *, with_buttons: bool = True) -> dict
     currency = estimate.currency or "USD"
 
     caption = (
-        f"📋 Quotation {estimate.reference}\n"
+        f"Quotation {estimate.reference}\n"
         f"{job.vehicle.reg_no if job.vehicle else ''} — {job.service}\n"
         f"Total: {currency} {_money(estimate.total)}\n"
         f"Valid until {estimate.expires_on.strftime('%d %b %Y')}"
     )
 
     delivered = _dispatch(
-        job, caption, template=TEMPLATE_DOCUMENT, use_template=True,
+        job, caption, template=TEMPLATE_QUOTATION, use_template=True,
+        params=[customer.name, estimate.reference, f"{currency} {_money(estimate.total)}"],
         document={"link": pdf_link, "filename": f"Quotation-{estimate.reference}.pdf"},
     )
 
-    # Approve / decline buttons in their own message so they are tappable.
+    # Approve / decline / download in their own message so they are tappable.
+    # Three is Meta's ceiling for an interactive button message, so the download
+    # has to ride along with the decision rather than follow it.
     if delivered and with_buttons:
         number = customer.wa_number
         if number:
             client = WhatsAppClient()
             conversation = get_or_create_conversation(number, profile_name=customer.name)
-            try:
-                client.send_buttons(
-                    number,
-                    "Shall we go ahead with this quotation?",
-                    [
-                        {"id": f"a_approve:{estimate.id}", "title": "Approve"},
-                        {"id": f"a_decline:{estimate.id}", "title": "Decline"},
-                    ],
-                    footer="Topclass Auto Body",
-                    conversation=conversation, intent="quotation_decision",
-                    job_id=job.id,
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.error("Quotation buttons failed: %s", exc)
+            # Record which quotation this thread is about before any tap can
+            # arrive. A template's quick-reply buttons carry a *fixed* payload —
+            # Meta cannot interpolate the estimate id into them — so the bare ids
+            # on `quotation_share` resolve against this.
+            conversation.ctx_set(last_estimate_id=estimate.id)
+            db.session.commit()
+            if not conversation.is_session_open:
+                # The approved template carried its own Approve / Decline /
+                # Download buttons, and Meta refuses a free-form interactive
+                # message outside the service window anyway.
+                log.info("Quotation %s sent as a template; buttons ride on it",
+                         estimate.reference)
+            else:
+                try:
+                    client.send_buttons(
+                        number,
+                        "Shall we go ahead with this quotation?",
+                        [
+                            {"id": f"a_approve:{estimate.id}", "title": "Approve"},
+                            {"id": f"a_decline:{estimate.id}", "title": "Decline"},
+                            {"id": f"doc:quote:{estimate.id}", "title": "Download"},
+                        ],
+                        footer="Topclass Auto Body",
+                        conversation=conversation, intent="quotation_decision",
+                        job_id=job.id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.error("Quotation buttons failed: %s", exc)
 
     if delivered:
         estimate.status = "SENT"
@@ -176,7 +239,7 @@ def send_invoice(job: JobCard, invoice) -> dict:
 
     currency = invoice.currency or "USD"
     caption = (
-        f"🧾 Invoice {invoice.invoice_no}\n"
+        f"Invoice {invoice.invoice_no}\n"
         f"Job card {job.job_no}\n"
         f"Total: {currency} {_money(invoice.total)}\n"
         f"Balance: {currency} {_money(invoice.balance)}"
@@ -184,13 +247,25 @@ def send_invoice(job: JobCard, invoice) -> dict:
     if invoice.balance > 0:
         caption += "\n\nPayment: Cash, EcoCash, InnBucks, bank transfer or card at reception."
     else:
-        caption += "\n\n✅ Settled in full — thank you."
+        caption += "\n\n Settled in full — thank you."
 
     delivered = _dispatch(
         job, caption, template=TEMPLATE_DOCUMENT, use_template=True,
         document={"link": public_url(f"/doc/invoice/{invoice.public_token}.pdf"),
                   "filename": f"Invoice-{invoice.invoice_no}.pdf"},
     )
+
+    if delivered:
+        number = customer.wa_number
+        if number:
+            conversation = get_or_create_conversation(number, profile_name=customer.name)
+            _download_prompt(
+                number, conversation,
+                body="Keep a copy of this invoice for your records.",
+                doc_id=f"doc:invoice:{invoice.id}",
+                job_id=job.id, intent="invoice_download",
+            )
+
     return {"sent": delivered, "link": public_url(f"/doc/invoice/{invoice.public_token}")}
 
 
@@ -205,10 +280,10 @@ def send_receipt(payment) -> dict:
     currency = (invoice.currency if invoice else "USD") or "USD"
     settled = payment.is_fully_settled
     caption = (
-        f"🧾 Receipt {payment.receipt_no}\n"
+        f"Receipt {payment.receipt_no}\n"
         f"{currency} {_money(payment.amount)} received — "
         f"{(payment.method or '').replace('_', ' ').title()}\n"
-        + ("Account settled in full. Thank you! 🙏"
+        + ("Account settled in full. Thank you! "
            if settled else
            f"Balance remaining: {currency} {_money(payment.balance_after)}")
     )
@@ -216,18 +291,35 @@ def send_receipt(payment) -> dict:
     client = WhatsAppClient()
     conversation = get_or_create_conversation(customer.wa_number, profile_name=customer.name)
     link = public_url(f"/doc/receipt/{payment.public_token}.pdf")
+    filename = f"Receipt-{payment.receipt_no or payment.id}.pdf"
     try:
-        client.send_document(
-            customer.wa_number, link, f"Receipt-{payment.receipt_no or payment.id}.pdf",
-            caption=caption, conversation=conversation,
-            job_id=job.id if job else None,
-        )
+        if conversation.is_session_open:
+            client.send_document(
+                customer.wa_number, link, filename,
+                caption=caption, conversation=conversation,
+                job_id=job.id if job else None,
+            )
+        else:
+            # Outside the 24h window Meta refuses a free-form document, so the
+            # receipt rides on the approved template's document header instead.
+            # Sending it anyway lost the receipt silently.
+            client.send_template(
+                customer.wa_number, TEMPLATE_DOCUMENT, [customer.name],
+                document={"link": link, "filename": filename},
+                conversation=conversation,
+            )
     except Exception as exc:  # noqa: BLE001
         log.error("Receipt send failed: %s", exc)
         _log(job, customer.wa_number, TEMPLATE_DOCUMENT, caption, "failed", str(exc)[:250])
         return {"sent": False, "reason": "send_failed"}
 
     _log(job, customer.wa_number, TEMPLATE_DOCUMENT, caption, "sent")
+    _download_prompt(
+        customer.wa_number, conversation,
+        body="Keep a copy of this receipt for your records.",
+        doc_id=f"doc:receipt:{payment.id}",
+        job_id=job.id if job else None, intent="receipt_download",
+    )
     return {"sent": True, "link": public_url(f"/doc/receipt/{payment.public_token}")}
 
 
@@ -248,10 +340,10 @@ def notify_stage_change(job: JobCard, *, old_stage: str | None = None) -> bool:
         f"Update: {label}\n{line}"
     )
     if job.promised_date:
-        body += f"\n\n📅 Promised date: {job.promised_date.strftime('%d %b %Y')}"
+        body += f"\n\n Promised date: {job.promised_date.strftime('%d %b %Y')}"
     blocking = [p for p in job.job_parts if p.is_blocking]
     if blocking:
-        body += f"\n\n⚠️ Waiting on {len(blocking)} part(s). We will update you as soon as they land."
+        body += f"\n\n Waiting on {len(blocking)} part(s). We will update you as soon as they land."
     body += "\n\nReply *track* to check progress any time."
 
     return _dispatch(
@@ -261,26 +353,52 @@ def notify_stage_change(job: JobCard, *, old_stage: str | None = None) -> bool:
 
 
 def notify_ready_for_collection(job: JobCard) -> bool:
-    invoice = job.outstanding_invoice
-    body = (
-        f"🎉 *Your vehicle is ready!*\n\n"
-        f"{job.vehicle.title if job.vehicle else 'Vehicle'} ({job.vehicle.reg_no if job.vehicle else '-'})\n"
-        f"Job card number: *{job.job_no}*"
-    )
-    if invoice and invoice.balance > 0:
-        body += f"\n\n💰 Balance due: *{invoice.currency} {_money(invoice.balance)}*"
-        body += "\nPay by EcoCash, InnBucks or bank transfer — reply *pay* for details."
-    body += (
-        f"\n\n📍 Collect at {current_app.config['COMPANY_ADDRESS']}"
-        f"\n🕐 {current_app.config['COMPANY_HOURS']}"
-        f"\n\nPlease bring your ID and collection slip."
-    )
-    body += f"\n\n🛡️ {WARRANTY_TEXT[:120]}…"
+    """The collection notice, with a *Check balance* button.
 
-    return _dispatch(
-        job, body, template=TEMPLATE_READY, use_template=True,
-        params=[job.customer.name, job.vehicle.reg_no if job.vehicle else "-"],
+    The money is **not** in the message, and that is deliberate. A Meta
+    template's body is frozen when it is approved, so a balance written into the
+    template is a snapshot taken the moment it was sent — the customer would be
+    reading a figure that could be a fortnight stale. Behind the button,
+    ``_menu_pay`` answers from the invoice as it stands right now.
+
+    The button carries the menu id ``m_pay`` rather than a job id, because a
+    template's payload is fixed at approval and cannot interpolate one. Inside
+    the 24-hour window the same button is sent free-form, so a tap means the
+    identical thing either side of the window.
+    """
+    customer = _customer(job)
+    first = (customer.name.split(" ")[0] if customer and customer.name else "there")
+    reg = job.vehicle.reg_no if job.vehicle else "—"
+
+    body = (
+        f"Good news {first} — your vehicle ({reg}) is ready for collection.\n\n"
+        "Please bring your ID and collection slip. If a balance is due, tap "
+        "*Check balance* for the payment details."
     )
+
+    delivered = _dispatch(
+        job, body, template=TEMPLATE_READY, use_template=True,
+        params=[first, reg],
+    )
+
+    # Only in the window: outside it the approved template carries this button
+    # itself, and a second free-form message would be refused outright.
+    if delivered:
+        number = customer.wa_number if customer else None
+        if number:
+            conversation = get_or_create_conversation(number, profile_name=customer.name)
+            if conversation.is_session_open:
+                try:
+                    WhatsAppClient().send_buttons(
+                        number, "Payment details and the balance outstanding.",
+                        [{"id": "m_pay", "title": "Check balance"}],
+                        footer="Topclass Auto Body", conversation=conversation,
+                        intent="vehicle_ready_balance", job_id=job.id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.error("Collection balance button failed: %s", exc)
+
+    return delivered
 
 
 def notify_quote_ready(job: JobCard) -> bool:
@@ -288,7 +406,7 @@ def notify_quote_ready(job: JobCard) -> bool:
     if not estimate:
         return False
     body = (
-        f"📋 *Quotation ready* — job card {job.job_no}\n\n"
+        f"*Quotation ready* — job card {job.job_no}\n\n"
         f"Vehicle: {job.vehicle.reg_no if job.vehicle else '-'}\n"
         f"Reference: {estimate.reference}\n"
         f"Total: *{estimate.currency} {_money(estimate.total)}*"
@@ -304,8 +422,8 @@ def notify_quote_ready(job: JobCard) -> bool:
 
 def notify_parts_received(job: JobCard, parts: list[str]) -> bool:
     body = (
-        f"📦 Good news — parts received for job card {job.job_no}.\n\n"
-        + "\n".join(f"• {p}" for p in parts[:8])
+        f"Good news — parts received for job card {job.job_no}.\n\n"
+        + "\n".join(f"- {p}" for p in parts[:8])
         + "\n\nWork continues and we will update you at the next stage."
     )
     return _dispatch(job, body, template=TEMPLATE_PARTS_IN, use_template=True,
@@ -314,7 +432,7 @@ def notify_parts_received(job: JobCard, parts: list[str]) -> bool:
 
 def notify_invoice_issued(job: JobCard, invoice) -> bool:
     body = (
-        f"🧾 *Invoice {invoice.invoice_no}*\n\n"
+        f"*Invoice {invoice.invoice_no}*\n\n"
         f"Job: {job.job_no}\n"
         f"Total: *{invoice.currency} {_money(invoice.total)}*"
         f"\nBalance: *{invoice.currency} {_money(invoice.balance)}*"
@@ -327,7 +445,7 @@ def notify_invoice_issued(job: JobCard, invoice) -> bool:
 
 def notify_warranty(job: JobCard) -> bool:
     body = (
-        f"🛡️ *Warranty registered* — job card {job.job_no}\n\n{WARRANTY_TEXT}\n\n"
+        f"*Warranty registered* — job card {job.job_no}\n\n{WARRANTY_TEXT}\n\n"
         "Keep this message as your warranty reference. Reply *menu* for anything else."
     )
     return _dispatch(job, body, template=TEMPLATE_WARRANTY, use_template=True,
@@ -347,11 +465,11 @@ def notify_booking_confirmed(booking) -> bool:
     if not customer or not customer.wa_number:
         return False
     body = (
-        f"✅ *Booking confirmed*\n\n"
+        f"*Booking confirmed*\n\n"
         f"Reference: {booking.display_reference}\n"
         f"Service: {booking.service}\n"
         f"Date: {_slot_text(booking)}"
-        f"\n\n📍 {current_app.config['COMPANY_ADDRESS']}"
+        f"\n\n {current_app.config['COMPANY_ADDRESS']}"
         "\n\nReply *menu* to change or cancel."
     )
     client = WhatsAppClient()
@@ -376,12 +494,12 @@ def notify_booking_rescheduled(booking, previous_slot: str) -> bool:
     if not customer or not customer.wa_number:
         return False
     body = (
-        f"🔁 *Booking moved*\n\n"
+        f"*Booking moved*\n\n"
         f"Reference: {booking.display_reference}\n"
         f"Service: {booking.service}\n"
         f"Was: {previous_slot}\n"
         f"Now: {_slot_text(booking)}"
-        f"\n\n📍 {current_app.config['COMPANY_ADDRESS']}"
+        f"\n\n {current_app.config['COMPANY_ADDRESS']}"
         "\n\nReply *menu* if that no longer works."
     )
     client = WhatsAppClient()
@@ -458,6 +576,11 @@ def notify_feedback_request(job: JobCard) -> bool:
     )
     client = WhatsAppClient()
     conversation = get_or_create_conversation(customer.wa_number, customer.name)
+    # Record the job before asking. The approved template's rating buttons carry
+    # a fixed payload (`rate:5`), so the tap has to be resolved back to a job —
+    # and this thread is the only place that says which one we asked about.
+    conversation.ctx_set(last_job_no=job.job_no)
+    db.session.commit()
     try:
         if conversation.is_session_open:
             client.send_buttons(customer.wa_number, body, _feedback_buttons(job),
@@ -514,11 +637,11 @@ def notify_booking_reminder(booking) -> bool:
 
     when = _slot_text(booking)
     body = (
-        f"⏰ *Reminder — your appointment*\n\n"
+        f"*Reminder — your appointment*\n\n"
         f"Reference: {booking.display_reference}\n"
         f"Service: {booking.service}\n"
         f"When: {when}"
-        f"\n\n📍 {current_app.config['COMPANY_ADDRESS']}"
+        f"\n\n {current_app.config['COMPANY_ADDRESS']}"
         "\n\nReply *menu* if you need to move it."
     )
     client = WhatsAppClient()

@@ -425,12 +425,16 @@ body.auth-body { background: #eef1f7; }
   font-size: .74rem; font-weight: 650; color: var(--tc-navy-800); margin-bottom: .6rem;
 }
 .auth-demo-head > span:first-child i { color: var(--tc-amber-500); }
-.auth-demo-pw { font-weight: 500; color: var(--tc-ink-faint); }
-.auth-demo-pw code {
-  background: #f1f4f9; color: var(--tc-navy-800);
-  padding: .1rem .35rem; border-radius: .25rem; font-size: .72rem;
+/* The credentials are ON the page, not just wired to the buttons: a demo needs
+   to be readable as well as clickable. */
+.auth-demo-pwline { font-size: .72rem; color: var(--tc-ink-muted); margin: 0 0 .55rem; }
+.auth-demo-pwline code {
+  background: #f1f4f9; color: var(--tc-navy-800); font-weight: 650;
+  padding: .1rem .35rem; border-radius: .25rem; font-size: .74rem;
 }
-.auth-demo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .4rem; }
+/* One per row: an email address will not fit in a half-width column, and the
+   hint is useless if the address is truncated to "owner@topcl…". */
+.auth-demo-grid { display: grid; grid-template-columns: 1fr; gap: .35rem; }
 .auth-demo-btn {
   display: flex; align-items: center; gap: .5rem; text-align: left;
   padding: .45rem .55rem; border: 1px solid var(--tc-line); border-radius: .5rem;
@@ -454,6 +458,11 @@ body.auth-body { background: #eef1f7; }
 }
 .auth-demo-role {
   font-size: .66rem; color: var(--tc-ink-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.auth-demo-email {
+  font-size: .68rem; color: var(--tc-navy-700);
+  font-family: var(--bs-font-monospace);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .auth-demo-note { font-size: .68rem; color: var(--tc-ink-faint); margin: .6rem 0 0; }

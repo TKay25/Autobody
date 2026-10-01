@@ -79,8 +79,10 @@
       <div class="auth-demo" data-password="{{ DEMO_PASSWORD }}">
         <div class="auth-demo-head">
           <span><i class="bi bi-lightning-charge-fill"></i> Demo accounts</span>
-          <span class="auth-demo-pw">password <code>{{ DEMO_PASSWORD }}</code></span>
         </div>
+        <p class="auth-demo-pwline">
+          Password for every account <code>{{ DEMO_PASSWORD }}</code>
+        </p>
         <div class="auth-demo-grid">
           {% for a in DEMO_ACCOUNTS %}
           <button type="button" class="auth-demo-btn" data-email="{{ a.email }}"
@@ -89,14 +91,15 @@
             <span class="auth-demo-text">
               <span class="auth-demo-name">{{ a.name }}</span>
               <span class="auth-demo-role">{{ a.label }}</span>
+              <span class="auth-demo-email">{{ a.email }}</span>
             </span>
             <i class="bi bi-box-arrow-in-right"></i>
           </button>
           {% endfor %}
         </div>
         <p class="auth-demo-note">
-          One click fills the form and signs you in. Demo data only — these shortcuts are
-          hidden in production.
+          Tap a row to sign in straight away, or type the email and the password above
+          into the form yourself.
         </p>
       </div>
       {% endif %}

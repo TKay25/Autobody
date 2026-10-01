@@ -87,6 +87,10 @@ class Config:
     # who knows the exact URL pasted into Meta". NOT a substitute for
     # WA_APP_SECRET: it proves the caller knows the URL, not that Meta sent it.
     WA_WEBHOOK_TOKEN = os.getenv("WA_WEBHOOK_TOKEN", "")
+    # The enquiry Flow's id, from Meta → Flows. Empty by default so the "Enquiry
+    # form" menu row is simply not offered until a form has actually been built —
+    # a row that opens nothing is worse than no row.
+    WA_FLOW_ENQUIRY_ID = os.getenv("WA_FLOW_ENQUIRY_ID", "")
     WA_GRAPH_URL = os.getenv("WA_GRAPH_URL", "https://graph.facebook.com")
     WA_SESSION_WINDOW_HOURS = 24
 
@@ -149,6 +153,7 @@ class TestConfig(Config):
     # Same reasoning. The signature test subclasses this with its own secret; a
     # real secret leaking in here would 403 every unsigned webhook test.
     WA_APP_SECRET = ""
+    WA_FLOW_ENQUIRY_ID = ""
     SECRET_KEY = "test-secret"
     # Keep hashing cheap in tests; production uses Werkzeug's scrypt default.
     PASSWORD_HASH_METHOD = "pbkdf2:sha256:1000"

@@ -5,6 +5,8 @@ and `?next=` is attacker-controlled, so both get a guard here.
 """
 from __future__ import annotations
 
+import re
+
 from app import create_app
 from app.seed import STAFF
 from config import Config, ProductionConfig, TestConfig
@@ -26,6 +28,26 @@ def test_demo_shortcuts_come_from_the_seed(client):
                   "estimator@topclass.co.zw", "front@topclass.co.zw"):
         assert email in seeded
         assert f'data-email="{email}"' in page
+
+
+def test_the_demo_credentials_can_be_read_off_the_page(client):
+    """The point of a demo is that somebody can type the credentials in.
+
+    ``data-email`` alone is invisible to a person reading the page, so each
+    shortcut has to *show* its address as text — and the shared password has to
+    be on the page rather than only wired into the buttons.
+    """
+    page = client.get("/login").get_data(as_text=True)
+
+    assert "Password for every account" in page
+    assert "topclass123" in page
+
+    addresses = re.findall(r'<span class="auth-demo-email">([^<]+)</span>', page)
+    assert len(addresses) >= 4, addresses
+    for email in addresses:
+        # Shown to the reader *and* carried by the button that fills the form.
+        assert f'data-email="{email}"' in page, email
+        assert "@topclass.co.zw" in email, email
 
 
 def test_demo_shortcuts_are_hidden_in_production():

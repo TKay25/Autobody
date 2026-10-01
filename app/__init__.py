@@ -416,6 +416,88 @@ def _register_cli(app: Flask) -> None:
             f"({result['due']} due, {result['skipped']} already asked)."
         )
 
+    @app.cli.command("purge-business-data")
+    @click.option("--yes", is_flag=True,
+                  help="Actually delete. Without it the command only reports.")
+    @click.option("--keep-whatsapp", is_flag=True,
+                  help="Keep the WhatsApp inbox (conversations and messages).")
+    def purge_business_data(yes: bool, keep_whatsapp: bool) -> None:
+        """Remove every transactional record, keeping logins and the parts list.
+
+        For going live: the demo customers, job cards, invoices and the sample
+        WhatsApp thread all go, while the staff accounts you sign in with and the
+        parts catalogue stay behind. It reports what it found first, and deletes
+        nothing without --yes.
+
+        Use --keep-whatsapp once real customers have started messaging, so their
+        enquiries survive the cleanup.
+        """
+        from .models import (
+            ActivityLog, Booking, BookingPhoto, Customer, Estimate, EstimateItem,
+            Invoice, JobCard, JobPart, JobPhoto, JobStageEvent, NotificationLog,
+            Part, Payment, PaymentProof, QcResult, StockMovement, Task, User,
+            Vehicle, WaConversation, WaMessage,
+        )
+
+        # Children before parents. Postgres enforces the foreign keys, so this
+        # order is not cosmetic — it is the difference between a clean delete and
+        # a cascade of integrity errors.
+        plan = [
+            ("estimate items", EstimateItem),
+            ("estimates", Estimate),
+            ("job stage events", JobStageEvent),
+            ("job photos", JobPhoto),
+            ("QC results", QcResult),
+            ("job parts", JobPart),
+            ("payment proofs", PaymentProof),
+            ("payments", Payment),
+            ("invoices", Invoice),
+            ("booking photos", BookingPhoto),
+            ("bookings", Booking),
+            ("tasks", Task),
+            ("job cards", JobCard),
+            ("vehicles", Vehicle),
+            ("customers", Customer),
+            ("stock movements", StockMovement),
+            ("notifications", NotificationLog),
+            ("activity log", ActivityLog),
+        ]
+        if not keep_whatsapp:
+            plan += [("WhatsApp messages", WaMessage),
+                     ("WhatsApp conversations", WaConversation)]
+
+        counts = [(label, model.query.count()) for label, model in plan]
+        total = sum(n for _, n in counts)
+
+        click.echo(f"Keeping: {User.query.count()} users, {Part.query.count()} parts.")
+        if keep_whatsapp:
+            click.echo(f"Keeping: {WaConversation.query.count()} WhatsApp thread(s).")
+        else:
+            numbers = [c.wa_id for c in WaConversation.query.order_by(WaConversation.id)]
+            if numbers:
+                click.echo("WhatsApp threads to delete: " + ", ".join(numbers))
+        click.echo("")
+        for label, n in counts:
+            if n:
+                click.echo(f"  {n:>5}  {label}")
+        click.echo(f"  {total:>5}  TOTAL rows")
+
+        if not yes:
+            click.echo("\nNothing was deleted. Re-run with --yes to apply.")
+            return
+
+        if keep_whatsapp:
+            # The threads outlive their customers, so drop the links first or the
+            # foreign keys block the delete.
+            WaConversation.query.update({WaConversation.customer_id: None},
+                                        synchronize_session=False)
+            WaMessage.query.update({WaMessage.job_id: None}, synchronize_session=False)
+
+        for _, model in plan:
+            model.query.delete(synchronize_session=False)
+        db.session.commit()
+        click.echo(f"\nDeleted {total} rows. The database is ready for real data.")
+
     @app.cli.command("reset-db")
     def reset_db() -> None:
         """Drop and recreate all tables, then seed."""

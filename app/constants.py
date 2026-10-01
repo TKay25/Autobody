@@ -85,7 +85,7 @@ STAGE_CUSTOMER_TEXT = {
     "REASSEMBLY": "Panels and trim are being reassembled.",
     "DETAILING": "Final detailing and valeting is in progress.",
     "QC": "Going through our final quality control inspection.",
-    "READY": "Your vehicle is ready for collection. 🎉",
+    "READY": "Your vehicle is ready for collection. ",
     "COLLECTED": "The vehicle has been collected. Thank you for your business.",
 }
 # Rough progress weighting so the portal can show a % complete.
@@ -102,14 +102,24 @@ PRIORITIES = ["LOW", "NORMAL", "HIGH", "URGENT"]
 PRIORITY_COLOURS = {"LOW": "secondary", "NORMAL": "info", "HIGH": "warning", "URGENT": "danger"}
 
 # ── Service lines (mirrors topclass.co.zw) ───────────────────────────────────
+# ``short`` is the label for a WhatsApp list row, whose title is capped at 24
+# characters — "Panel Beating & Spray Painting" does not fit. ``icon`` is the
+# Bootstrap icon for the web console, not used by WhatsApp.
 SERVICES = [
-    {"code": "AUTO_BODY", "name": "Auto Body", "icon": "bi-car-front"},
-    {"code": "PANEL_SPRAY", "name": "Panel Beating & Spray Painting", "icon": "bi-hammer"},
-    {"code": "REBUILD", "name": "Rebuilds & Performance Upgrades", "icon": "bi-gear-wide-connected"},
-    {"code": "DETAIL", "name": "Car Detailing", "icon": "bi-stars"},
-    {"code": "CERAMIC", "name": "Ceramic Coating", "icon": "bi-shield-shaded"},
-    {"code": "PPF", "name": "Paint Protection Film", "icon": "bi-shield-check"},
-    {"code": "WRAP", "name": "Car Vinyl Wrapping", "icon": "bi-palette"},
+    {"code": "AUTO_BODY", "name": "Auto Body", "short": "Auto Body",
+     "icon": "bi-car-front"},
+    {"code": "PANEL_SPRAY", "name": "Panel Beating & Spray Painting",
+     "short": "Panel & Paint", "icon": "bi-hammer"},
+    {"code": "REBUILD", "name": "Rebuilds & Performance Upgrades",
+     "short": "Rebuilds & Upgrades", "icon": "bi-gear-wide-connected"},
+    {"code": "DETAIL", "name": "Car Detailing", "short": "Car Detailing",
+     "icon": "bi-stars"},
+    {"code": "CERAMIC", "name": "Ceramic Coating", "short": "Ceramic Coating",
+     "icon": "bi-shield-shaded"},
+    {"code": "PPF", "name": "Paint Protection Film", "short": "Paint Protection Film",
+     "icon": "bi-shield-check"},
+    {"code": "WRAP", "name": "Car Vinyl Wrapping", "short": "Car Vinyl Wrapping",
+     "icon": "bi-palette"},
 ]
 SERVICE_NAMES = [s["name"] for s in SERVICES]
 SERVICE_BY_NAME = {s["name"]: s for s in SERVICES}

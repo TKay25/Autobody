@@ -1020,6 +1020,9 @@ class BookingPhoto(db.Model):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            # The generated name on disk (wa_<id>.pdf). ``caption`` carries the
+            # name the customer's file actually had, which is what the desk reads.
+            "filename": self.filename,
             "url": self.url,
             "kind": self.kind,
             "caption": self.caption,

@@ -159,6 +159,22 @@
     return null;
   }
 
+  /* An attachment in the thread. Only pictures can be drawn: a customer sending an
+     assessor's PDF used to render as a broken <img>, so anything that is not an
+     image becomes a link the operator can actually open. */
+  function mediaNode(url) {
+    if (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(url || '')) {
+      return h('img.img-fluid.rounded.mt-2', {
+        src: url, style: 'max-width:220px', loading: 'lazy', alt: 'Attachment',
+      });
+    }
+    let name = 'Attachment';
+    try { name = decodeURIComponent((url || '').split('/').pop() || name); } catch (e) { /* keep default */ }
+    return h('a.btn.btn-sm.btn-outline-secondary.mt-2', {
+      href: url, target: '_blank', rel: 'noopener',
+    }, [T.icon('paperclip'), h('span.ms-1', name)]);
+  }
+
   T.route('/inbox', async (ctx) => {
     ctx.title = 'WhatsApp inbox';
     const selectedId = ctx.query.id || null;
@@ -251,9 +267,10 @@
           isTap(m)
             ? h('div.bubble-tap', [T.icon('hand-index-thumb'), h('span', bodyText(m))])
             : h('div.msg-text', renderBody(bodyText(m))),
-          m.media_url
-            ? h('img.img-fluid.rounded.mt-2', { src: m.media_url, style: 'max-width:220px' })
-            : null,
+          /* An attachment. Only pictures can be drawn — a customer sending an
+             assessor's PDF used to render as a broken <img>, so anything that is
+             not an image becomes a link they can actually open. */
+          m.media_url ? mediaNode(m.media_url) : null,
           options.length
             ? h('div.bubble-buttons', options.map((b) =>
                 h('button.btn.btn-outline-secondary.btn-sm', {

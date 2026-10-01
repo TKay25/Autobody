@@ -42,9 +42,6 @@ class WhatsAppClient:
 
     def __init__(self, app=None):
         self.app = app or current_app
-        # The simulator warning is worth saying once per process, not once per
-        # message — a busy thread would otherwise bury the rest of the log.
-        self._warned_simulator = False
 
     # ── config helpers ───────────────────────────────────────────────────
     @property
@@ -88,14 +85,18 @@ class WhatsAppClient:
             # WARNING, not INFO, and it names what is missing. A silent no-op here
             # is indistinguishable from a working bot in the inbox, which is how a
             # production deployment sat in simulator mode answering nobody.
-            if not self._warned_simulator:
-                self._warned_simulator = True
-                log.warning(
-                    "WhatsApp is in SIMULATOR mode - nothing is being sent to "
-                    "WhatsApp. Missing: %s. Messages are still stored so the inbox "
-                    "shows the conversation.",
-                    ", ".join(self.missing_live_settings) or "(unknown)",
-                )
+            #
+            # It repeats for every message on purpose: while the deployment is
+            # misconfigured each individual reply is being lost, and that is worth
+            # seeing rather than once at boot where it scrolls away. It stops the
+            # moment WA_MODE=live is set. The boot banner and the inbox banner
+            # carry the same message for anyone who is not watching the log.
+            log.warning(
+                "WhatsApp is in SIMULATOR mode - nothing is being sent to "
+                "WhatsApp. Missing: %s. Messages are still stored so the inbox "
+                "shows the conversation.",
+                ", ".join(self.missing_live_settings) or "(unknown)",
+            )
             log.info("[WA-SIM] -> %s :: %s", payload.get("to"), payload)
             return {"simulated": True, "payload": payload}
         try:
@@ -183,6 +184,50 @@ class WhatsAppClient:
         return self._dispatch(to, payload, body, "interactive", conversation, True, intent, job_id,
                               extra={"sections": sections})
 
+    def send_flow(self, to: str, body: str, flow_id: str, *, flow_token: str = "enquiry",
+                  cta: str = "Open form", header: str | None = None,
+                  footer: str | None = None, conversation: WaConversation | None = None,
+                  intent: str | None = None, job_id: int | None = None) -> WaMessage | None:
+        """Offer a WhatsApp Flow — a form that opens inside WhatsApp.
+
+        The screen mode is ``draft``, which is what Meta requires while the Flow
+        is still being built; publish it and switch this to ``published`` (or use
+        a template's flow button, which is the only way to offer a form outside
+        the 24-hour service window).
+
+        ``flow_token`` is returned to us untouched in the ``nfm_reply``, so it is
+        what routes the answers. Anything before a colon names the form.
+        """
+        to = normalise_msisdn(to)
+        interactive = {
+            "type": "flow",
+            "body": {"text": body},
+            "action": {
+                "name": "flow",
+                "parameters": {
+                    "flow_message_version": "3",
+                    "flow_token": flow_token,
+                    "flow_id": flow_id,
+                    "flow_cta": cta[:20],
+                    "flow_action": "navigate",
+                    "flow_action_payload": {"screen": "ENQUIRY"},
+                },
+            },
+        }
+        if header:
+            interactive["header"] = {"type": "text", "text": header[:60]}
+        if footer:
+            interactive["footer"] = {"text": footer[:60]}
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "interactive",
+            "interactive": interactive,
+        }
+        return self._dispatch(to, payload, body, "interactive", conversation, True, intent,
+                              job_id, extra={"flow_id": flow_id, "flow_token": flow_token})
+
     def send_document(self, to: str, link: str, filename: str, *, caption: str | None = None,
                       conversation: WaConversation | None = None, intent: str | None = None,
                       job_id: int | None = None) -> WaMessage | None:
@@ -208,9 +253,28 @@ class WhatsAppClient:
 
     def send_template(self, to: str, template: str, params: list[str], *,
                       lang: str = "en", conversation: WaConversation | None = None,
-                      job_id: int | None = None) -> WaMessage | None:
-        """Business-initiated message outside the 24h window must be a template."""
+                      job_id: int | None = None,
+                      document: dict | None = None) -> WaMessage | None:
+        """Business-initiated message outside the 24h window must be a template.
+
+        ``document`` attaches a **document header**, which is the only way to
+        deliver a PDF outside the service window: Meta rejects a free-form
+        document message there, so ``document_share`` is the approved template
+        that carries one. The document must be publicly reachable, because Meta
+        fetches it itself.
+        """
         to = normalise_msisdn(to)
+        components: list[dict] = []
+        if document and document.get("link"):
+            header: dict = {"link": document["link"]}
+            if document.get("filename"):
+                header["filename"] = document["filename"]
+            components.append({"type": "header",
+                               "parameters": [{"type": "document", "document": header}]})
+        components.append({
+            "type": "body",
+            "parameters": [{"type": "text", "text": p} for p in params],
+        })
         payload = {
             "messaging_product": "whatsapp",
             "to": to,
@@ -218,9 +282,7 @@ class WhatsAppClient:
             "template": {
                 "name": template,
                 "language": {"code": lang},
-                "components": [
-                    {"type": "body", "parameters": [{"type": "text", "text": p} for p in params]}
-                ],
+                "components": components,
             },
         }
         body = f"[template:{template}] " + " | ".join(params)

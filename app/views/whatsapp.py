@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 
 from flask import Blueprint, current_app, jsonify, request
@@ -175,6 +176,27 @@ def _handle_status(status: dict) -> None:
                 f'\n{{"errors": {status["errors"]}}}'
 
 
+def _flow_summary(data: dict, limit: int = 300) -> str:
+    """A one-line digest of a submitted Flow, for the inbox and the thread.
+
+    The message row stores the body a person reads, so putting the answers here
+    means an enquiry can be understood from the conversation itself rather than
+    only by opening the booking record. Field names are trimmed to something
+    readable ("reg no: ADZ4477") because the desk sees this, not the developer.
+    """
+    parts = []
+    for key, value in (data or {}).items():
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(item) for item in value)
+        if value is None:
+            continue
+        shown = str(value).strip()
+        if not shown:
+            continue
+        parts.append(f"{str(key).replace('_', ' ')}: {shown}")
+    return "; ".join(parts)[:limit]
+
+
 def _handle_message(message: dict, contacts: dict) -> str | None:
     wa_id = message.get("from")
     if not wa_id:
@@ -195,6 +217,8 @@ def _handle_message(message: dict, contacts: dict) -> str | None:
     text_body = None
     interactive_id = None
     media_url = None
+    media_name = None
+    flow_response = None
 
     if msg_type == "text":
         text_body = (message.get("text") or {}).get("body", "")
@@ -208,11 +232,32 @@ def _handle_message(message: dict, contacts: dict) -> str | None:
         elif itype == "list_reply":
             interactive_id = (interactive.get("list_reply") or {}).get("id")
             text_body = (interactive.get("list_reply") or {}).get("title")
+        elif itype == "nfm_reply":
+            # A completed Flow. Meta sends the answers as a JSON *string* inside
+            # response_json, not as an object, and ``flow_token`` is whatever we
+            # set when the form was sent — that token is what routes it.
+            reply = interactive.get("nfm_reply") or {}
+            raw = reply.get("response_json") or ""
+            try:
+                answers = json.loads(raw) if raw else {}
+            except (TypeError, ValueError):
+                log.warning("Flow response was not valid JSON: %r", str(raw)[:200])
+                answers = {}
+            if not isinstance(answers, dict):
+                answers = {}
+            flow_response = {"flow_token": reply.get("flow_token"), "data": answers}
+            # The row keeps the body the desk reads, so the answers go here too —
+            # an enquiry should be understandable from the thread alone.
+            text_body = _flow_summary(answers) or "[Form submitted]"
 
     elif msg_type in {"image", "document"}:
         media = message.get(msg_type) or {}
         media_id = media.get("id")
         media_url = _download_media(media_id, media.get("mime_type")) if media_id else None
+        # Meta names documents ("assessor report.pdf") but not images. For a PDF it
+        # is the only clue the desk has about what the attachment is, so it is
+        # carried through rather than thrown away.
+        media_name = media.get("filename")
         text_body = media.get("caption") or ""
 
     elif msg_type == "button":
@@ -244,6 +289,7 @@ def _handle_message(message: dict, contacts: dict) -> str | None:
 
     replies = handle_inbound(
         conversation, text_body=text_body, interactive_id=interactive_id, media_url=media_url,
+        media_name=media_name, flow_response=flow_response,
     )
 
     client = WhatsAppClient()
@@ -254,9 +300,48 @@ def _handle_message(message: dict, contacts: dict) -> str | None:
                                 header=reply.get("header"), conversation=conversation)
         elif kind == "list":
             client.send_list(wa_id, reply["body"], reply["button"], reply["sections"],
+                             header=reply.get("header"), footer=reply.get("footer"),
+                             conversation=conversation)
+        elif kind == "document":
+            # A document the customer asked for mid-conversation, such as the
+            # Download button on a quotation or receipt. Meta fetches the link
+            # itself, so it has to be publicly reachable — which is what
+            # public_url() guarantees when the router builds it.
+            client.send_document(wa_id, reply["link"], reply["filename"],
+                                 caption=reply.get("caption"), conversation=conversation)
+        elif kind == "flow":
+            # A WhatsApp Flow: a form that opens inside WhatsApp. The answers come
+            # back as an ``nfm_reply``, handled above.
+            client.send_flow(wa_id, reply["body"], reply["flow_id"],
+                             flow_token=reply.get("flow_token") or "enquiry",
+                             header=reply.get("header"), footer=reply.get("footer"),
                              conversation=conversation)
         else:
             client.send_text(wa_id, reply["body"], conversation=conversation)
+
+
+# Meta mime types we accept as attachments, mapped to the extension we store. A
+# PDF is the common case for an assessor's report; anything unmapped falls back to
+# the mime subtype, sanitised, so a type we have never seen cannot write a
+# filename with a slash or a space in it.
+MEDIA_EXTENSIONS = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "application/pdf": "pdf",
+}
+
+
+def _media_extension(mime_type: str | None) -> str:
+    import re as _re
+
+    mapped = MEDIA_EXTENSIONS.get((mime_type or "").lower())
+    if mapped:
+        return mapped
+    subtype = (mime_type or "image/jpeg").split("/")[-1].replace("jpeg", "jpg")
+    return _re.sub(r"[^a-z0-9]", "", subtype.lower())[:5] or "bin"
 
 
 def _download_media(media_id: str, mime_type: str | None) -> str | None:
@@ -267,9 +352,11 @@ def _download_media(media_id: str, mime_type: str | None) -> str | None:
     import requests
 
     cfg = current_app.config
+    ext = _media_extension(mime_type)
     if cfg.get("WA_MODE") != "live" or not cfg.get("WA_ACCESS_TOKEN"):
         # Simulator: keep a placeholder so the inbox still shows the attachment.
-        return f"/static/img/whatsapp-media-{media_id}.jpg"
+        # It honours the extension so a simulated PDF is not drawn as an image.
+        return f"/static/img/whatsapp-media-{media_id}.{ext}"
 
     try:
         meta = requests.get(
@@ -283,7 +370,7 @@ def _download_media(media_id: str, mime_type: str | None) -> str | None:
         blob = requests.get(
             url, headers={"Authorization": f"Bearer {cfg['WA_ACCESS_TOKEN']}"}, timeout=45
         )
-        ext = (mime_type or "image/jpeg").split("/")[-1].replace("jpeg", "jpg")
+        ext = _media_extension(mime_type)
         upload_dir = cfg["UPLOAD_DIR"]
         upload_dir.mkdir(parents=True, exist_ok=True)
         filename = f"wa_{media_id}.{ext}"

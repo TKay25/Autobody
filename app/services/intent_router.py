@@ -21,6 +21,7 @@ from flask import current_app
 from ..constants import (
     BOOKING_SLOT_CAPACITY,
     BOOKING_SLOTS,
+    SERVICES,
     SERVICE_BY_CODE,
     SERVICE_NAMES,
     STAGE_CUSTOMER_TEXT,
@@ -28,8 +29,9 @@ from ..constants import (
     STAGE_PROGRESS,
 )
 from ..extensions import db
-from ..models import (Booking, BookingPhoto, Customer, Invoice, JobCard, JobPhoto, PaymentProof,
-                      Task, Vehicle, WaConversation, utcnow)
+from ..models import (Booking, BookingPhoto, Customer, Estimate, Invoice, JobCard, JobPhoto,
+                      Payment, PaymentProof, Task, Vehicle, WaConversation, utcnow)
+from .notifications import public_url
 from .pricing import quick_quote
 
 # ── tiny i18n table (English / Shona / Ndebele) ──────────────────────────────
@@ -79,9 +81,16 @@ DATA_ENTRY_STATES = {
 
 T = {
     "welcome": {
-        "en": "Hello {name}! 👋 Welcome to {company}.\nWe are Masters of Restoration — panel beating, spray painting, detailing, ceramic coating and PPF.\n\nHow can we help you today?",
-        "sn": "Mhoro {name}! 👋 Takugamuchirai ku{company}.\nTinogadzira mota — panel beating, kupenda, kuchenesa, ceramic coating nePPF.\n\nTingakubatsirai sei nhasi?",
-        "nd": "Sawubona {name}! 👋 Siyakwamukela ku{company}.\nSilungisa izimoto — panel beating, ukupenda, ukuhlanza, ceramic coating nePPF.\n\nSingakusiza njani lamuhla?",
+        "en": "Hello {name}, welcome to {company}.\n\n"
+              "Panel beating, spray painting, detailing, ceramic coating, "
+              "paint protection film and vinyl wrapping.\n\n"
+              "How can we help?",
+        "sn": "Mhoro {name}, takugamuchirai ku{company}.\n\n"
+              "Tinogadzira mota: panel beating, kupenda, kuchenesa, ceramic "
+              "coating nePPF.\n\nTingakubatsirai sei?",
+        "nd": "Sawubona {name}, siyakwamukela ku{company}.\n\n"
+              "Silungisa izimoto: panel beating, ukupenda, ukuhlanza, ceramic "
+              "coating nePPF.\n\nSingakusiza njani?",
     },
     "menu_prompt": {
         "en": "Please choose an option below.",
@@ -99,16 +108,21 @@ T = {
         "nd": "Yiphi insiza oyidingayo?",
     },
     "ask_desc": {
-        "en": "Briefly describe the damage or what you need done. You can also send photos 📷.",
-        "sn": "Tsanangurai muchidimbu kukuvara kwemota. Munogonawo kutumira mifananidzo 📷.",
-        "nd": "Chaza kafitshane umonakalo. Ungathumela futhi izithombe 📷.",
+        "en": "Please describe the damage. Send photos, and a PDF of any "
+              "assessment you already have.",
+        "sn": "Tsanangurai kukuvara kwemota. Tumirai mifananidzo, uye PDF "
+              "yearhenti yamunayo.",
+        "nd": "Chaza umonakalo. Thumela izithombe, kanye ne-PDF yohlelo "
+              "lwenhlolovo onalo.",
     },
     "ask_ref": {
         "en": "Please send your job number (e.g. TC-2026-0007) or vehicle registration.",
         "sn": "Tumirai nhamba yejobi (semuenzaniso TC-2026-0007) kana nhamba yemota.",
         "nd": "Thumela inombolo yomsebenzi (isb. TC-2026-0007) kumbe inombolo yemota.",
     },
-    "not_found": {        "en": "I could not find anything with that reference. Please check and try again, or type *menu*.",
+    "not_found": {
+        "en": "I could not find anything with that reference. Please check and "
+              "try again, or type *menu*.",
         "sn": "Handina kuwana chinhu neiyo nhamba. Edzai zvakare, kana kunyora *menu*.",
         "nd": "Angitholanga lutho ngaleyo inombolo. Zama futhi, kumbe bhala *menu*.",
     },
@@ -123,19 +137,19 @@ T = {
         "nd": "Akunankinga — ngicele omunye wethimba ukuthi athathe. Uzaphendula ngesikhathi somsebenzi ({hours}).",
     },
     "bye": {
-        "en": "Thank you for choosing {company}. Drive safely! 🚗",
-        "sn": "Tinotenda nekusarudza {company}. Fambai zvakanaka! 🚗",
-        "nd": "Siyabonga ngokukhetha {company}. Hamba kuhle! 🚗",
+        "en": "Thank you for choosing {company}. Drive safely.",
+        "sn": "Tinotenda nekusarudza {company}. Fambai zvakanaka.",
+        "nd": "Siyabonga ngokukhetha {company}. Hamba kuhle.",
     },
     "lang_hint": {
-        "en": "🌐 Reply *Shona* or *Ndebele* at any time to switch language.",
-        "sn": "🌐 Pindurai *English* kana *Ndebele* chero nguva kushandura mutauro.",
-        "nd": "🌐 Phendula *English* kumbe *Shona* noma nini ukushintsha ulimi.",
+        "en": "Reply Shona or Ndebele to change language.",
+        "sn": "Pindurai English kana Ndebele kushandura mutauro.",
+        "nd": "Phendula English kumbe Shona ukushintsha ulimi.",
     },
     "lang_set": {
-        "en": "Language set to English. ✅",
-        "sn": "Mutauro washandurwa kuShona. ✅",
-        "nd": "Ulimi lushintshiwe lwaba isiNdebele. ✅",
+        "en": "Language set to English.",
+        "sn": "Mutauro washandurwa kuShona.",
+        "nd": "Ulimi lushintshiwe lwaba isiNdebele.",
     },
     "lang_unknown": {
         "en": "Please choose English, Shona or Ndebele.",
@@ -264,43 +278,68 @@ def main_menu_reply(company: str, lang: str, prefix: str = "") -> dict:
     exactly what kept "Book a service" off the greeting — the flow existed, but
     customers could only find it by typing *book*. A list shows everything.
     """
-    body = t("menu_prompt", lang) + "\n\n" + t("lang_hint", lang)
+    body = t("menu_prompt", lang)
     if prefix:
         body = prefix + "\n\n" + body
+    rows = [
+        {"id": "m_quote", "title": "Get a quote",
+         "description": "Send photos, get a price"},
+        {"id": "m_book", "title": "Book a service",
+         "description": "Pick a day and a time"},
+        {"id": "m_track", "title": "Track my repair",
+         "description": "Job number or registration"},
+        {"id": "m_pay", "title": "I have paid",
+         "description": "Send a receipt or EcoCash proof"},
+        {"id": "m_services", "title": "Our services & prices"},
+        {"id": "m_human", "title": "Talk to a person"},
+        {"id": "m_lang", "title": "Language"},
+        {"id": "m_info", "title": "Contact details"},
+    ]
+    # Only offered once a Flow has actually been built and its id configured.
+    # Tapping a row that opens nothing is worse than the row not being there.
+    try:
+        form_id = (current_app.config or {}).get("WA_FLOW_ENQUIRY_ID") or ""
+    except RuntimeError:      # no app context, e.g. a text-only unit test
+        form_id = ""
+    if form_id:
+        rows.insert(1, {"id": "m_form", "title": "Enquiry form",
+                        "description": "Fill it in, we call you back"})
+
     return {
         "type": "list",
         "body": body,
+        # A list footer rather than a body line: the hint is an aside, and the
+        # body is what the customer has to read to choose.
+        "footer": t("lang_hint", lang),
         "button": "Start",
-        "sections": [{"title": company, "rows": [
-            {"id": "m_quote", "title": "Get a quote",
-             "description": "Send damage photos, get a price"},
-            {"id": "m_book", "title": "Book a service",
-             "description": "Detailing, ceramic coating, PPF"},
-            {"id": "m_track", "title": "Track my repair",
-             "description": "Job number or registration"},
-            {"id": "m_pay", "title": "I've paid — send proof",
-             "description": "Send a receipt or EcoCash screenshot"},
-            {"id": "m_services", "title": "Our services & prices"},
-            {"id": "m_human", "title": "Talk to a person"},
-            {"id": "m_lang", "title": "🌐 Language"},
-            {"id": "m_info", "title": "Contact details"},
-        ]}],
+        "sections": [{"title": company, "rows": rows}],
     }
 
 
 def service_list_reply(lang: str, id_prefix: str = "svc") -> dict:
-    """The service picker.
+    """The service picker — a list, never a "reply with a number".
 
     ``id_prefix`` exists because the booking flow needs its own ids: the quote
     flow claimed ``svc:``, so tapping a service while booking was routed into the
     quote flow instead and a booking could never actually be completed by tap.
     """
-    rows = [
-        {"id": f"{id_prefix}:{name}", "title": name[:24],
-         "description": f"From USD {quick_quote(name)['from_price']:.0f}"}
-        for name in SERVICE_NAMES
-        if quick_quote(name)
-    ]
+    rows = []
+    for service in SERVICES:
+        full = service["name"]
+        short = service.get("short") or full
+        quote = quick_quote(full)
+        price = f"from USD {quote['from_price']:.0f}" if quote else ""
+        # The full name goes in the description when the title had to be shortened
+        # to fit WhatsApp's 24-character row title. A plain hyphen rather than a
+        # middot: a middot is easy to lose in an edit and renders inconsistently.
+        if short != full and price:
+            description = f"{full} - {price}"
+        else:
+            description = price
+        row = {"id": f"{id_prefix}:{full}", "title": short[:24]}
+        if description:
+            row["description"] = description[:72]
+        rows.append(row)
     return {
         "type": "list",
         "body": t("ask_service", lang),
@@ -319,17 +358,18 @@ def more_menu_reply(lang: str = "en") -> dict:
     return {
         "type": "list",
         "menu": "more",                  # re-rendered per language in handle()
-        "body": t("more_prompt", lang) + "\n\n" + t("lang_hint", lang),
+        "body": t("more_prompt", lang),
+        "footer": t("lang_hint", lang),
         "button": "Options",
         "sections": [{"title": "What next?", "rows": [
             {"id": "m_quote", "title": "Get a quote"},
             {"id": "m_track", "title": "Track my repair"},
             {"id": "m_book", "title": "Book a service"},
-            {"id": "m_pay", "title": "I've paid"},
+            {"id": "m_pay", "title": "I have paid"},
             {"id": "m_services", "title": "Our services"},
             {"id": "m_warranty", "title": "Warranty"},
             {"id": "m_human", "title": "Talk to a person"},
-            {"id": "m_lang", "title": "🌐 Language"},
+            {"id": "m_lang", "title": "Language"},
             {"id": "m_info", "title": "Contact details"},
         ]}],
     }
@@ -342,9 +382,9 @@ class IntentRouter:
     """Processes one inbound message and returns the replies to send."""
 
     FALLBACK_LIMIT = 2
-    # A customer forwarding a 60-photo album must not bloat the context column
-    # or bury the desk in noise. The last few are the ones that matter.
-    MAX_PENDING_PHOTOS = 8
+    # A customer attaching a 60-file album must not bloat the context column or
+    # bury the desk in noise. The last few are the ones that matter.
+    MAX_PENDING_MEDIA = 8
 
     def __init__(self, conversation: WaConversation, app=None):
         self.conv = conversation
@@ -358,7 +398,8 @@ class IntentRouter:
 
     # ── entry point ──────────────────────────────────────────────────────
     def handle(self, *, text_body: str | None = None, interactive_id: str | None = None,
-               media_url: str | None = None) -> list[dict]:
+               media_url: str | None = None, media_name: str | None = None,
+               flow_response: dict | None = None) -> list[dict]:
         raw = (text_body or "").strip()
         choice = (interactive_id or "").strip()
 
@@ -366,8 +407,16 @@ class IntentRouter:
             # A human is handling this thread; the bot stays silent.
             return []
 
-        if media_url:
-            replies = self._handle_media(media_url)
+        if flow_response is not None:
+            # A completed Flow. Checked first: it arrives as an interactive
+            # message but carries no button id, and the answers must not be read
+            # as free text and matched against a state handler.
+            replies = self._handle_flow(flow_response)
+        elif media_url:
+            # ``raw`` is the caption the customer typed with the attachment — the
+            # media branch runs ahead of the state handlers, so it used to be
+            # discarded and the customer's own words about the damage were lost.
+            replies = self._handle_media(media_url, media_name, raw)
         elif choice:
             replies = self._handle_choice(choice)
         else:
@@ -385,37 +434,209 @@ class IntentRouter:
             for r in replies
         ]
 
-    # ── media (damage photos) ────────────────────────────────────────────
-    def _handle_media(self, media_url: str) -> list[dict]:
-        # While we are waiting for payment proof, a picture is the answer to the
+    # ── media (photos, PDFs and any other attachment) ────────────────────
+    @staticmethod
+    def _media_kind(url: str, name: str | None = None) -> str:
+        """DAMAGE for a picture, DOCUMENT for anything else (a PDF report)."""
+        probe = (name or url or "").lower()
+        return "DAMAGE" if re.search(r"\.(png|jpe?g|webp|gif)(\?|$)", probe) else "DOCUMENT"
+
+    def _pending_media(self) -> list[dict]:
+        """The attachments collected so far, as ``{url, name, kind, caption}``.
+
+        Normalised on read: a conversation that was mid-flow before attachments
+        were named holds bare URL strings, and must keep working.
+        """
+        out = []
+        for item in self.conv.ctx_get("pending_media") or []:
+            if isinstance(item, dict):
+                out.append(item)
+            else:
+                out.append({"url": item, "name": "",
+                            "kind": self._media_kind(item), "caption": ""})
+        return out
+
+    def _handle_media(self, media_url: str, media_name: str | None = None,
+                      caption: str = "") -> list[dict]:
+        # While we are waiting for payment proof, an attachment is the answer to the
         # question — it must not be filed as a damage photo.
         if self.conv.state == "PAYMENT_PROOF":
-            return self._attach_payment_proof(media_url)
+            return self._attach_payment_proof(media_url, media_name)
         if self.conv.state == "WARRANTY_CLAIM":
-            return self._log_warranty_claim(media_url=media_url)
+            return self._log_warranty_claim(media_url=media_url, media_name=media_name)
 
-        # Capped at MAX_PENDING_PHOTOS: keep the most recent, which are the ones
-        # that show the damage once the customer has thought a bit more.
-        media = (self.conv.ctx_get("pending_media") or []) + [media_url]
-        self.conv.ctx_set(pending_media=media[-self.MAX_PENDING_PHOTOS:])
+        entry = {
+            "url": media_url,
+            "name": (media_name or "")[:120],
+            "kind": self._media_kind(media_url, media_name),
+            "caption": caption[:300],
+        }
+        # Capped: keep the most recent, which are the ones that show the damage
+        # once the customer has thought a bit more.
+        media = self._pending_media() + [entry]
+        self.conv.ctx_set(pending_media=media[-self.MAX_PENDING_MEDIA:])
+
+        # A caption is the customer describing the damage in their own words, which
+        # is exactly what the estimator needs. Only fills a blank.
+        if caption and not self.conv.ctx_get("damage"):
+            self.conv.ctx_set(damage=caption)
+
+        label = entry["name"] or ("a photo" if entry["kind"] == "DAMAGE" else "the document")
         job = self._find_job()
         if job:
             from ..models import JobPhoto
 
             db.session.add(JobPhoto(
                 job_id=job.id, filename=media_url.rsplit("/", 1)[-1], url=media_url,
-                kind="DAMAGE", caption="Sent via WhatsApp", source="whatsapp",
+                kind=entry["kind"],
+                caption=(entry["name"] or caption or "Sent via WhatsApp")[:255],
+                source="whatsapp",
             ))
             db.session.commit()
-            return [text("📷 Photo received and attached to your job card, thank you!")]
+            return [text(f"{label} received and added to your job card, thank you.")]
+
         # Committed here because pending_media is load-bearing: it is what feeds
         # BookingPhoto when the enquiry is finally created.
         db.session.commit()
-        count = len(self.conv.ctx_get("pending_media") or [])
+        count = len(media)
+        plural = "" if count == 1 else "s"
         return [text(
-            f"📷 Photo received ({count} so far) — it will be attached to your enquiry.\n"
+            f"{label} received. {count} attachment{plural} so far. "
+            "They will all go on your enquiry.\n"
             "Send your registration number if you have not already, or type *menu*."
         )]
+
+    # ── WhatsApp Flows (a form the customer filled in) ───────────────────
+    def _menu_form(self) -> list[dict]:
+        """Offer the enquiry Flow.
+
+        A Flow gathers the structured answers a free-text chat cannot — the plate,
+        the service, the day — as one tidy payload instead of five messages the
+        desk has to piece together. It cannot carry a file, so the bot asks for the
+        photographs straight afterwards (see :meth:`_lead_from_flow`).
+        """
+        flow_id = self.cfg.get("WA_FLOW_ENQUIRY_ID") or ""
+        if not flow_id:
+            # No form configured on this install. Fall back to the chat quote flow
+            # rather than opening nothing.
+            return self._menu_quote()
+
+        self.conv.state = "MAIN_MENU"
+        db.session.commit()
+        return [{
+            "type": "flow",
+            "body": "Fill this in and our front desk will call you back with a firm "
+                    "quotation. It takes about a minute.",
+            "flow_id": flow_id,
+            "flow_token": "enquiry",
+            "header": "Enquiry form",
+            "footer": self.company,
+        }]
+
+    def _handle_flow(self, flow: dict) -> list[dict]:
+        """A completed WhatsApp Flow.
+
+        A Flow collects the structured answers; **the files still arrive in the
+        chat**, because WhatsApp Flows have no file-upload component. So the
+        answers are written into the conversation context and handed to the same
+        ``_create_lead`` the chat path uses, which already attaches every photo
+        and PDF the customer sent before or alongside the form.
+        """
+        token = str(flow.get("flow_token") or "").strip()
+        data = flow.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+        # The token we set when sending the form is what routes the response.
+        # Anything before the first colon names the form: "enquiry:2026-10-01".
+        kind = token.split(":", 1)[0].strip().lower()
+
+        # Meta owns the payload shape, so a garbled response_json yields no usable
+        # answers at all. Raising an enquiry from that would put a record reading
+        # "reg TBC, service Panel Beating" on the desk's list for every delivery
+        # Meta retries. The customer is better served by being asked to resend.
+        if not [value for value in data.values() if str(value).strip()]:
+            current_app.logger.warning("Flow response carried no answers (%r)", token)
+            return [text(
+                "Sorry, that form came through empty. Please open it again and send it "
+                "once more — or type *menu* if you would rather just chat."
+            ), more_menu_reply(self.lang)]
+
+        if kind in {"enquiry", "quote", "booking", "book"}:
+            return self._lead_from_flow(data)
+
+        current_app.logger.warning("Flow response with an unknown token %r", token)
+        return [text(
+            "Thank you — we have your details and the front desk will be in touch."
+        ), more_menu_reply(self.lang)]
+
+    @staticmethod
+    def _flow_value(data: dict, *names: str) -> str:
+        """The first non-empty value among ``names``, as trimmed text.
+
+        The field names are ours, but they are also typed into Meta's Flow
+        builder. A rename there must come back empty rather than raise, so every
+        lookup tolerates a miss and callers supply the fallback.
+        """
+        for name in names:
+            value = data.get(name)
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple)):
+                value = ", ".join(str(item) for item in value)
+            shown = str(value).strip()
+            if shown:
+                return shown
+        return ""
+
+    def _lead_from_flow(self, data: dict) -> list[dict]:
+        """Turn a submitted enquiry form into an enquiry.
+
+        Deliberately reuses :meth:`_create_lead` rather than raising the booking
+        here: that method already knows how to find-or-create the customer and
+        the vehicle, price the service, attach the pending media, clear the
+        context and tell the desk. A second copy of that would drift from the
+        chat path within a release.
+        """
+        name = self._flow_value(data, "contact_name", "name")
+        email = self._flow_value(data, "contact_email", "email")
+        reg = self._flow_value(data, "reg_no", "registration").upper().replace(" ", "")
+        service = self._flow_value(data, "service", "service_type")
+        damage = self._flow_value(data, "damage", "description", "details")
+        day = self._flow_value(data, "preferred_date", "date")
+        slot = self._flow_value(data, "preferred_time", "time")
+        vehicle = self._flow_value(data, "vehicle", "vehicle_model")
+
+        # A Flow dropdown carries whatever the builder typed into it, and an
+        # unknown service would raise inside quick_quote. Match what we can and
+        # fall back to the default rather than losing the enquiry.
+        service = (service if service in SERVICE_NAMES else match_service(service)) \
+            or "Panel Beating & Spray Painting"
+
+        notes = [damage or "Submitted the enquiry form on WhatsApp"]
+        if vehicle:
+            notes.append(f"Vehicle: {vehicle}")
+
+        self.conv.ctx_set(
+            reg=reg or "TBC",
+            service=service,
+            damage="\n".join(notes),
+            book_date=day or None,
+            book_time=slot or None,
+            contact_name=name,
+            contact_email=email,
+        )
+        replies = self._create_lead(name, email=email)
+
+        # A form cannot carry a photo, so ask for them explicitly — the damage
+        # pictures are the single most useful thing the desk can receive. Slotted
+        # ahead of the catch-all menu so the order reads confirmation → next step.
+        invitation = text(
+            "One thing the form cannot carry is the pictures.\n\n"
+            "Send photographs of the damage here in the chat — the whole panel, "
+            "then close-ups — and any assessor's report or quotation as a PDF. "
+            "Everything you send is attached to your enquiry."
+        )
+        return replies[:-1] + [invitation] + replies[-1:]
 
     # ── interactive replies (buttons / list rows) ────────────────────────
     def _handle_choice(self, choice: str) -> list[dict]:
@@ -435,6 +656,20 @@ class IntentRouter:
             return self._quotation_decision(choice.split(":", 1)[1], approve=True)
         if choice.startswith("a_decline:"):
             return self._quotation_decision(choice.split(":", 1)[1], approve=False)
+        if choice in {"a_approve", "a_decline", "doc_quote"}:
+            # The `quotation_share` template's quick-reply buttons carry a FIXED
+            # payload — Meta cannot interpolate the estimate id into an approved
+            # template — so the bare ids resolve against the quotation we last
+            # sent on this thread.
+            estimate_id = self.conv.ctx_get("last_estimate_id")
+            if not estimate_id:
+                return self._fallback()
+            if choice == "doc_quote":
+                return self._document_reply(f"doc:quote:{estimate_id}")
+            return self._quotation_decision(str(estimate_id),
+                                            approve=choice == "a_approve")
+        if choice.startswith("doc:"):
+            return self._document_reply(choice)
 
         handlers = {
             "m_quote": self._menu_quote,
@@ -446,10 +681,11 @@ class IntentRouter:
             "m_info": self._menu_info,
             "m_menu": self._go_main_menu,
             "m_services": self._menu_services,
+            "m_form": self._menu_form,
             "m_lang": self._menu_lang,
             "a_approve": lambda: [text(
                 "Great — thank you for approving. We will order the parts and start work. "
-                "We will keep you posted at every stage. 🚗"
+                "We will keep you posted at every stage. "
             )],
             "a_decline": lambda: [text(
                 "Understood. A member of our team will contact you to discuss the quotation."
@@ -516,13 +752,14 @@ class IntentRouter:
             return self._menu_human()
         if intent == "hours":
             return [text(
-                f"🕐 We are open *{self.cfg['COMPANY_HOURS']}*.\n"
-                f"Call: {self.cfg['COMPANY_TEL']} / {self.cfg['COMPANY_MOBILE']}"
+                f"*Opening hours*\n{self.cfg['COMPANY_HOURS']}\n\n"
+                f"*Telephone*\n{self.cfg['COMPANY_TEL']}\n{self.cfg['COMPANY_MOBILE']}"
             )] + [more_menu_reply()]
         if intent == "location":
             return [text(
-                f"📍 {self.cfg['COMPANY_ADDRESS']}\n\n"
-                f"Tel: {self.cfg['COMPANY_TEL']}\nWeb: {self.cfg['COMPANY_WEBSITE']}"
+                f"*Where we are*\n{self.cfg['COMPANY_ADDRESS']}\n\n"
+                f"*Telephone*\n{self.cfg['COMPANY_TEL']}\n"
+                f"*Website*\n{self.cfg['COMPANY_WEBSITE']}"
             )] + [more_menu_reply()]
         if intent == "services":
             return self._menu_services()
@@ -542,7 +779,7 @@ class IntentRouter:
             if customer:
                 customer.whatsapp_opt_in = True
                 db.session.commit()
-            return [text("You are subscribed again. ✅")] + [main_menu_reply(self.company, self.lang)]
+            return [text("You are subscribed again.")] + [main_menu_reply(self.company, self.lang)]
 
         # Unstructured: try to be useful before falling back.
         service = match_service(raw)
@@ -562,22 +799,28 @@ class IntentRouter:
 
     def _menu_info(self) -> list[dict]:
         return [text(
-            f"*{self.company}*\n"
-            f"📍 {self.cfg['COMPANY_ADDRESS']}\n"
-            f"🕐 {self.cfg['COMPANY_HOURS']}\n"
-            f"📞 {self.cfg['COMPANY_TEL']} / {self.cfg['COMPANY_MOBILE']}\n"
-            f"✉️ {self.cfg['COMPANY_EMAIL']}\n"
-            f"🌐 {self.cfg['COMPANY_WEBSITE']}"
+            f"*{self.company}*\n\n"
+            f"*Address*\n{self.cfg['COMPANY_ADDRESS']}\n\n"
+            f"*Opening hours*\n{self.cfg['COMPANY_HOURS']}\n\n"
+            f"*Telephone*\n{self.cfg['COMPANY_TEL']}\n{self.cfg['COMPANY_MOBILE']}\n\n"
+            f"*Email*\n{self.cfg['COMPANY_EMAIL']}\n\n"
+            f"*Website*\n{self.cfg['COMPANY_WEBSITE']}"
         ), more_menu_reply()]
 
     def _menu_services(self) -> list[dict]:
-        lines = ["*Our services*", ""]
-        for idx, name in enumerate(SERVICE_NAMES, start=1):
-            quote = quick_quote(name)
-            price = f" — from USD {quote['from_price']:.0f}" if quote else ""
-            lines.append(f"{idx}. {name}{price}")
-        lines += ["", "Reply with a number or the service name to get a quote."]
-        return [text("\n".join(lines)), main_menu_reply(self.company, self.lang)]
+        """The price list, as a tappable list rather than a numbered block.
+
+        It used to be numbered text telling the customer to "reply with a number",
+        which only the QUOTE_SERVICE state honoured — so at the main menu the
+        number went nowhere. The list removes the need for that instruction.
+
+        Deliberately does NOT enter QUOTE_SERVICE to make typed numbers work. That
+        traps the customer in the service question: "track my repair" typed next is
+        then read as a bad service choice and answered with this same list. Typing a
+        service *name* still works, through the unstructured fallback in
+        ``_handle_text``.
+        """
+        return [service_list_reply(self.lang), main_menu_reply(self.company, self.lang)]
 
     def _menu_lang(self) -> list[dict]:
         # Remember where we were, so choosing a language resumes that step rather
@@ -601,7 +844,7 @@ class IntentRouter:
 
     @staticmethod
     def _language_code(raw: str) -> str | None:
-        """Map "Shona", "chishona", "sn" … onto a language code."""
+        """Map "Shona", "chishona", "sn" onto a language code."""
         words = re.findall(r"[a-z]+", (raw or "").strip().lower())
         for code, names in LANGUAGE_NAMES.items():
             if any(word in names for word in words):
@@ -729,7 +972,7 @@ class IntentRouter:
                     approved_by=f"{customer.name if customer else 'Customer'} (WhatsApp)",
                 )
                 reply = text(
-                    f"🎉 Thank you, {name} — quotation *{estimate.reference}* is approved.\n\n"
+                    f"Thank you, {name} — quotation *{estimate.reference}* is approved.\n\n"
                     f"We will order the parts, book the vehicle into the workshop and keep you "
                     f"updated at every stage."
                 )
@@ -762,6 +1005,60 @@ class IntentRouter:
 
         return [reply, more_menu_reply()]
 
+    def _document_reply(self, choice: str) -> list[dict]:
+        """Customer tapped Download on a quotation, invoice or receipt.
+
+        Nothing is attached here. Meta fetches the link itself when it delivers
+        the message and the ``/doc/...`` route builds the PDF on demand, so the
+        reply is instant, the customer can download the file as many times as
+        they like, and a document that has since been re-issued is never served
+        out of a stale attachment.
+
+        The "Generating..." line goes first because fetching and building the
+        PDF takes a moment on Meta's side, and a button that appears to do
+        nothing is worse than one that says what it is doing.
+        """
+        parts = choice.split(":")
+        if len(parts) != 3:
+            return self._fallback()
+        kind, raw_id = parts[1], parts[2]
+        try:
+            record_id = int(raw_id)
+        except (TypeError, ValueError):
+            return self._fallback()
+
+        # (model, route, the field carrying the number, what the customer calls it)
+        kinds = {
+            "quote": (Estimate, "quote", "reference", "quotation"),
+            "invoice": (Invoice, "invoice", "invoice_no", "invoice"),
+            "receipt": (Payment, "receipt", "receipt_no", "receipt"),
+        }
+        entry = kinds.get(kind)
+        if entry is None:
+            return self._fallback()
+        model, route, number_field, label = entry
+
+        record = db.session.get(model, record_id)
+        token = getattr(record, "public_token", None) if record else None
+        if not token:
+            # A button from a thread that has outlived its document, or one that
+            # was voided. Answer with something a person can act on.
+            return [text(
+                f"I am sorry, that {label} is no longer available. "
+                "Type *menu* if you would like a fresh copy or to speak to the team."
+            )]
+
+        number = getattr(record, number_field, None) or record_id
+        return [
+            text(f"Generating your {label}... one moment."),
+            {
+                "type": "document",
+                "link": public_url(f"/doc/{route}/{token}.pdf"),
+                "filename": f"{label.title()}-{number}.pdf",
+                "caption": f"Your {label} {number}.",
+            },
+        ]
+
     def _menu_human(self) -> list[dict]:
         """Hand the thread to a human *and* leave a ticket behind.
 
@@ -778,7 +1075,7 @@ class IntentRouter:
 
         body = t("handoff", self.lang, hours=self.cfg["COMPANY_HOURS"])
         if task:
-            body += f"\n\n🎫 *Callback ref:* CALL-{task.id:04d}"
+            body += f"\n\n *Callback ref:* CALL-{task.id:04d}"
         return [text(body)]
 
     def _log_callback(self, *, previous_state: str) -> Task | None:
@@ -852,10 +1149,10 @@ class IntentRouter:
         if self.conv.ctx_get("reg"):
             self.conv.state = "QUOTE_DESC"
             db.session.commit()
-            return [text(f"{service} — noted. 👍\n\n" + t("ask_desc", self.lang))]
+            return [text(f"{service} — noted.\n\n" + t("ask_desc", self.lang))]
         self.conv.state = "QUOTE_REG"
         db.session.commit()
-        return [text(f"{service} — noted. 👍\n\n" + t("ask_reg", self.lang))]
+        return [text(f"{service} — noted.\n\n" + t("ask_reg", self.lang))]
 
     def _input_quote_reg(self, raw: str) -> list[dict]:
         match = REG_PATTERN.search(raw.upper())
@@ -984,15 +1281,19 @@ class IntentRouter:
         db.session.add(booking)
         db.session.flush()
 
-        # Photos sent anywhere during the conversation used to be parked in the
-        # context and then silently dropped here. They are the most useful thing
-        # the desk can receive, so each one becomes a row against the enquiry.
-        media = ctx.get("pending_media") or []
-        for url in media:
+        # Attachments sent anywhere during the conversation used to be parked in
+        # the context and then silently dropped here. They are the most useful
+        # thing the desk can receive, so each one becomes a row against the enquiry
+        # — photos and PDFs alike, with the customer's own filename kept.
+        media = self._pending_media()
+        for item in media:
             db.session.add(BookingPhoto(
                 booking_id=booking.id,
-                filename=url.rsplit("/", 1)[-1][:255] or "photo",
-                url=url, kind="DAMAGE", caption="Sent via WhatsApp",
+                filename=(item["url"].rsplit("/", 1)[-1] or "attachment")[:255],
+                url=item["url"],
+                kind=item.get("kind") or "DAMAGE",
+                caption=(item.get("name") or item.get("caption")
+                         or "Sent via WhatsApp")[:255],
                 source="whatsapp",
             ))
 
@@ -1009,11 +1310,11 @@ class IntentRouter:
         if booked_for:
             day_note = (f"*Preferred slot:* {booked_for.strftime('%a %d %b %Y')}"
                         + (f" at {booked_at}" if booked_at else "") + "\n")
-        photo_note = f"*Photos:* {len(media)} received ✅\n" if media else ""
+        photo_note = f"*Attachments:* {len(media)} received\n" if media else ""
         email_note = f"*Email:* {customer.email}\n" if customer.email else ""
         return [
             text(
-                f"✅ Request logged, {customer.name.split()[0]}.\n\n"
+                f"Request logged, {customer.name.split()[0]}.\n\n"
                 f"*Reference:* {booking.reference}\n"
                 f"*Vehicle:* {reg}\n"
                 f"*Service:* {service}{estimate_note}\n"
@@ -1043,27 +1344,30 @@ class IntentRouter:
 
     def _job_status_reply(self, job: JobCard) -> list[dict]:
         progress = STAGE_PROGRESS.get(job.stage, 0)
-        bar_filled = round(progress / 10)
-        bar = "▰" * bar_filled + "▱" * (10 - bar_filled)
+        vehicle = job.vehicle.title if job.vehicle else "Vehicle"
+        reg = job.vehicle.reg_no if job.vehicle else "-"
+        stage = STAGE_LABELS.get(job.stage, job.stage)
+        # No bar. It was ten block characters, which renders as tofu on some
+        # devices and tells the customer nothing a percentage does not.
         lines = [
-            f"*Job card {job.job_no}*",
-            f"🚗 {job.vehicle.title if job.vehicle else 'Vehicle'} ({job.vehicle.reg_no if job.vehicle else '-'})",
+            f"*Job card {job.job_no}*\n{vehicle} ({reg})",
             "",
-            f"*Stage:* {STAGE_LABELS.get(job.stage, job.stage)}",
-            f"{bar} {progress}%",
-            "",
-            STAGE_CUSTOMER_TEXT.get(job.stage, ""),
+            f"*Stage*\n{stage}",
+            f"*Progress*\n{progress}% complete",
         ]
+        note = STAGE_CUSTOMER_TEXT.get(job.stage, "")
+        if note:
+            lines += ["", note]
         blocking = [p for p in job.job_parts if p.is_blocking]
         if blocking:
-            lines += ["", f"⚠️ Waiting on {len(blocking)} part(s): "
-                          + ", ".join(p.description for p in blocking[:3])]
+            names = ", ".join(p.description for p in blocking[:3])
+            lines += ["", f"*Waiting on parts*\n{names}"]
         if job.promised_date:
-            lines += ["", f"📅 Promised date: {job.promised_date.strftime('%d %b %Y')}"]
+            lines += ["", f"*Promised date*\n{job.promised_date.strftime('%d %b %Y')}"]
         if job.stage == "READY":
             invoice = job.outstanding_invoice
             if invoice and invoice.balance > 0:
-                lines += ["", f"💰 Balance due: *{invoice.currency} {invoice.balance:,.2f}*"]
+                lines += ["", f"*Balance due*\n{invoice.currency} {invoice.balance:,.2f}"]
             lines += ["", "Please bring your collection slip and ID."]
 
         self.conv.ctx_set(last_job_no=job.job_no)
@@ -1151,7 +1455,7 @@ class IntentRouter:
         self.conv.ctx_set(book_date=day.isoformat())
         slots = self._time_list(day)
         if not slots:
-            return [text(f"😕 {day.strftime('%a %d %b')} is fully booked. "
+            return [text(f" {day.strftime('%a %d %b')} is fully booked. "
                          "Would another day work?"), self._day_list(service)]
 
         self.conv.state = "BOOK_TIME"
@@ -1186,7 +1490,7 @@ class IntentRouter:
         self.conv.state = "BOOK_CONTACT"
         db.session.commit()
         return [text(
-            f"📅 *{day.strftime('%a %d %b')} at {slot}* — noted.\n\n"
+            f"*{day.strftime('%a %d %b')} at {slot}* — noted.\n\n"
             "Almost done — please send your *name* and a contact number "
             "(or type *skip* to use this WhatsApp number)."
         )]
@@ -1212,14 +1516,14 @@ class IntentRouter:
         invoice = self._customer_invoice()
         owing = ""
         if invoice:
-            owing = (f"\n\nOur records show *{invoice.invoice_no}* with "
-                     f"*{invoice.currency} {invoice.balance:,.2f}* outstanding.")
+            owing = (f"\n\n*Outstanding*\n{invoice.invoice_no} — "
+                     f"{invoice.currency} {invoice.balance:,.2f}")
         return [text(
-            f"💳 *How to pay*\n\n"
+            f"*How to pay*\n\n"
             f"{self.cfg['BANK_DETAILS']}\n"
             f"EcoCash: {self.cfg['ECONET_NUMBER']}{owing}\n\n"
-            "📷 If you have already paid, send a *photo or screenshot of the "
-            "confirmation* now and our front desk will verify it and send your receipt."
+            "If you have already paid, send a photo or screenshot of the confirmation "
+            "and our front desk will verify it and send your receipt."
         )]
 
     def _lookup_invoice(self, raw: str) -> Invoice | None:
@@ -1249,22 +1553,22 @@ class IntentRouter:
         invoice = self._lookup_invoice(raw) or self._customer_invoice()
         if invoice:
             return [text(
-                f"📷 Send a photo or screenshot of the payment for *{invoice.invoice_no}* "
+                f"Send a photo or screenshot of the payment for *{invoice.invoice_no}* "
                 f"(balance *{invoice.currency} {invoice.balance:,.2f}*) and our front desk "
                 "will verify it."
             )]
         return [text(
-            "📷 I need a picture — send the EcoCash confirmation or a photo of the "
+            "I need a picture — send the EcoCash confirmation or a photo of the "
             "deposit slip. Type *menu* if you would rather do something else."
         )]
 
-    def _attach_payment_proof(self, media_url: str) -> list[dict]:
+    def _attach_payment_proof(self, media_url: str, media_name: str | None = None) -> list[dict]:
         invoice = self._customer_invoice()
         if not invoice:
             self.conv.state = "MAIN_MENU"
             db.session.commit()
             return [text(
-                "📷 Thank you. I could not find an invoice with a balance against this "
+                "Thank you. I could not find an invoice with a balance against this "
                 "number, so I have left it with our front desk — they will pick it up "
                 "from this chat."
             ), more_menu_reply()]
@@ -1275,7 +1579,7 @@ class IntentRouter:
             customer_id=customer.id if customer else None,
             filename=media_url.rsplit("/", 1)[-1][:255] or "proof",
             url=media_url,
-            note="Sent via WhatsApp",
+            note=(media_name or "Sent via WhatsApp")[:255],
         ))
         db.session.add(Task(
             title=f"Verify payment proof — {invoice.invoice_no}",
@@ -1297,8 +1601,8 @@ class IntentRouter:
         self.conv.state = "MAIN_MENU"
         db.session.commit()
         return [text(
-            f"✅ Proof received for *{invoice.invoice_no}*.\n\n"
-            f"Balance on record: *{invoice.currency} {invoice.balance:,.2f}*\n\n"
+            f"Proof received for {invoice.invoice_no}.\n\n"
+            f"*Balance on record:* {invoice.currency} {invoice.balance:,.2f}\n\n"
             "Our front desk will check it against our statement and send your receipt. "
             "If anything does not match up, we will call you."
         ), more_menu_reply()]
@@ -1322,17 +1626,18 @@ class IntentRouter:
                    "I could not match a job card to this number — send the job number "
                    "or registration if you have it.")
         return [text(
-            f"🛡️ {WARRANTY_TEXT}\n\n"
+            f"{WARRANTY_TEXT}\n\n"
             f"{context}\n\n"
-            "If something has gone wrong, tell me what it is and send a photo if you can. "
-            "I will log it for the workshop manager."
+            "If something has gone wrong, tell me what it is and send a photo or a PDF "
+            "if you can. I will log it for the workshop manager."
         )]
 
     def _input_warranty_text(self, raw: str) -> list[dict]:
         return self._log_warranty_claim(description=raw.strip()[:500])
 
     def _log_warranty_claim(self, *, description: str = "",
-                            media_url: str | None = None) -> list[dict]:
+                            media_url: str | None = None,
+                            media_name: str | None = None) -> list[dict]:
         """One open claim per conversation: further detail is added to it rather
         than opening a second ticket."""
         customer = self.conv.customer or self._customer_by_wa()
@@ -1366,7 +1671,8 @@ class IntentRouter:
         if description:
             task.detail = f"{task.detail or ''}\nCustomer says: {description}"
         if media_url:
-            task.detail = f"{task.detail or ''}\nPhoto: {media_url}"
+            task.detail = (f"{task.detail or ''}\nAttachment: "
+                           f"{media_name or media_url}")
             if job:
                 # On the job card the photo sits next to the original damage,
                 # which is exactly where the person assessing the claim wants it.
@@ -1374,28 +1680,40 @@ class IntentRouter:
                     job_id=job.id,
                     filename=media_url.rsplit("/", 1)[-1][:255] or "warranty",
                     url=media_url, kind="WARRANTY",
-                    caption="Warranty claim via WhatsApp", source="whatsapp",
+                    caption=(media_name or "Warranty claim via WhatsApp")[:255],
+                    source="whatsapp",
                 ))
 
         db.session.commit()
-        opening = "🛡️ Warranty claim logged" if is_new else "📝 Added to your warranty claim"
+        opening = "Warranty claim logged" if is_new else "Added to your warranty claim"
         return [text(
             f"{opening}"
-            + (f" against *{job.job_no}*" if job else "") + ".\n\n"
+            + (f" against {job.job_no}" if job else "") + ".\n\n"
             "Our workshop manager will review it and come back to you. Keep sending "
             "photos here if that helps, or type *menu* when you are done."
         ), more_menu_reply()]
 
     # ── feedback ─────────────────────────────────────────────────────────
     def _record_feedback(self, choice: str) -> list[dict]:
-        """A tapped rating button, from the post-collection ask."""
+        """A tapped rating button, from the post-collection ask.
+
+        Two id shapes arrive. Inside the service window the buttons are ours, so
+        they carry the job id (`rate:17:5`). On the approved ``job_feedback``
+        template the payload is fixed when the template is approved and can only
+        be `rate:5`, so the job resolves against the thread — which is the one we
+        just asked about.
+        """
         parts = choice.split(":")
         try:
-            job_id, rating = int(parts[1]), int(parts[2])
+            if len(parts) >= 3:
+                job = db.session.get(JobCard, int(parts[1]))
+                rating = int(parts[2])
+            else:
+                job = self._find_job()
+                rating = int(parts[1])
         except (IndexError, ValueError):
             return self._fallback()
 
-        job = db.session.get(JobCard, job_id)
         if not job or rating not in {1, 3, 5}:
             return [text("Thank you — I have passed that on to the workshop."),
                     more_menu_reply()]
@@ -1433,7 +1751,7 @@ class IntentRouter:
             body = (f"Thank you for telling us, {name} — and sorry. The workshop owner "
                     "has been told and somebody will call you today.")
         elif rating == 5:
-            body = f"That means a lot, {name} — thank you. 🙏"
+            body = f"That means a lot, {name} — thank you."
         else:
             body = (f"Thanks for the honest answer, {name}. If there is anything we "
                     "should put right, just reply here.")
@@ -1506,11 +1824,14 @@ def handle_inbound(
     text_body: str | None = None,
     interactive_id: str | None = None,
     media_url: str | None = None,
+    media_name: str | None = None,
+    flow_response: dict | None = None,
     app=None,
 ) -> list[dict]:
     """Run one conversational turn for an inbound message."""
     return IntentRouter(conversation, app=app).handle(
         text_body=text_body, interactive_id=interactive_id, media_url=media_url,
+        media_name=media_name, flow_response=flow_response,
     )
 
 

@@ -138,10 +138,20 @@ Creates a `Customer` (if new), a `Vehicle`, an enquiry (`Booking` with
 
 Points worth knowing:
 
-- **Photos are the point of the flow.** They are held in the conversation context
-  (capped at `MAX_PENDING_PHOTOS` = 8) and written to `booking_photos` when the
-  enquiry is created. They used to be collected and then thrown away, which meant
-  the desk never saw the one thing that lets it price the job.
+- **Attachments: photos *and* PDFs, several of them.** Every inbound `image` or
+  `document` is downloaded to `instance/uploads` and held in the conversation
+  context as `{url, name, kind, caption}`, capped at `MAX_PENDING_MEDIA` = 8 per
+  enquiry (the most recent 8 win). They are written to `booking_photos` when the
+  enquiry is created — `kind` is `DAMAGE` for a picture and `DOCUMENT` for
+  anything else. An inbound `document` carries an original filename from Meta
+  ("assessor report.pdf") and that is what the desk sees, not `wa_<id>.pdf`.
+- **A caption becomes the damage description.** If the customer types "rear door
+  caved in" with the photo, that is stored as the enquiry's description — the
+  media branch runs before the state handlers, so this text used to be discarded.
+  It only fills a blank, so it cannot overwrite a description already given.
+- The Bookings screen shows a **📎 pill** with the count; tapping it opens the
+  viewer (`T.photoViewer`), which draws images and links anything else. In the
+  inbox thread the same rule applies — a PDF is a link, never a broken `<img>`.
 - **The email is optional.** `skip` works, and an address that fails the loose
   regex is treated as a skip rather than looping the customer.
 - The Bookings screen shows a **📷 pill** with the count; tapping it opens the
@@ -404,7 +414,8 @@ FROM notification_log ORDER BY id DESC LIMIT 20;
 ```
 
 `context_json` is the bot's working memory: `reg`, `service`, `damage`, `book_time`,
-`pending_media`, `warranty_task_id`, `strikes`, `lang`, `last_job_no`.
+`pending_media` (a list of `{url, name, kind, caption}`), `warranty_task_id`,
+`strikes`, `lang`, `last_job_no`.
 
 | Symptom | Likely cause |
 |---|---|
