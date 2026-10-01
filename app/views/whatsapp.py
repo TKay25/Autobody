@@ -176,6 +176,33 @@ def _handle_status(status: dict) -> None:
                 f'\n{{"errors": {status["errors"]}}}'
 
 
+def _flow_media(answers: dict) -> list[dict]:
+    """Media the Flow itself collected, from a PhotoPicker or DocumentPicker.
+
+    Meta returns these under the **component's own ``name``** — whatever the Flow
+    builder called it, so ``attachment`` or ``photo_picker`` or anything else —
+    as a list of ``{file_name, mime_type, sha256, id}``. Since the key is the
+    customer's to choose, this looks for the *shape* rather than hard-coding one,
+    and a form with no picker simply yields nothing.
+
+    Each entry is then downloaded through the same ``_download_media`` an inbound
+    chat image or document uses, so the two routes store the same kind of thing
+    and the desk sees one sort of attachment either way.
+    """
+    found: list[dict] = []
+    for value in (answers or {}).values():
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, dict) and item.get("id"):
+                found.append({
+                    "id": str(item["id"]),
+                    "name": str(item.get("file_name") or "")[:120],
+                    "mime": item.get("mime_type"),
+                })
+    return found
+
+
 def _flow_summary(data: dict, limit: int = 300) -> str:
     """A one-line digest of a submitted Flow, for the inbox and the thread.
 
@@ -187,7 +214,11 @@ def _flow_summary(data: dict, limit: int = 300) -> str:
     parts = []
     for key, value in (data or {}).items():
         if isinstance(value, (list, tuple)):
-            value = ", ".join(str(item) for item in value)
+            # A picker's entries are dicts; showing them raw would put a wall of
+            # JSON in the thread. The filenames are the bit worth reading.
+            names = [str(item.get("file_name") or item.get("id"))
+                     for item in value if isinstance(item, dict)]
+            value = ", ".join(names) if names else ", ".join(str(item) for item in value)
         if value is None:
             continue
         shown = str(value).strip()
@@ -246,6 +277,15 @@ def _handle_message(message: dict, contacts: dict) -> str | None:
             if not isinstance(answers, dict):
                 answers = {}
             flow_response = {"flow_token": reply.get("flow_token"), "data": answers}
+            # A Flow's own picker media. Downloaded here, where the network calls
+            # already live, and handed to the router to attach.
+            media = []
+            for entry in _flow_media(answers):
+                url = _download_media(entry["id"], entry["mime"])
+                if url:
+                    media.append({"url": url, "name": entry["name"]})
+            if media:
+                flow_response["media"] = media
             # The row keeps the body the desk reads, so the answers go here too —
             # an enquiry should be understandable from the thread alone.
             text_body = _flow_summary(answers) or "[Form submitted]"

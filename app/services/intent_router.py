@@ -237,6 +237,88 @@ def detect_intent(text: str) -> str | None:
     return None
 
 
+def _flow_key(key: str) -> str:
+    """A payload key reduced to something comparable.
+
+    Meta's builder names components itself (``What_do_you_need_11da7f``) and the
+    completion payload key carries the screen and component index, so an answer
+    arrives as ``screen_0_What_do_you_need_0``. Case, spaces, punctuation and that
+    prefix are all noise when the question is "which answer is the service?".
+    """
+    stripped = re.sub(r"^screen[_\-\s]*\d+[_\-\s]*", "", str(key), flags=re.I)
+    return re.sub(r"[^a-z0-9]", "", stripped.lower())
+
+
+# How a Flow's answer might be labelled, per field we read. Only consulted when
+# the payload does not use our own names — see IntentRouter._flow_value.
+_FLOW_HINTS: dict[str, tuple[str, ...]] = {
+    "service": ("whatdoyouneed", "service", "servicetype", "need"),
+    "vehicle": ("vehiclemakemodel", "makeandmodel", "vehicle", "model", "make"),
+    "reg_no": ("registrationnumber", "registration", "regno", "platenumber", "plate"),
+    "preferred_date": ("whichday", "preferreddate", "bookdate", "date"),
+    "preferred_time": ("whattime", "preferredtime", "booktime", "time"),
+    "notes": ("anythingweshouldknow", "anythingelse", "notes", "comment"),
+    "contact_email": ("email", "contactemail"),
+    "contact_name": ("yourname", "contactname", "fullname", "name"),
+    "damage": ("describe", "damage", "description", "details"),
+}
+
+
+def _flow_answer_text(value) -> str:
+    """A Flow answer as trimmed text, or "" when there is nothing readable."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(item) for item in value)
+    return str(value).strip()
+
+
+def _flow_media_value(value) -> bool:
+    """True for a picker's answer rather than a typed one.
+
+    Meta returns Photo / Document Picker entries as ``[{id, file_name, …}]`` under
+    the component's name. They are downloaded separately, so they must never be
+    read as text — a key called "Photos of the damage" would otherwise satisfy a
+    lookup for the damage *description* and put a wall of JSON on the record.
+    """
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(item, dict) for item in value))
+
+
+def match_flow_service(raw: str) -> str | None:
+    """Resolve a Flow's service answer, which may be decorated.
+
+    A Dropdown returns the option **id**, not its title, and Meta's Flow builder
+    generates those ids from the titles — so what arrives is
+    ``1_Panel_Beating_&_Spray_Painting`` or ``0_Autobody`` rather than the plain
+    name. Matching only the plain name meant every enquiry from a form silently
+    fell back to the default service: a wrong price on a quotation, not an error
+    anybody would notice.
+
+    Compared on letters and digits alone, so "Auto Body", "Autobody" and
+    "0_Autobody" are the same service.
+    """
+    low = (raw or "").strip()
+    if not low:
+        return None
+    if low in SERVICE_NAMES:
+        return low
+    if low.upper() in SERVICE_BY_CODE:
+        return SERVICE_BY_CODE[low.upper()]["name"]
+
+    # The builder prefixes its generated ids with the option's index:
+    # "0_Autobody", "1_Panel_Beating_&_Spray_Painting". Drop that first — the
+    # index is positional, so it would otherwise defeat the comparison entirely.
+    cleaned = re.sub(r"^\d+[\s_\-.]*", "", low)
+    squashed = re.sub(r"[^a-z0-9]", "", cleaned.lower())
+    if not squashed:
+        return None
+    for name in SERVICE_NAMES:
+        if re.sub(r"[^a-z0-9]", "", name.lower()) == squashed:
+            return name
+    return match_service(low)
+
+
 def match_service(text: str) -> str | None:
     """Fuzzy-match a free-text service description to a service line."""
     low = (text or "").strip().lower()
@@ -490,6 +572,38 @@ class IntentRouter:
                             "kind": self._media_kind(item), "caption": ""})
         return out
 
+    def _attach_flow_media(self, media: list[dict]) -> int:
+        """Fold a Flow's own attachments into the pending-media list.
+
+        A picker's files are downloaded by the webhook and arrive here as
+        ``{url, name}``. They go onto the *same* ``pending_media`` list a photo
+        sent in the chat lands on, so ``_create_lead`` writes one kind of
+        ``BookingPhoto`` for both routes — the desk cannot tell, and does not need
+        to.
+
+        Deliberately silent: a chat attachment is acknowledged one at a time, but
+        these arrived as part of a form the customer just submitted, and the form
+        already gets a confirmation. Returns how many were kept.
+        """
+        if not media:
+            return 0
+        entries = self._pending_media()
+        for item in media:
+            url = item.get("url")
+            if not url:
+                continue
+            name = (item.get("name") or "")[:120]
+            entries.append({
+                "url": url,
+                "name": name,
+                "kind": self._media_kind(url, name),
+                "caption": "",
+            })
+        kept = entries[-self.MAX_PENDING_MEDIA:]
+        self.conv.ctx_set(pending_media=kept)
+        db.session.commit()
+        return len(kept)
+
     def _handle_media(self, media_url: str, media_name: str | None = None,
                       caption: str = "") -> list[dict]:
         # While we are waiting for payment proof, an attachment is the answer to the
@@ -544,14 +658,14 @@ class IntentRouter:
     def _menu_form(self) -> list[dict]:
         """Offer the enquiry Flow.
 
-        A Flow gathers the structured answers a free-text chat cannot — the plate,
-        the service, the day — as one tidy payload instead of five messages the
-        desk has to piece together.
+        A Flow gathers the structured answers a free-text chat cannot — the
+        service, the make and model, and photographs of the damage — as one tidy
+        payload instead of five messages the desk has to piece together.
 
-        A Flow **can** carry a file (Meta ships Photo Picker / Document Picker and
-        returns media ids in ``response_json``'s ``attachment`` array), but this
-        Flow does not use them yet, so the bot asks for the photographs straight
-        afterwards — see :meth:`_lead_from_flow`.
+        A Flow **can** carry a file: Meta ships Photo Picker and Document Picker,
+        and the media ids come back inside ``response_json``. They are downloaded
+        in the webhook and attached by :meth:`_handle_flow`, so the desk sees one
+        kind of attachment whether it arrived in chat or through the form.
         """
         flow_id = self.cfg.get("WA_FLOW_ENQUIRY_ID") or ""
         if not flow_id:
@@ -567,7 +681,11 @@ class IntentRouter:
                     "quotation. It takes about a minute.",
             "flow_id": flow_id,
             "flow_token": "enquiry",
-            "screen": "ENQUIRY",
+            # The Flow's own first screen, by its API name. Configurable because
+            # Meta's builder names it (`QUESTION_ONE` by default) and rejects a
+            # screen the Flow does not define — so this is the one string that
+            # has to agree with the builder exactly.
+            "screen": self.cfg.get("WA_FLOW_ENQUIRY_SCREEN") or "QUESTION_ONE",
             "header": "Enquiry form",
             "footer": self.company,
         }]
@@ -595,7 +713,7 @@ class IntentRouter:
                     "appointment. It takes about a minute.",
             "flow_id": flow_id,
             "flow_token": "booking",
-            "screen": "BOOKING",
+            "screen": self.cfg.get("WA_FLOW_BOOKING_SCREEN") or "BOOKING",
             "header": "Booking form",
             "footer": self.company,
         }]
@@ -607,24 +725,32 @@ class IntentRouter:
         same ``_create_lead`` the chat path uses, which already attaches every
         photo and PDF the customer sent before or alongside the form.
 
-        A Flow can also return files of its own in ``data["attachment"]`` (a list
-        of media ids from its Photo / Document Picker). That is **not read here
-        yet** — when it is, each entry becomes a ``BookingPhoto`` the same way a
-        chat attachment does, so the desk sees one kind of attachment either way.
+        A Flow can also return files of its own, from a Photo Picker or Document
+        Picker on the form. The webhook downloads each one before this runs, so
+        they arrive in ``flow["media"]`` and are attached here — the same list a
+        chat attachment goes into, so the desk sees one kind of attachment
+        whichever route it came by.
         """
         token = str(flow.get("flow_token") or "").strip()
         data = flow.get("data") or {}
         if not isinstance(data, dict):
             data = {}
+        # Files the Flow itself collected (PhotoPicker / DocumentPicker). Taken
+        # before the answers are read, so the record that gets raised already has
+        # them in hand — the same list a chat photo would be in.
+        self._attach_flow_media(flow.get("media") or [])
         # The token we set when sending the form is what routes the response.
         # Anything before the first colon names the form: "enquiry:2026-10-01".
         kind = token.split(":", 1)[0].strip().lower()
 
         # Meta owns the payload shape, so a garbled response_json yields no usable
-        # answers at all. Raising an enquiry from that would put a record reading
-        # "reg TBC, service Panel Beating" on the desk's list for every delivery
-        # Meta retries. The customer is better served by being asked to resend.
-        if not [value for value in data.values() if str(value).strip()]:
+        # answers at all. Raising an enquiry from that would put a hollow record on
+        # the desk's list for every delivery Meta retries. The customer is better
+        # served by being asked to resend. A picker does not count as an answer —
+        # it is downloaded separately, and ``str([])`` is truthy, so a form that
+        # carried nothing but an empty picker would otherwise look answered.
+        if not any(_flow_answer_text(value) for key, value in data.items()
+                   if not _flow_media_value(value)):
             current_app.logger.warning("Flow response carried no answers (%r)", token)
             return [text(
                 "Sorry, that form came through empty. Please open it again and send it "
@@ -646,23 +772,55 @@ class IntentRouter:
             "Thank you — we have your details and the front desk will be in touch."
         ), more_menu_reply(self.lang)]
 
-    @staticmethod
-    def _flow_value(data: dict, *names: str) -> str:
-        """The first non-empty value among ``names``, as trimmed text.
+    @classmethod
+    def _flow_value(cls, data: dict, *names: str) -> str:
+        """The first non-empty answer among ``names``, as trimmed text.
 
-        The field names are ours, but they are also typed into Meta's Flow
-        builder. A rename there must come back empty rather than raise, so every
-        lookup tolerates a miss and callers supply the fallback.
+        Two passes, because the payload keys are not ours to choose. Meta's
+        builder names components itself — ``What_do_you_need_11da7f`` — and the
+        completion payload key carries the screen and component index, so the
+        answer arrives as ``screen_0_What_do_you_need_0``. Demanding our own names
+        meant a form that worked perfectly in the builder produced an enquiry with
+        no service and no vehicle: priced against the default card and with nothing
+        saying which car it was about.
+
+        1. **Exactly**, for a payload that does use our names (and every test).
+        2. **By meaning**, comparing on letters and digits alone — so case, spaces,
+           punctuation and the ``screen_<n>_`` prefix are ignored and a key like
+           ``whatdoyouneed0`` still answers a lookup for ``service``.
+
+        A miss returns "" rather than raising: a field the builder named something
+        we cannot place is a blank on the record, not a broken webhook.
         """
         for name in names:
-            value = data.get(name)
-            if value is None:
-                continue
-            if isinstance(value, (list, tuple)):
-                value = ", ".join(str(item) for item in value)
-            shown = str(value).strip()
+            shown = _flow_answer_text((data or {}).get(name))
             if shown:
                 return shown
+
+        if not names:
+            return ""
+
+        # Picker answers are skipped: they are media, not text.
+        answers = {
+            _flow_key(key): value
+            for key, value in (data or {}).items()
+            if not _flow_media_value(value)
+        }
+        if not answers:
+            return ""
+
+        # Longest hint first, so "vehicle make model" is tried before "make" and
+        # cannot be beaten to the answer by a substring of itself.
+        candidates = set(names) | set(_FLOW_HINTS.get(names[0], ()))
+        for hint in sorted(candidates, key=len, reverse=True):
+            needle = _flow_key(hint)
+            if not needle:
+                continue
+            for key, value in answers.items():
+                if needle in key:
+                    shown = _flow_answer_text(value)
+                    if shown:
+                        return shown
         return ""
 
     def _lead_from_flow(self, data: dict) -> list[dict]:
@@ -674,42 +832,57 @@ class IntentRouter:
         context and tell the desk. A second copy of that would drift from the
         chat path within a release.
         """
-        name = self._flow_value(data, "contact_name", "name")
+        name = self._flow_value(data, "contact_name", "name") or self._wa_name()
         email = self._flow_value(data, "contact_email", "email")
-        reg = self._flow_value(data, "reg_no", "registration").upper().replace(" ", "")
         service = self._flow_value(data, "service", "service_type")
+        vehicle = self._flow_value(data, "vehicle", "vehicle_model")
+        # The form no longer asks for either of these: the plate is taken when the
+        # vehicle actually arrives, and the make and model is what the form
+        # collects instead. Both are still read, so a Flow that carries them —
+        # or an install that has not been rebuilt yet — keeps working.
+        reg = self._flow_value(data, "reg_no", "registration").upper().replace(" ", "")
         damage = self._flow_value(data, "damage", "description", "details")
         day = self._flow_value(data, "preferred_date", "date")
         slot = self._flow_value(data, "preferred_time", "time")
-        vehicle = self._flow_value(data, "vehicle", "vehicle_model")
 
-        # A Flow dropdown carries whatever the builder typed into it, and an
-        # unknown service would raise inside quick_quote. Match what we can and
-        # fall back to the default rather than losing the enquiry.
-        service = (service if service in SERVICE_NAMES else match_service(service)) \
-            or "Panel Beating & Spray Painting"
+        # A Flow dropdown carries whatever the builder generated — an option id
+        # like "0_Autobody", not the title. An unrecognised service would raise
+        # inside quick_quote, and a *mis*-recognised one is worse: it prices the
+        # job against the wrong card. Match what we can, then fall back.
+        service = match_flow_service(service) or "Panel Beating & Spray Painting"
 
-        notes = [damage or "Submitted the enquiry form on WhatsApp"]
+        # The make and model leads: with no registration on the form it is the
+        # only thing on the record that says which vehicle this is about.
+        notes = []
         if vehicle:
             notes.append(f"Vehicle: {vehicle}")
+        notes.append(damage or "Submitted the enquiry form on WhatsApp")
 
         self.conv.ctx_set(
             # No "TBC" placeholder: a plate-less form raises a booking with no
             # vehicle rather than a vehicle called TBC. See :meth:`_create_lead`.
             reg=reg,
             service=service,
+            vehicle=vehicle,
             damage="\n".join(notes),
             book_date=day or None,
             book_time=slot or None,
             contact_name=name,
             contact_email=email,
         )
+        # Read BEFORE _create_lead, which clears the list on its way out.
+        form_carried_files = bool(self._pending_media())
+
         replies = self._create_lead(name, email=email)
 
-        # The damage pictures are the single most useful thing the desk can
-        # receive, and this form does not ask for them (a Flow *can* carry files
-        # via its Photo / Document Picker, but ours does not use one yet), so ask
-        # for them here. Slotted ahead of the catch-all menu so the order reads
+        if form_carried_files:
+            # The form's own picker already collected the pictures, so asking for
+            # them again reads as though nobody looked at what was sent. The
+            # confirmation stands on its own.
+            return replies
+
+        # Otherwise ask: the damage pictures are the single most useful thing the
+        # desk can receive. Slotted ahead of the catch-all menu so the order reads
         # confirmation → next step.
         invitation = text(
             "Send us photographs of the damage and we will quote faster.\n\n"
@@ -732,7 +905,7 @@ class IntentRouter:
         then quietly overbooked. The form's dropdown cannot know how full a slot
         is; only we can.
         """
-        name = self._flow_value(data, "contact_name", "name")
+        name = self._flow_value(data, "contact_name", "name") or self._wa_name()
         email = self._flow_value(data, "contact_email", "email")
         reg = self._flow_value(data, "reg_no", "registration").upper().replace(" ", "")
         service = self._flow_value(data, "service", "service_type")
@@ -740,8 +913,7 @@ class IntentRouter:
         slot = self._flow_value(data, "preferred_time", "time")
         notes = self._flow_value(data, "notes", "damage", "description")
 
-        service = (service if service in SERVICE_NAMES else match_service(service)) \
-            or "Panel Beating & Spray Painting"
+        service = match_flow_service(service) or "Panel Beating & Spray Painting"
 
         when = self._parse_book_date(day)
         taken = self._slot_taken(when, slot) if (when and slot) else 0
@@ -1439,6 +1611,23 @@ class IntentRouter:
             return None
         return parsed if parsed >= date.today() else None
 
+    def _wa_name(self) -> str:
+        """The best name we already hold for this customer.
+
+        WhatsApp hands us the profile name on every inbound message
+        (``contacts[].profile.name``, kept on the conversation), so a form does
+        not need to ask for it. Asking for something the customer has already
+        told WhatsApp reads as carelessness, and it is one more field to abandon.
+
+        Falls back to the customer record, then to the number itself — a record
+        must never be created with a blank name, which is what an empty
+        ``contact_name`` used to produce.
+        """
+        customer = self.conv.customer or self._customer_by_wa()
+        return (self.conv.profile_name
+                or (customer.name if customer else "")
+                or f"WhatsApp +{self.conv.wa_id}")
+
     def _create_lead(self, name: str, email: str = "") -> list[dict]:
         ctx = self.conv.context
         # A booking form has no registration field, and a detailing appointment
@@ -1455,6 +1644,12 @@ class IntentRouter:
         # collected and then discarded, so every WhatsApp booking landed on tomorrow.
         booked_for = self._parse_book_date(ctx.get("book_date"))
         booked_at = ctx.get("book_time") or None
+
+        # Never write a blank name. A form that no longer asks for one (the
+        # customer's name comes from WhatsApp) would otherwise create a customer
+        # record with an empty name, which reads as a broken row on every screen
+        # that shows it.
+        name = (name or "").strip() or self._wa_name()
 
         customer = self.conv.customer or self._customer_by_wa()
         if not customer:
@@ -1517,7 +1712,7 @@ class IntentRouter:
 
         self.conv.state = "MAIN_MENU"
         self.conv.ctx_clear("reg", "service", "damage", "book_date", "book_time",
-                            "contact_name", "contact_email", "pending_media")
+                            "contact_name", "contact_email", "pending_media", "vehicle")
         db.session.commit()
 
         estimate_note = ""
@@ -1531,8 +1726,11 @@ class IntentRouter:
         photo_note = f"*Attachments:* {len(media)} received\n" if media else ""
         email_note = f"*Email:* {customer.email}\n" if customer.email else ""
         # Omitted rather than printed as "Vehicle: " — a booking made from the form
-        # often has no plate, and an empty label reads like a missing field.
-        vehicle_note = f"*Vehicle:* {reg}\n" if reg else ""
+        # often has no plate, and an empty label reads like a missing field. The
+        # make and model stands in when there is one, since with no registration
+        # it is all that identifies the vehicle.
+        vehicle_label = reg or (ctx.get("vehicle") or "").strip()
+        vehicle_note = f"*Vehicle:* {vehicle_label}\n" if vehicle_label else ""
         return [
             text(
                 f"Request logged, {customer.name.split()[0]}.\n\n"

@@ -1337,16 +1337,14 @@ def test_a_submitted_enquiry_form_raises_an_enquiry(app, client):
 
 
 def test_attachments_sent_before_the_form_land_on_the_enquiry(app, client):
-    """A submitted form is not the end of the conversation — the pictures still
-    come in the chat.
+    """Pictures sent before the form still land on the enquiry.
 
-    This form does not ask for files (a Flow can carry them via its Photo /
-    Document Picker, but ours does not use one yet), so the bot asks for the
-    damage photos itself.
+    They arrive *before* the form is submitted, so they are sitting in the
+    conversation context. Losing them here would throw away the most useful thing
+    the desk receives.
 
-    They arrive *before* the form is submitted, which means they are sitting in
-    the conversation context. Losing them here would throw away the most useful
-    thing the desk receives.
+    And because the enquiry already has files against it, the bot does **not**
+    ask for photographs afterwards.
     """
     with app.app_context():
         conv = get_or_create_conversation("263773330002", "Picture Sender")
@@ -1369,6 +1367,165 @@ def test_attachments_sent_before_the_form_land_on_the_enquiry(app, client):
         # The customer's own filename survives — "assessor report.pdf" is the
         # only clue the desk has about what the PDF is.
         assert any(p.caption == "assessor report.pdf" for p in photos)
+
+        conv = WaConversation.query.filter_by(wa_id="263773330002").first()
+        spoken = [m.body or "" for m in sorted(conv.messages, key=lambda m: m.id)
+                  if m.direction == "outbound"]
+    assert not any("photographs of the damage" in b for b in spoken), spoken
+
+
+def test_a_form_that_carried_files_does_not_ask_for_them_again(app, client):
+    """Asking again reads as though nobody looked at what was just sent."""
+    client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330031", _picker_answers(names=("damage.jpg",)),
+        message_id="wamid.HASFILES"))
+    with app.app_context():
+        conv = WaConversation.query.filter_by(wa_id="263773330031").first()
+        spoken = [m.body or "" for m in sorted(conv.messages, key=lambda m: m.id)
+                  if m.direction == "outbound"]
+    assert any("Request logged" in b for b in spoken), spoken
+    assert not any("photographs of the damage" in b for b in spoken), spoken
+
+
+def test_a_form_with_no_files_still_asks_for_them(app, client):
+    """The picker is optional, so an empty one must still get the prompt."""
+    client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330032", _picker_answers(names=(), mimes=()),
+        message_id="wamid.NOFILES2"))
+    with app.app_context():
+        conv = WaConversation.query.filter_by(wa_id="263773330032").first()
+        spoken = [m.body or "" for m in sorted(conv.messages, key=lambda m: m.id)
+                  if m.direction == "outbound"]
+    assert any("photographs of the damage" in b for b in spoken), spoken
+
+
+# The payload the builder produced and Meta accepted, verbatim. The picker is
+# deliberately NOT referenced in it — adding that key fails Flow validation with
+# two errors — so no key for the media can be predicted from our side.
+ACCEPTED_FORM_ANSWERS = {
+    "screen_0_What_do_you_need_0": "0_Autobody",
+    "screen_0_Vehicle_Make_Model_1": "Toyota Hilux 2019",
+    "screen_0_Describe_the_enquiry_2": "Someone reversed into the left rear door.",
+}
+
+
+def test_the_accepted_form_payload_raises_a_correct_enquiry(app, client):
+    """The exact keys the live Flow sends, with no picker key at all.
+
+    This is the shape that will really arrive, so it is the one worth pinning: a
+    service id the builder generated, a make and model, a description, and nothing
+    else.
+    """
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330041", ACCEPTED_FORM_ANSWERS, message_id="wamid.ACCEPTED"))
+    assert res.status_code == 200
+
+    with app.app_context():
+        booking = Booking.query.first()
+        assert booking is not None, "the live payload raised no enquiry"
+        assert booking.service == "Auto Body", booking.service
+        assert booking.vehicle_id is None, "a plate-less enquiry got a vehicle"
+        assert BookingPhoto.query.count() == 0, "media appeared from nowhere"
+
+        # The make and model, and the customer's own words, both reach the desk.
+        assert "Toyota Hilux 2019" in (booking.notes or ""), booking.notes
+        assert "reversed into the left rear door" in (booking.notes or ""), booking.notes
+
+
+def test_a_description_named_for_the_enquiry_is_read_as_the_damage(app, client):
+    """The description field is labelled "Describe the enquiry", not "damage".
+
+    It has to be resolved by *meaning* — nothing in the payload key or the label
+    says "damage" — or the one field the desk actually reads lands nowhere. It must
+    also not be mistaken for anything else: no other lookup may claim it.
+    """
+    client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330042", ACCEPTED_FORM_ANSWERS, message_id="wamid.DESCRIBE"))
+
+    with app.app_context():
+        booking = Booking.query.first()
+        assert "reversed into the left rear door" in (booking.notes or ""), booking.notes
+        # Nothing else took it instead.
+        assert booking.slot_time is None, booking.slot_time
+        assert Vehicle.query.count() == 0, "the description became a plate"
+        assert (booking.customer.email or "") == "", booking.customer.email
+
+
+def test_a_blank_description_is_not_an_answer(app, client):
+    """Optional, so an empty one must fall back rather than write blank notes."""
+    answers = dict(ACCEPTED_FORM_ANSWERS, **{"screen_0_Describe_the_enquiry_2": ""})
+    client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330043", answers, message_id="wamid.NODESC"))
+
+    with app.app_context():
+        booking = Booking.query.first()
+        assert booking is not None
+        assert "reversed into" not in (booking.notes or "")
+        assert "Submitted the enquiry form on WhatsApp" in (booking.notes or ""), booking.notes
+
+
+def test_picker_media_is_found_whatever_key_carries_it(app, client):
+    """Which key holds the media is not ours to choose, so do not depend on it.
+
+    The accepted Flow does not reference its picker in the ``complete`` payload,
+    which means the media — if Meta sends it at all — arrives under a key we
+    cannot predict. Meta's own docs show the *component* name (``photo_picker``);
+    the builder generates payload-style keys. Our reader looks for the **shape**
+    instead, so either route attaches the files and neither re-asks for them.
+    """
+    for index, key in enumerate(("Photos_of_the_damage",
+                                 "screen_0_Photos_of_the_damage_2",
+                                 "media")):
+        wa_id = f"26377333005{index}"
+        answers = dict(ACCEPTED_FORM_ANSWERS)
+        answers[key] = [{"file_name": "panel.jpg", "mime_type": "image/jpeg",
+                         "sha256": "PqHgadp8cJ/N6mvAYGNMxhs9Ra5hbZFcctCtCClXsMU=",
+                         "id": f"3631120727158{index:02d}"}]
+
+        assert client.post("/webhooks/whatsapp", json=_flow_payload(
+            wa_id, answers, message_id=f"wamid.PICKERKEY{index}")).status_code == 200
+
+        with app.app_context():
+            conv = WaConversation.query.filter_by(wa_id=wa_id).first()
+            assert conv is not None, f"{key}: the form was not processed"
+            spoken = [m.body or "" for m in sorted(conv.messages, key=lambda m: m.id)
+                      if m.direction == "outbound"]
+            assert any("Request logged" in b for b in spoken), (key, spoken)
+            assert not any("photographs of the damage" in b for b in spoken), \
+                f"{key}: asked for photos it already had"
+
+        # each of the three forms attached exactly one file
+        with app.app_context():
+            assert BookingPhoto.query.count() == index + 1, \
+                f"{key}: {BookingPhoto.query.count()} attachments for {index + 1} forms"
+
+
+def test_the_form_without_a_plate_still_names_the_vehicle(app, client):
+    """`reg_no` and `damage` are off the form; the make and model replaces them.
+
+    With no registration, `Vehicle.reg_no` is NOT NULL, so **no Vehicle record is
+    created at all** — the make and model is all that identifies the car, so it
+    has to reach both the booking notes and the confirmation the customer reads.
+    """
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330033",
+        {"service": "Car Detailing", "vehicle": "Toyota Hilux 2019"},
+        message_id="wamid.VEHONLY"))
+    assert res.status_code == 200
+
+    with app.app_context():
+        booking = Booking.query.first()
+        assert booking is not None
+        assert booking.vehicle_id is None, "a plate-less enquiry got a vehicle"
+        assert Vehicle.query.count() == 0
+        assert "Toyota Hilux 2019" in (booking.notes or "")
+
+        conv = WaConversation.query.filter_by(wa_id="263773330033").first()
+        confirmation = next(m.body for m in conv.messages
+                            if m.direction == "outbound" and "Request logged" in (m.body or ""))
+    assert "*Vehicle:* Toyota Hilux 2019" in confirmation, confirmation
+    # An empty label would read as a missing field.
+    assert "*Vehicle:* \n" not in confirmation, confirmation
 
 
 def test_the_form_prompts_for_the_photographs(app, client):
@@ -1433,6 +1590,109 @@ def test_a_form_that_arrives_empty_is_not_turned_into_an_enquiry(app, client):
         assert Customer.query.count() == 0
 
 
+# The Flow builder names its own components ("What_do_you_need_11da7f") and the
+# completion payload key carries the screen and component index, so a real
+# ``response_json`` key looks like ``screen_0_What_do_you_need_0``. A form pasted
+# out of the builder must work without the builder being renamed to suit us.
+BUILDER_NAMED_ANSWERS = {
+    "screen_0_What_do_you_need_0": "0_Autobody",
+    "screen_0_Vehicle_Make_Model_1": "Toyota Hilux 2019",
+}
+
+
+def test_a_form_named_by_the_meta_builder_still_lands(app, client):
+    """The customer's answers must not be lost to a naming convention.
+
+    Reading only our own field names meant a Flow that worked perfectly in the
+    builder produced an enquiry priced against the default service card and with
+    nothing on it saying which vehicle it was about — a wrong quotation nobody
+    would notice until the customer queried it.
+    """
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330021", BUILDER_NAMED_ANSWERS, message_id="wamid.BUILDER"))
+    assert res.status_code == 200
+
+    with app.app_context():
+        booking = Booking.query.first()
+        assert booking is not None, "a builder-named form raised no enquiry"
+        # "0_Autobody" is the builder's option id, not the service name.
+        assert booking.service == "Auto Body", booking.service
+        assert "Toyota Hilux 2019" in (booking.notes or "")
+
+        spoken = " ".join(m.body or "" for m in
+                          WaMessage.query.filter_by(direction="outbound").all())
+        assert "Toyota Hilux 2019" in spoken, spoken
+
+        # No plate on the form, so no vehicle row — rather than one called "TBC".
+        assert Vehicle.query.count() == 0
+
+
+def test_a_picker_key_is_never_read_as_the_damage_description(app):
+    """ "Photos of the damage" must not answer the question "describe the damage".
+
+    A picker's answer is a list of media objects and its key contains the word
+    "damage". Read as text it would be a wall of JSON in the booking notes and on
+    every screen that shows them.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263773330022", "Picker Owner")
+        intent_router.handle_inbound(conv, flow_response={
+            "flow_token": "enquiry",
+            "data": {
+                "screen_0_What_do_you_need_0": "3_Car_Detailing",
+                "screen_0_Vehicle_Make_Model_1": "Mazda 3",
+                "screen_0_Photos_of_the_damage_2": [
+                    {"id": "9988", "file_name": "panel.jpg", "mime_type": "image/jpeg"},
+                ],
+            },
+        })
+        booking = Booking.query.first()
+        assert booking is not None
+        assert "{" not in (booking.notes or ""), booking.notes
+        assert "file_name" not in (booking.notes or ""), booking.notes
+
+
+def test_an_empty_picker_does_not_count_as_an_answer(app, client):
+    """``str([])`` is truthy, so an unanswered picker used to look answered.
+
+    A form carrying nothing but an empty picker is a form the customer did not
+    fill in, and the desk should not get a hollow record for it.
+    """
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330023",
+        {"screen_0_Photos_of_the_damage_2": []},
+        message_id="wamid.EMPTYPICK"))
+    assert res.status_code == 200
+
+    with app.app_context():
+        assert Booking.query.count() == 0
+        assert Customer.query.count() == 0
+
+
+def test_the_enquiry_form_opens_the_screen_configured_for_it(app):
+    """Meta rejects a screen name the Flow does not define.
+
+    The name lives in the Flow, not in our code, so it is configurable and
+    defaults to what Meta's builder calls the first screen.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263773330024", "Screen Opener")
+        cfg = app.config
+        cfg["WA_FLOW_ENQUIRY_ID"] = "1234567890123456"
+        cfg["WA_FLOW_ENQUIRY_SCREEN"] = "QUESTION_ONE"
+
+        replies = intent_router.handle_inbound(conv, interactive_id="m_form")
+        flow = [r for r in replies if r.get("type") == "flow"]
+        assert flow, replies
+        assert flow[0]["screen"] == "QUESTION_ONE", flow[0]
+
+        # And a rename in Meta is an .env change, not a code change.
+        cfg["WA_FLOW_ENQUIRY_SCREEN"] = "ENQUIRY"
+        replies = intent_router.handle_inbound(conv, interactive_id="m_form")
+        assert [r for r in replies if r.get("type") == "flow"][0]["screen"] == "ENQUIRY"
+        cfg["WA_FLOW_ENQUIRY_ID"] = ""
+
+
 def test_a_flow_with_an_unknown_token_still_answers(app, client):
     """A form we do not recognise must not leave the customer talking to a wall."""
     res = client.post("/webhooks/whatsapp", json=_flow_payload(
@@ -1487,6 +1747,194 @@ def test_a_flow_response_is_not_eaten_by_a_waiting_state(app):
         assert booking is not None, "the form was swallowed by the waiting state"
         assert booking.vehicle.reg_no == "XYZ999"
         assert conv.state == "MAIN_MENU"
+
+
+def test_a_form_that_does_not_ask_for_a_name_uses_the_whatsapp_one(app):
+    """The name comes from WhatsApp, not from a form field.
+
+    WhatsApp sends the profile name with every inbound message, so asking the
+    customer to type it again is one more field to abandon — and an empty
+    ``contact_name`` used to create a customer record with a blank name.
+    """
+    with app.app_context():
+        conversation = get_or_create_conversation("263773330011", "Rudo Chikafu")
+        intent_router.handle_inbound(conversation, flow_response={
+            "flow_token": "enquiry",
+            "data": {"reg_no": "NAM111", "service": "Car Detailing",
+                     "damage": "Interior deep clean"},
+        })
+
+        customer = Customer.query.first()
+        assert customer is not None
+        assert customer.name == "Rudo Chikafu", customer.name
+        assert Booking.query.first().customer_id == customer.id
+
+
+def test_a_form_supplied_name_still_wins_over_the_whatsapp_one(app):
+    """An explicit answer beats an inferred one — the customer typed it."""
+    with app.app_context():
+        conversation = get_or_create_conversation("263773330012", "Rudo C")
+        intent_router.handle_inbound(conversation, flow_response={
+            "flow_token": "enquiry",
+            "data": {"contact_name": "Rudo Chikafu", "reg_no": "NAM222",
+                     "service": "Car Detailing", "damage": "Interior deep clean"},
+        })
+        assert Customer.query.first().name == "Rudo Chikafu"
+
+
+def test_a_customer_record_is_never_created_with_a_blank_name(app):
+    """The safety net, for a form and a conversation with no name at all.
+
+    ``Customer.name`` is NOT NULL, but an empty string satisfies that — so a
+    nameless form used to store a customer whose name rendered as nothing on every
+    screen that shows it.
+    """
+    with app.app_context():
+        conversation = get_or_create_conversation("263773330013")
+        assert conversation.profile_name in (None, "")
+
+        intent_router.handle_inbound(conversation, flow_response={
+            "flow_token": "enquiry",
+            "data": {"reg_no": "NAM333", "service": "Car Detailing",
+                     "damage": "Interior deep clean"},
+        })
+
+        customer = Customer.query.first()
+        assert customer is not None
+        assert customer.name.strip(), "a blank customer name was written"
+        assert customer.name == "WhatsApp +263773330013"
+
+
+def test_the_booking_form_uses_the_whatsapp_name_too(app):
+    with app.app_context():
+        conversation = get_or_create_conversation("263775550005", "Rudo Chikafu")
+        intent_router.handle_inbound(conversation, flow_response={
+            "flow_token": "booking",
+            "data": {k: v for k, v in BOOKING_ANSWERS.items() if k != "contact_name"},
+        })
+        assert Customer.query.first().name == "Rudo Chikafu"
+
+
+def test_an_enquiry_form_with_no_day_does_not_promise_a_slot(app):
+    """Day and time belong on the booking form, not the enquiry.
+
+    With neither collected, the confirmation must not print a preferred slot — and
+    it must not say the booking will be *confirmed*, because nothing was reserved.
+    """
+    with app.app_context():
+        conversation = get_or_create_conversation("263775550006", "No Day")
+        replies = intent_router.handle_inbound(conversation, flow_response={
+            "flow_token": "enquiry",
+            "data": {"reg_no": "NOD111", "service": "Car Detailing",
+                     "damage": "Interior deep clean"},
+        })
+        spoken = "\n".join(r.get("body", "") for r in replies)
+        assert "Preferred slot" not in spoken, spoken
+        assert Booking.query.first().slot_time is None
+
+
+# ── the Flow's own media (PhotoPicker / DocumentPicker) ──────────────────────
+def _picker_answers(*, key="attachment", names=("IMG_5237.jpg",), mimes=("image/jpeg",)):
+    """A submitted form carrying picker media, in Meta's response-message shape."""
+    return {**ENQUIRY_ANSWERS,
+            key: [{"file_name": n, "mime_type": m, "sha256": "PqHgadp8=",
+                   "id": f"3631120727156{index:03d}"}
+                  for index, (n, m) in enumerate(zip(names, mimes))]}
+
+
+def test_a_service_id_from_the_flow_builder_still_resolves(app):
+    """A Dropdown returns the **id**, and the builder decorates it.
+
+    Meta's builder generates option ids from the titles, so the answer arrives as
+    ``0_Autobody`` / ``1_Panel_Beating_&_Spray_Painting`` rather than the plain
+    name. Matching only the plain name made every form enquiry fall back to the
+    default service — a wrong price, not a visible error.
+    """
+    assert intent_router.match_flow_service("0_Autobody") == "Auto Body"
+    assert intent_router.match_flow_service(
+        "1_Panel_Beating_&_Spray_Painting") == "Panel Beating & Spray Painting"
+    assert intent_router.match_flow_service("6_Car_Vinyl_Wrapping") == "Car Vinyl Wrapping"
+    # ...and the plain forms still work.
+    assert intent_router.match_flow_service("Auto Body") == "Auto Body"
+    assert intent_router.match_flow_service("Autobody") == "Auto Body"
+    assert intent_router.match_flow_service("panel_spray") == "Panel Beating & Spray Painting"
+    assert intent_router.match_flow_service("AUTO_BODY") == "Auto Body"
+    # A genuinely odd answer still degrades instead of raising.
+    assert intent_router.match_flow_service("Respray") == "Panel Beating & Spray Painting"
+
+
+def test_the_worst_case_id_is_the_one_that_used_to_misfile(app):
+    """`auto_body` and `0_Autobody` both used to become Panel & Paint.
+
+    Nothing in the synonym table matches "auto", so Auto Body — the first option
+    in the list, and the one a customer picks by default — silently landed on the
+    wrong rate card.
+    """
+    with app.app_context():
+        conversation = get_or_create_conversation("263773330021", "Auto Body Picker")
+        intent_router.handle_inbound(conversation, flow_response={
+            "flow_token": "enquiry",
+            "data": {"reg_no": "AUT111", "service": "0_Autobody",
+                     "damage": "Kerbed the front bumper."},
+        })
+        assert Booking.query.first().service == "Auto Body"
+
+
+def test_files_the_flow_collected_become_enquiry_attachments(app, client):
+    """The picker's media has to land on the record, not vanish.
+
+    Meta delivers it under the component's own name — the customer's to choose —
+    so the webhook finds it by shape and downloads each entry exactly like a photo
+    sent in the chat. Same `BookingPhoto`, so the desk cannot tell the routes apart.
+    """
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330022",
+        _picker_answers(names=("IMG_5237.jpg", "IMG_5238.jpg", "report.pdf"),
+                        mimes=("image/jpeg", "image/jpeg", "application/pdf")),
+        message_id="wamid.PICKER", token="enquiry"))
+    assert res.status_code == 200
+
+    with app.app_context():
+        booking = Booking.query.first()
+        assert booking is not None
+        photos = booking.photos
+        assert len(photos) == 3, [p.caption for p in photos]
+        # A picture is DAMAGE; the report is DOCUMENT.
+        kinds = sorted(p.kind for p in photos)
+        assert kinds == ["DAMAGE", "DAMAGE", "DOCUMENT"], kinds
+        assert any(p.caption == "report.pdf" for p in photos), [p.caption for p in photos]
+
+
+def test_a_flow_component_that_is_not_a_picker_is_ignored(app, client):
+    """Shape, not name — so an ordinary list answer cannot be mistaken for media."""
+    answers = {**ENQUIRY_ANSWERS, "colours": ["red", "blue"]}
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330023", answers, message_id="wamid.NOTMEDIA"))
+    assert res.status_code == 200
+    with app.app_context():
+        assert Booking.query.first().photos == []
+
+
+def test_a_picker_with_no_files_attached_still_raises_the_enquiry(app, client):
+    """The picker is optional, so submitting without it must be normal."""
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330024", _picker_answers(names=(), mimes=()),
+        message_id="wamid.NOFILES"))
+    assert res.status_code == 200
+    with app.app_context():
+        booking = Booking.query.first()
+        assert booking is not None
+        assert booking.photos == []
+
+
+def test_the_inbox_summary_shows_attachment_names_not_json(app, client):
+    """The thread is read by a person, so a picker must not dump raw JSON in it."""
+    from app.views.whatsapp import _flow_summary
+
+    summary = _flow_summary(_picker_answers(names=("damage.jpg",)))
+    assert "damage.jpg" in summary, summary
+    assert "{" not in summary, summary
+    assert "sha256" not in summary, summary
 
 
 # ── offering the Flow ────────────────────────────────────────────────────────
@@ -1598,12 +2046,17 @@ def test_the_webhook_writes_the_flow_it_was_handed(app, client, monkeypatch):
 
     enquiry = flows[0]["interactive"]["action"]["parameters"]
     assert enquiry["flow_id"] == "1234567890123456"
-    assert enquiry["flow_action_payload"] == {"screen": "ENQUIRY"}
+    # The screen name comes from config, because Meta's builder names it and Meta
+    # rejects a screen the Flow does not define. The default is what the builder
+    # calls the first screen of a Flow pasted from our own JSON.
+    assert enquiry["flow_action_payload"] == {
+        "screen": app.config["WA_FLOW_ENQUIRY_SCREEN"]}
     assert enquiry["flow_token"] == "enquiry"
 
     booking = flows[1]["interactive"]["action"]["parameters"]
     assert booking["flow_id"] == "9999999999999999"
-    assert booking["flow_action_payload"] == {"screen": "BOOKING"}
+    assert booking["flow_action_payload"] == {
+        "screen": app.config["WA_FLOW_BOOKING_SCREEN"]}
     assert booking["flow_token"] == "booking"
 
 

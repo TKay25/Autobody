@@ -91,11 +91,20 @@ class Config:
     # form" menu row is simply not offered until a form has actually been built —
     # a row that opens nothing is worse than no row.
     WA_FLOW_ENQUIRY_ID = os.getenv("WA_FLOW_ENQUIRY_ID", "")
+    # The **first screen's API name** inside that Flow. Meta rejects a screen the
+    # Flow does not define, so this must match the builder exactly. Meta's own
+    # builder names the first screen `QUESTION_ONE`, and that is the default here
+    # for the same reason: a Flow built by pasting the JSON we hand over is the
+    # common case, and a mismatch is a form that will not open at all. Change it
+    # in `.env` if you rename the screen.
+    WA_FLOW_ENQUIRY_SCREEN = os.getenv("WA_FLOW_ENQUIRY_SCREEN", "QUESTION_ONE")
     # The booking Flow's id. A second Flow rather than a second screen on the
     # first: one asks what is wrong with the vehicle and collects damage, the
     # other asks which day suits and collects a slot. Each is offered in the menu
     # only once its own id is configured.
     WA_FLOW_BOOKING_ID = os.getenv("WA_FLOW_BOOKING_ID", "")
+    # Same rule as the enquiry Flow's screen name.
+    WA_FLOW_BOOKING_SCREEN = os.getenv("WA_FLOW_BOOKING_SCREEN", "BOOKING")
     WA_GRAPH_URL = os.getenv("WA_GRAPH_URL", "https://graph.facebook.com")
     WA_SESSION_WINDOW_HOURS = 24
 
@@ -159,7 +168,9 @@ class TestConfig(Config):
     # real secret leaking in here would 403 every unsigned webhook test.
     WA_APP_SECRET = ""
     WA_FLOW_ENQUIRY_ID = ""
+    WA_FLOW_ENQUIRY_SCREEN = "QUESTION_ONE"
     WA_FLOW_BOOKING_ID = ""
+    WA_FLOW_BOOKING_SCREEN = "BOOKING"
     SECRET_KEY = "test-secret"
     # Keep hashing cheap in tests; production uses Werkzeug's scrypt default.
     PASSWORD_HASH_METHOD = "pbkdf2:sha256:1000"

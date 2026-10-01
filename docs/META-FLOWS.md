@@ -39,11 +39,16 @@ CHAT PATH  (states in WaConversation.state)
 
 FORM PATH
   The customer taps "Enquiry form" -> the ENQUIRY screen opens inside WhatsApp.
+  It asks three things: the service, the vehicle make and model, and photographs
+  (optional). The name is not asked — it is already known from the profile.
   On submit, _lead_from_flow() writes the same context and calls the SAME
-  _create_lead(), then asks for the photographs in the chat.
+  _create_lead(), attaching any photographs the Flow carried. If the Flow carried
+  none, the chat then invites them; if it carried some, it does not ask again.
 
 RAISED
   Customer + Vehicle found or created        (plate normalised, never "TBC")
+  A plate-less enquiry records NO Vehicle — Vehicle.reg_no is NOT NULL, and the
+  make and model stand in as the vehicle label until the car arrives.
   Booking: TC-ENQ-…, status REQUESTED, source whatsapp
   Every attachment sent at any point, up to 8, attached
 
@@ -56,8 +61,9 @@ CUSTOMER GETS
   was given, the attachment count if anything was sent, the email if one was
   captured. Closing line: the front desk will confirm the booking and send the
   firm quotation during business hours. Plus "Anything else I can help with?".
-  The form path gets one extra message before the menu: send photographs of the
-  damage, and any assessor's report as a PDF.
+  The form path gets one extra message before the menu — and only when the Flow
+  carried no photographs: send photographs of the damage, and any assessor's
+  report as a PDF.
 ```
 
 ### Booking request — "I want to bring it in on a day"
@@ -158,35 +164,66 @@ its confirmation must not read like one.
 
 ### To wire the picker up, two things are needed
 
-1. **Meta side** — add a `PhotoPicker` (and, for the assessor's report, a
-   `DocumentPicker`) to the `ENQUIRY` screen, and include `attachment` in the
-   screen's `complete` payload so it reaches us in `response_json`.
-2. **Code side** — read `data["attachment"]` in `IntentRouter._lead_from_flow`,
-   download each entry from `GET /{media-id}` with the access token, and store it
-   as a `BookingPhoto` against the enquiry — the same shape the chat route already
-   creates, so the desk sees one kind of attachment either way.
+1. **Meta side** — put a `PhotoPicker` (or a `DocumentPicker`, for the assessor's
+   report too) on the form's screen. See section 4 for the exact component.
+   > ⚠️ **Leave it out of the `complete` payload.** Referencing the picker there
+   > fails validation with two `Flow JSON errors`. See section 4 for the detail and
+   > what it means for delivery.
+2. **Code side** — the webhook finds any answer holding a **list of objects with
+   an `id`** (`_flow_media` in `app/views/whatsapp.py`), downloads each entry from
+   `GET /{media-id}` with the access token, and hands them to
+   `IntentRouter._attach_flow_media`, which parks them with anything sent in chat
+   so both routes produce the same `BookingPhoto`. **Already built and tested.**
+   The name of the component does not matter — it is found by shape — and picker
+   answers are excluded from the text lookups, so a key reading "Photos of the
+   damage" can never be read as a damage description.
 
-Confirm the exact component property names on Meta's *media upload* guide before
-pasting any JSON: this document has already been wrong once about this feature.
+⚙️ **Status: code done.** Both routes are covered by tests
+(`test_a_form_that_carried_files_does_not_ask_for_them_again`,
+`test_a_picker_key_is_never_read_as_the_damage_description`). Whether the picker
+delivers without a payload entry is unverified — see section 4.
 
 
-### The field **API names** are a contract with this code
+### The field **API names** do **not** have to be a contract
 
-They are typed by you into the builder and read by
-`IntentRouter._flow_value`. A misspelling does **not** raise — that field simply
-arrives empty and the record is raised without it. Use the names below exactly.
+The answers are resolved by **meaning**, so you can leave the builder's own names
+in place. Keys are compared on letters and digits alone with the `screen_<n>_`
+prefix dropped, so all of these answer a lookup for the service:
 
-| Our field | Also accepted (aliases) | Read by |
+| Key that arrives | Why it is found |
+|---|---|
+| `service` | exact |
+| `service_type` | exact alias |
+| `screen_0_What_do_you_need_0` | normalises to `whatdoyouneed0`; matched by hint |
+| `What_do_you_need_11da7f` | normalises to `whatdoyouneed11da7f`; matched by hint |
+
+Exact names are tried first, then the hints in `_FLOW_HINTS`
+(`app/services/intent_router.py`). Picker answers are skipped entirely — they are
+media, not text — and a field nothing matches is a blank on the record, never an
+exception.
+
+| Field | Also accepted | Read by |
 |---|---|---|
-| `contact_name` | `name` | both forms |
-| `contact_email` | `email` | both forms |
-| `reg_no` | `registration` | both forms |
-| `service` | `service_type` | both forms |
-| `preferred_date` | `date` | both forms |
-| `preferred_time` | `time` | both forms |
-| `damage` | `description`, `details` | request form |
-| `vehicle` | `vehicle_model` | request form |
-| `notes` | `damage`, `description` | booking form |
+| `service` | `service_type`, anything reading "what do you need" | both forms |
+| `vehicle` | `vehicle_model`, anything reading "vehicle make model" | request form |
+| *(picker)* | **any name** — found by shape, not by name | request form |
+| `contact_email` | `email` | *optional* |
+| `notes` | `damage`, `description`, "anything we should know" | booking form |
+| `preferred_date` | `date`, "which day" | booking form |
+| `preferred_time` | `time`, "what time" | booking form |
+| `contact_name` | `name`, "your name" | *optional* — falls back to the WhatsApp profile name |
+| `reg_no` | `registration`, "registration number" | *optional* — the plate is taken on arrival |
+| `damage` | `description`, `details` | *optional* — folded into the booking notes |
+
+The last three are no longer asked for by either form, but the code still reads
+them, so a Flow that carries them keeps working.
+
+**Why this is tolerant rather than strict.** It used to demand our own names
+exactly. A Flow that worked perfectly in the builder then arrived with no service
+and no vehicle — an enquiry priced against the default card, with nothing on it
+saying which car it was about. Nothing raised; it just quietly mispriced the
+quotation. Renaming the builder's components to suit the code was the wrong fix,
+so the code reads them instead (`test_a_form_named_by_the_meta_builder_still_lands`).
 
 The aliases exist so a rename on your side degrades instead of breaking. Prefer
 the left-hand column.
@@ -198,14 +235,22 @@ the left-hand column.
 | | **Request form** | **Booking form** |
 |---|---|---|
 | Flow name in Meta | `Request form` | `Booking form` |
-| Screen API name | `ENQUIRY` | `BOOKING` |
+| Screen API name | `QUESTION_ONE` *(configurable)* | `BOOKING` *(configurable)* |
+| Env var for its screen name | `WA_FLOW_ENQUIRY_SCREEN` | `WA_FLOW_BOOKING_SCREEN` |
 | `flow_token` sent by the app | `enquiry` | `booking` |
 | Env var for its Flow ID | `WA_FLOW_ENQUIRY_ID` | `WA_FLOW_BOOKING_ID` |
 | Menu row it appears as | `Enquiry form` | `Booking form` |
-| Asks for | plate, service, damage, day | service, day, time |
-| Photographs | asked for afterwards, in chat | not asked for |
+| Asks for | service, make & model, photos | service, day, time |
+| Name | **from WhatsApp** | **from WhatsApp** |
+| Photographs | in the Flow's picker; asked for in chat only if none came | not asked for |
 | Ends with | "the desk will call you back" | "the desk confirms your appointment" |
 | Record raised | Booking, `REQUESTED`, source `whatsapp` | same, with the chosen slot |
+
+> **The screen name comes from the Flow, so it lives in config, not in code.**
+> Meta's builder names the first screen `QUESTION_ONE` and *rejects* a screen name
+> the Flow does not define — the form simply will not open. The default matches
+> what the builder generates, so a Flow pasted from section 4 works with no `.env`
+> change at all. Rename the screen in Meta and you set one variable.
 
 Both forms raise the **same kind of record** — there is no separate Enquiry model
 in this app; an enquiry *is* a `Booking` with status `REQUESTED`.
@@ -221,64 +266,148 @@ in this app; an enquiry *is* a `Booking` with status `REQUESTED`.
 | Name | `Request form` |
 | Category | `Lead generation` (any category works; nothing reads it) |
 | Endpoint URL | **leave empty** — not a data-exchange Flow |
-| Screen API name | `ENQUIRY` — must match exactly |
+| Screen API name | `QUESTION_ONE` — the builder's default. Set `WA_FLOW_ENQUIRY_SCREEN` if you rename it |
+| `data_api_version` | **omit** — that is only for Flows with an endpoint |
+| `routing_model` | **omit** — one screen, so there is nothing to route between |
 
-### 2.2 Screen `ENQUIRY` — fields
+### 2.2 Screen `QUESTION_ONE` — fields
 
-| # | Label shown to the customer | API name | Component | Required |
+The left column is what the customer sees and the middle is what the builder
+chose. **None of it needs to match our code**, because the answers are resolved by
+meaning — see section 4.
+
+| # | Label shown to the customer | Component `name` | Component | Required |
 |---|---|---|---|---|
-| 1 | Your name | `contact_name` | Text input | **yes** |
-| 2 | Mobile or email | `contact_email` | Text input | no |
-| 3 | Registration number | `reg_no` | Text input | **yes** |
-| 4 | Vehicle | `vehicle` | Text input | no |
-| 5 | What do you need? | `service` | Dropdown | **yes** |
-| 6 | Describe the damage | `damage` | Text area | **yes** |
-| 7 | Preferred day | `preferred_date` | Date picker | no |
-| 8 | Preferred time | `preferred_time` | Dropdown | no |
+| 1 | What do you need | `What_do_you_need_11da7f` | Dropdown | **yes** |
+| 2 | Vehicle Make, Model | `Vehicle_Make_Model_2e7fab` | Text input | **yes** |
+| 3 | Describe the enquiry | `Describe_the_enquiry` | Text area | no |
+| 4 | Photos of the damage or vehicle | `Photos_of_the_damage` | Photo picker (or Document picker) | no |
+
+Options for the dropdown are in section 2.3; the picker is section 2.5. There is
+**no** name, registration, day, time or email field.
+
+- **No name field.** WhatsApp sends the profile name with every inbound message
+  and we keep it on the conversation, so the form does not ask for it — see
+  `IntentRouter._wa_name()`. Asking for something the customer has already told
+  WhatsApp is one more field to abandon.
+- **No registration.** The plate is taken when the vehicle actually arrives.
+  > ⚠️ **Consequence:** `Vehicle.reg_no` is `NOT NULL`, so an enquiry with no plate
+  > records **no Vehicle at all** — the make and model is the only thing identifying
+  > the car. It is written to the booking notes (`Vehicle: Toyota Hilux 2019`) and
+  > shown in the customer's confirmation, but a later job card for that customer
+  > will not link to an existing vehicle record.
+- **The description is back, in the customer's own words.** It sits **above** the
+  picker so the customer says what happened first and then shows it. It is read as
+  the damage description, so it lands on the booking notes the desk works from.
+- **No day and no time.** Those belong on the **booking** form, where holding a
+  slot is the entire point. An enquiry is "tell us what you need"; it should not
+  hint at a reservation the shop has not agreed.
+- **No email.** The quotation is sent to the WhatsApp thread, which is where the
+  customer is already.
+
+Any of those fields **would** still be read if a Flow carried one, so an install
+running the earlier draft keeps working rather than quietly dropping answers.
 
 Copy to type in, verbatim:
 
 ```
-Title:        Tell us about your vehicle
-Footer label: Send to Topclass
+Screen title: EQUIRY FORM
+Footer label: Continue
 ```
 
-Optional helper text for field 6 (`Describe the damage`) — set it as the field's
-`helper-text`:
+### 2.3 Dropdown `What_do_you_need_11da7f` — the options
 
+These are the seven service lines from `app/constants.py → SERVICES`, with the
+option ids the builder generated. **Leave those ids exactly as they are** — they
+are what the dropdown returns, and `match_flow_service()` resolves them back to
+service names by comparing letters and digits alone.
+
+> **Leave the builder's ids alone.** A Dropdown returns the **id**, not the
+> title, and our parser matches the answer against the service names — so a
+> code-style id like `auto_body` silently misprices the job: nothing in the
+> synonym table matches "auto", so it falls through to *Panel Beating & Spray
+> Painting*. `match_flow_service()` compares on **letters and digits alone** and
+> strips the leading index, so both of the builder's own forms resolve:
+>
+> | Option id | Resolves to |
+> |---|---|
+> | `0_Autobody` | Auto Body |
+> | `1_Panel_Beating_&_Spray_Painting` | Panel Beating & Spray Painting |
+> | `3_Car_Detailing` | Car Detailing |
+>
+> If you hand-write a JSON, `id` = `title` (`"Auto Body"` / `"Auto Body"`) is
+> equally safe and reads better in the builder's dropdown.
+
+| Titles, in the builder's order |
+|---|
+| `Autobody` |
+| `Panel Beating & Spray Painting` |
+| `Rebuilds & Performance Upgrades` |
+| `Car Detailing` |
+| `Ceramic Coating` |
+| `Paint Protection Film` |
+| `Car Vinyl Wrapping` |
+
+An unrecognised service still raises the enquiry against the default service
+rather than being lost — but it misprices the job, so use these strings exactly.
+
+### 2.4 There is no `preferred_time` on this form
+
+The nine workshop slots (`app/constants.py → BOOKING_SLOTS`: `08:00` through
+`16:00`) are offered on the **booking** form only. The enquiry form has no day and
+no time.
+
+### 2.5 The file field — `DocumentPicker` or `PhotoPicker`, never both
+
+**One media component per screen.** Meta rejects a screen carrying both a
+`PhotoPicker` and a `DocumentPicker`: *"You can only have a maximum of 1
+component of type PhotoPicker or DocumentPicker per screen."*
+
+Use a **single `DocumentPicker`** if you want the damage pictures *and* an
+assessor's PDF: `allowed-mime-types` is what lets the customer pick from their
+gallery, and including `image/jpeg` is what enables photo picking.
+
+```json
+{
+  "type": "DocumentPicker",
+  "name": "Photos_of_the_damage",
+  "label": "Photos of the damage or vehicle",
+  "description": "A picture of the whole panel and a close-up. An assessor's report or existing quotation can go here as a PDF too.",
+  "max-file-size-kb": 25600,
+  "min-uploaded-documents": 0,
+  "max-uploaded-documents": 10,
+  "allowed-mime-types": ["image/jpeg", "image/png", "application/pdf"]
+}
 ```
-The panel, and what happened. Photos come next, in the chat.
-```
 
-### 2.3 Dropdown `service` — the options
-
-These are the seven service lines from `app/constants.py → SERVICES`. The answer
-is matched against them to pick the rate card, so use these strings **exactly**:
-
-| Option id (builder) | Title (shown) |
+| Property | Notes |
 |---|---|
-| `auto_body` | Auto Body |
-| `panel_spray` | Panel Beating & Spray Painting |
-| `rebuild` | Rebuilds & Performance Upgrades |
-| `detail` | Car Detailing |
-| `ceramic` | Ceramic Coating |
-| `ppf` | Paint Protection Film |
-| `wrap` | Car Vinyl Wrapping |
+| `type` | `DocumentPicker` (or `PhotoPicker` for photos only, camera included) |
+| `name` | the component's name on the screen — **not** the key in `response_json`. Our code does not read it by name; it finds media by shape. Keep the same value as the `PhotoPicker` it replaces. |
+| `label` | max 80 chars |
+| `description` | max 300 chars |
+| `max-file-size-kb` | default 25600 (25 MiB); range 1–25600 |
+| `min-uploaded-documents` | 0 makes it optional, >0 makes it required |
+| `max-uploaded-documents` | range 1–30 — **but a response message carries at most 10 files, totalling 100 MiB**, so cap it at 10 |
+| `allowed-mime-types` | include `image/jpeg` to allow gallery photos; `application/pdf` for the report |
 
-> A mismatch is survivable — an unrecognised service falls back to *Panel Beating
-> & Spray Painting* rather than losing the enquiry — but it silently misprices the
-> job, so use the titles above.
+The `PhotoPicker` alternative adds `photo-source` (`camera_gallery` default,
+`camera`, or `gallery`) and uses `min-uploaded-photos` /
+`max-uploaded-photos` instead — but it takes **photos only**, no PDFs.
 
-### 2.4 Dropdown `preferred_time` — the options
+**It must sit at the top level of the `complete` payload.** Nesting it is an
+error, and so is putting it in a `navigate` payload:
 
-These are the workshop's nine slots (`app/constants.py → BOOKING_SLOTS`):
-
+```json
+"on-click-action": {
+  "name": "complete",
+  "payload": {
+    "attachment": "${form.attachment}"
+  }
+}
 ```
-08:00   09:00   10:00   11:00   12:00   13:00   14:00   15:00   16:00
-```
 
-`preferred_date` must send an ISO date (`YYYY-MM-DD`), which the date picker does
-by default.
+It also cannot be pre-filled (`init-values` is rejected for both pickers).
 
 ---
 
@@ -295,15 +424,20 @@ by default.
 
 ### 3.2 Screen `BOOKING` — fields
 
-| # | Label shown to the customer | API name | Component | Required |
-|---|---|---|---|---|
-| 1 | Your name | `contact_name` | Text input | **yes** |
-| 2 | Mobile or email | `contact_email` | Text input | no |
-| 3 | Registration number | `reg_no` | Text input | **no** |
-| 4 | What do you need? | `service` | Dropdown | **yes** |
-| 5 | Which day? | `preferred_date` | Date picker | **yes** |
-| 6 | What time? | `preferred_time` | Dropdown | **yes** |
-| 7 | Anything we should know? | `notes` | Text area | no |
+| # | Label shown to the customer | API name | Component | Required | Notes |
+|---|---|---|---|---|---|
+| 1 | What do you need? | `service` | Dropdown | **yes** | options in section 2.3 |
+| 2 | Which day? | `preferred_date` | Date picker | **yes** | `min-date` = today |
+| 3 | What time? | `preferred_time` | Dropdown | **yes** | the nine slots |
+| 4 | Registration number | `reg_no` | Text input | no | `helper-text`: `Optional` |
+| 5 | Anything we should know? | `notes` | Text area | no | |
+| 6 | Email for the confirmation | `contact_email` | Text input | no | `input-type`: `email` |
+
+**This is where a day and a time belong** — holding a slot is the entire point of
+the booking form, and both are required here.
+
+**Still no name field.** Same reason as the enquiry form: the WhatsApp profile
+name is already on the conversation, and `_wa_name()` uses it.
 
 Copy to type in, verbatim:
 
@@ -319,14 +453,27 @@ Notes on the deliberate choices:
   than a vehicle called "TBC" — that placeholder used to litter the vehicles list.
 - **`notes` is not `damage`.** It is free text for "parked under a tree", not a
   damage description, and the confirmation wording follows from that.
-- The date picker in the builder can carry a **minimum date**. Set it to today so
-  a customer cannot request a slot in the past; a past date is dropped by the
-  parser and the desk is told to confirm the day instead.
+- **Set the date picker's minimum to today**, so a customer cannot request a slot
+  in the past. A past date is dropped by the parser and the desk is told to
+  confirm the day instead.
 
 ### 3.3 Dropdowns
 
-`service` and `preferred_time` take **exactly the same options** as section 2.3
-and 2.4.
+`service` takes **exactly the same options** as section 2.3 — including the rule
+about `id` and `title` being the same string.
+
+`preferred_time` offers the workshop's nine slots (`app/constants.py →
+BOOKING_SLOTS`), and here **`id` and `title` are naturally identical**:
+
+| id **and** title |
+|---|
+| `08:00` · `09:00` · `10:00` · `11:00` · `12:00` · `13:00` · `14:00` · `15:00` · `16:00` |
+
+> **Cap it at these nine.** The value is stored straight onto the booking as its
+> slot with no validation, so a form offering `17:30` would record a time the shop
+> does not work. Capacity (2 vehicles a slot) is checked by the code, not by the
+> dropdown — a full slot is accepted and the customer is told the desk will offer
+> the nearest alternative.
 
 > **A slot can be full.** The dropdown cannot know how many vehicles are already
 > booked into a time — only the app can. So the app checks capacity when the form
@@ -351,17 +498,17 @@ Every component's value is referenced as `${form.<api name>}`.
 {
   "name": "complete",
   "payload": {
-    "contact_name": "${form.contact_name}",
-    "contact_email": "${form.contact_email}",
-    "reg_no": "${form.reg_no}",
-    "vehicle": "${form.vehicle}",
-    "service": "${form.service}",
-    "damage": "${form.damage}",
-    "preferred_date": "${form.preferred_date}",
-    "preferred_time": "${form.preferred_time}"
+    "screen_0_What_do_you_need_0": "${form.What_do_you_need_11da7f}",
+    "screen_0_Vehicle_Make_Model_1": "${form.Vehicle_Make_Model_2e7fab}",
+    "screen_0_Describe_the_enquiry_2": "${form.Describe_the_enquiry}"
   }
 }
 ```
+
+**The three typed answers, and only those.** No `contact_name` (it comes from
+WhatsApp), no `reg_no` (taken on arrival), no day or time (the booking form's job)
+— and **not the picker**, which is the one that trips people up. Referencing
+`${form.Photos_of_the_damage}` here fails validation; see the note in section 4.
 
 ### Booking form
 
@@ -369,7 +516,6 @@ Every component's value is referenced as `${form.<api name>}`.
 {
   "name": "complete",
   "payload": {
-    "contact_name": "${form.contact_name}",
     "contact_email": "${form.contact_email}",
     "reg_no": "${form.reg_no}",
     "service": "${form.service}",
@@ -382,41 +528,213 @@ Every component's value is referenced as `${form.<api name>}`.
 
 ### A skeleton you can paste into the JSON editor
 
-Both Flows are one screen. Switch the builder to **JSON** and use this as a
-starting point. **Keep the `version` the builder generated for you** — Meta
-changes it between releases, and the value below is only a placeholder.
+Both Flows are one screen. Switch the builder to **JSON** and use the blocks
+below as-is. **Keep the `version` the builder generated for you** — Meta changes
+it between releases, and `7.3` is only what these were authored against.
+
+Nothing here needs a data endpoint: no `data_api_version`, no `routing_model`,
+Endpoint URL empty.
+
+#### Flow 1 — Request form
+
+**This is the exact JSON Meta accepted, verified in the builder on 1 Oct 2026.**
+Do not "improve" it: the shape below is what validates, and two plausible-looking
+variants do **not** (see the note after it).
 
 ```json
 {
-  "version": "7.0",
+  "screens": [
+    {
+      "data": {},
+      "id": "QUESTION_ONE",
+      "layout": {
+        "children": [
+          {
+            "children": [
+              {
+                "type": "TextBody",
+                "text": "Kindly provide the details required below for your enquiry"
+              },
+              {
+                "data-source": [
+                  {
+                    "id": "0_Autobody",
+                    "title": "Autobody"
+                  },
+                  {
+                    "id": "1_Panel_Beating_&_Spray_Painting",
+                    "title": "Panel Beating & Spray Painting"
+                  },
+                  {
+                    "id": "2_Rebuilds_&_Performance_Upgrades",
+                    "title": "Rebuilds & Performance Upgrades"
+                  },
+                  {
+                    "id": "3_Car_Detailing",
+                    "title": "Car Detailing"
+                  },
+                  {
+                    "id": "4_Ceramic_Coating",
+                    "title": "Ceramic Coating"
+                  },
+                  {
+                    "id": "5_Paint_Protection_Film",
+                    "title": "Paint Protection Film"
+                  },
+                  {
+                    "id": "6_Car_Vinyl_Wrapping",
+                    "title": "Car Vinyl Wrapping"
+                  }
+                ],
+                "label": "What do you need",
+                "name": "What_do_you_need_11da7f",
+                "required": true,
+                "type": "Dropdown"
+              },
+              {
+                "input-type": "text",
+                "label": "Vehicle Make, Model",
+                "name": "Vehicle_Make_Model_2e7fab",
+                "required": true,
+                "type": "TextInput",
+                "helper-text": "Kindly provide the vehicle make and model"
+              },
+              {
+                "type": "TextArea",
+                "name": "Describe_the_enquiry",
+                "label": "Describe the enquiry",
+                "required": false,
+                "helper-text": "Tell us briefly what has happened or what you need"
+              },
+              {
+                "type": "PhotoPicker",
+                "name": "Photos_of_the_damage",
+                "label": "Photos of the damage or vehicle",
+                "description": "A picture of the whole panel and one close-up. You can pick from your gallery.",
+                "photo-source": "camera_gallery",
+                "min-uploaded-photos": 0,
+                "max-uploaded-photos": 8,
+                "max-file-size-kb": 25600
+              },
+              {
+                "label": "Continue",
+                "on-click-action": {
+                  "name": "complete",
+                  "payload": {
+                    "screen_0_What_do_you_need_0": "${form.What_do_you_need_11da7f}",
+                    "screen_0_Vehicle_Make_Model_1": "${form.Vehicle_Make_Model_2e7fab}",
+                    "screen_0_Describe_the_enquiry_2": "${form.Describe_the_enquiry}"
+                  }
+                },
+                "type": "Footer"
+              }
+            ],
+            "name": "flow_path",
+            "type": "Form"
+          }
+        ],
+        "type": "SingleColumnLayout"
+      },
+      "terminal": true,
+      "title": "EQUIRY FORM"
+    }
+  ],
+  "version": "7.3"
+}
+```
+
+### ⚠️ Two things that look wrong but are right, and one that is not
+
+**1. The `Form` wrapper stays, and the picker lives *inside* it.** This looks like
+it should break the rule that a `Form`'s children are "Form components" — but Meta
+accepts it. Removing the wrapper is unnecessary; do not do it.
+
+**2. The picker is deliberately absent from the `complete` payload.** Adding
+`"screen_0_Photos_of_the_damage_2": "${form.Photos_of_the_damage}"` produces
+**two `Flow JSON errors`** — one against the picker, one against the footer that
+follows it, which is why the builder underlines the payload block. Meta's docs
+suggest a picker *may* be referenced in a `complete` payload; in this Flow, on this
+version, it is rejected. Omitting it is the shape that validates.
+
+> ⚠️ **Consequence, and it matters.** The completion payload is what becomes
+> `response_json`, so a picker that is not referenced there may never reach us —
+> the customer would attach photos and the desk would see none. Our side handles
+> **both** outcomes and needs no change either way (`_flow_media` in
+> `app/views/whatsapp.py` finds media by *shape*, under any key):
+>
+> - photos arrive → they are downloaded and attached, and the bot does **not**
+>   re-ask for them (`test_a_form_that_carried_files_does_not_ask_for_them_again`);
+> - photos do not arrive → the bot asks for them in chat, exactly as it does today
+>   (`test_a_form_with_no_files_still_asks_for_them`).
+>
+> **Test it once from a real phone before the demo:** submit the form with one
+> photo and watch the thread. Either the enquiry lands with the photo attached, or
+> the bot asks for photos — both are correct, but you want to know which you have.
+
+**3. The title says `EQUIRY FORM`.** That is a typo for `ENQUIRY` and it is the
+heading the customer reads at the top of the form. It is harmless to our code —
+nothing reads it — so it is your call. Worth fixing before a client sees it.
+
+Note that the payload key and the component's `name` are **different strings** —
+`screen_0_What_do_you_need_0` versus `What_do_you_need_11da7f`. That is how the
+builder works and our reader handles it either way:
+
+- the **answer** is looked up tolerantly. Keys are compared on letters and digits
+  alone with the `screen_<n>_` prefix dropped, so `screen_0_What_do_you_need_0`
+  answers a lookup for the service and `screen_0_Vehicle_Make_Model_1` answers one
+  for the vehicle, whatever the builder happened to call them. Exact names are
+  still tried first.
+- the **picker** is found by *shape*, not by name — any answer holding a list of
+  objects with an `id` is media, downloaded and attached. It is also excluded from
+  the text lookups, so a key reading "Photos of the damage" can never be mistaken
+  for a damage description.
+
+To accept an assessor's PDF as well, swap that component for the
+`DocumentPicker` in section 2.5. Keep the `name` as it is. It is one **or** the
+other, never both. Expect the same "not in the payload" behaviour.
+
+#### Flow 2 — Booking form
+
+A new Flow, so there is no builder output to preserve — this one **is** written by
+hand, and uses our own field names. That is equally fine: the reader tries exact
+names first. Note that it has no picker; an appointment is not a damage report.
+
+```json
+{
+  "version": "7.3",
   "screens": [
     {
       "id": "BOOKING",
-      "title": "Book your appointment",
+      "title": "BOOKING FORM",
       "terminal": true,
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
-          { "type": "TextInput", "name": "contact_name", "label": "Your name",
-            "required": true, "input-type": "text" },
-          { "type": "TextInput", "name": "contact_email", "label": "Mobile or email",
-            "required": false, "input-type": "text" },
-          { "type": "TextInput", "name": "reg_no", "label": "Registration number",
-            "required": false, "input-type": "text" },
-          { "type": "Dropdown", "name": "service", "label": "What do you need?",
+          {
+            "type": "Dropdown",
+            "name": "service",
+            "label": "What do you need",
             "required": true,
             "data-source": [
-              { "id": "auto_body", "title": "Auto Body" },
-              { "id": "panel_spray", "title": "Panel Beating & Spray Painting" },
-              { "id": "rebuild", "title": "Rebuilds & Performance Upgrades" },
-              { "id": "detail", "title": "Car Detailing" },
-              { "id": "ceramic", "title": "Ceramic Coating" },
-              { "id": "ppf", "title": "Paint Protection Film" },
-              { "id": "wrap", "title": "Car Vinyl Wrapping" }
-            ] },
-          { "type": "DatePicker", "name": "preferred_date", "label": "Which day?",
-            "required": true },
-          { "type": "Dropdown", "name": "preferred_time", "label": "What time?",
+              { "id": "Auto Body", "title": "Auto Body" },
+              { "id": "Panel Beating & Spray Painting", "title": "Panel Beating & Spray Painting" },
+              { "id": "Rebuilds & Performance Upgrades", "title": "Rebuilds & Performance Upgrades" },
+              { "id": "Car Detailing", "title": "Car Detailing" },
+              { "id": "Ceramic Coating", "title": "Ceramic Coating" },
+              { "id": "Paint Protection Film", "title": "Paint Protection Film" },
+              { "id": "Car Vinyl Wrapping", "title": "Car Vinyl Wrapping" }
+            ]
+          },
+          {
+            "type": "DatePicker",
+            "name": "preferred_date",
+            "label": "Which day?",
+            "required": true
+          },
+          {
+            "type": "Dropdown",
+            "name": "preferred_time",
+            "label": "What time?",
             "required": true,
             "data-source": [
               { "id": "08:00", "title": "08:00" },
@@ -428,14 +746,37 @@ changes it between releases, and the value below is only a placeholder.
               { "id": "14:00", "title": "14:00" },
               { "id": "15:00", "title": "15:00" },
               { "id": "16:00", "title": "16:00" }
-            ] },
-          { "type": "TextArea", "name": "notes",
-            "label": "Anything we should know?", "required": false },
-          { "type": "Footer", "label": "Request appointment",
+            ]
+          },
+          {
+            "type": "TextArea",
+            "name": "notes",
+            "label": "Anything we should know?",
+            "required": false,
+            "helper-text": "Optional"
+          },
+          {
+            "type": "TextInput",
+            "name": "reg_no",
+            "label": "Registration number",
+            "required": false,
+            "input-type": "text",
+            "helper-text": "Optional"
+          },
+          {
+            "type": "TextInput",
+            "name": "contact_email",
+            "label": "Email for the confirmation",
+            "required": false,
+            "input-type": "email",
+            "helper-text": "Optional"
+          },
+          {
+            "type": "Footer",
+            "label": "Request appointment",
             "on-click-action": {
               "name": "complete",
               "payload": {
-                "contact_name": "${form.contact_name}",
                 "contact_email": "${form.contact_email}",
                 "reg_no": "${form.reg_no}",
                 "service": "${form.service}",
@@ -443,7 +784,8 @@ changes it between releases, and the value below is only a placeholder.
                 "preferred_time": "${form.preferred_time}",
                 "notes": "${form.notes}"
               }
-            } }
+            }
+          }
         ]
       }
     }
@@ -451,8 +793,10 @@ changes it between releases, and the value below is only a placeholder.
 }
 ```
 
-For the request form, change `id` to `ENQUIRY`, swap `notes` for `damage`
-(TextArea) and add `vehicle` (TextInput), and use the section 4 payload.
+**Do not add `"init-values"` to a picker** — Meta rejects it. `min-date` on the
+date picker needs a data endpoint to express "today", so it is left off; a past
+date typed anyway is dropped by the parser and the desk is told to confirm the
+day instead (section 3.3).
 
 ---
 
@@ -461,14 +805,24 @@ For the request form, change `id` to `ENQUIRY`, swap `notes` for `damage`
 1. The `nfm_reply` arrives at `/webhooks/whatsapp`. The `flow_token` decides
    which form it was: anything before a colon names it, so `enquiry:2026-10-01`
    is still the request form.
-2. **A form with no usable answers is rejected.** The customer is asked to resend
-   rather than the desk getting a record reading "reg TBC". This matters because
-   Meta retries a delivery that does not get a 200.
-3. Customer and vehicle are found or created; the plate is normalised, so
-   `adz 4477` becomes `ADZ4477`.
-4. Any attachments sent earlier in the chat are attached to the record.
-5. The record is raised — `TC-ENQ-…`, status `REQUESTED`, source `whatsapp`.
-6. The customer gets the reference, then the form-specific closing line.
+2. **A form whose answers are all blank is rejected.** The customer is asked to
+   resend rather than the desk getting a hollow record for every delivery Meta
+   retries. (Meta retries a delivery that does not get a 200.)
+3. **The Flow's own media is downloaded first**, from the picker entries, and
+   parked with anything the customer already sent in chat — one list, capped at
+   8. See `_flow_media()` in `app/views/whatsapp.py`.
+4. Customer and vehicle are found or created. **No plate is asked for any more**, so
+   a plate-less enquiry records **no Vehicle** (`Vehicle.reg_no` is `NOT NULL`) and
+   the make and model is the vehicle label. If a Flow does carry a plate it is
+   normalised, so `adz 4477` becomes `ADZ4477`.
+5. **The customer's name comes from the WhatsApp profile name** — neither form asks
+   for it (`IntentRouter._wa_name()`), and it falls back to the number so a record
+   is never written with a blank name.
+6. The record is raised — `TC-ENQ-…`, status `REQUESTED`, source `whatsapp` — with
+   every attachment in hand.
+7. The customer gets the reference, then the form-specific closing line. The
+   request form adds the "send us photographs" invitation **only if the Flow
+   carried none** — a customer who already sent pictures is not asked twice.
 
 Verified end to end, both forms, in `tests/test_whatsapp_bot.py`.
 
@@ -485,7 +839,16 @@ Verified end to end, both forms, in `tests/test_whatsapp_bot.py`.
    | Request form | `WA_FLOW_ENQUIRY_ID` |
    | Booking form | `WA_FLOW_BOOKING_ID` |
 
-3. Restart. The menu row appears **only** once its own id is configured — a row
+3. Only if you renamed the screen in Meta, set its **API name** too — the
+   defaults are what the builder calls the first screen of each form, so a Flow
+   pasted from section 4 needs nothing here:
+
+   | Flow | Variable | Default |
+   |---|---|---|
+   | Request form | `WA_FLOW_ENQUIRY_SCREEN` | `QUESTION_ONE` |
+   | Booking form | `WA_FLOW_BOOKING_SCREEN` | `BOOKING` |
+
+4. Restart. The menu row appears **only** once its own id is configured — a row
    that opens nothing is worse than no row at all. Until then the row falls back
    to the equivalent chat flow, which does the same job in more messages.
 
@@ -500,8 +863,12 @@ that, Meta requires an approved template with a **Flow button**:
 
 | Template | Flow button | Screen | Token |
 |---|---|---|---|
-| `enquiry_form` | *Open form* | `ENQUIRY` | `enquiry` |
+| `enquiry_form` | *Open form* | `QUESTION_ONE` | `enquiry` |
 | `booking_form` | *Book now* | `BOOKING` | `booking` |
+
+The screen column must match the Flow exactly, and both are configurable
+(`WA_FLOW_ENQUIRY_SCREEN` / `WA_FLOW_BOOKING_SCREEN`) because a template's Flow
+button carries its own copy of the screen name.
 
 The first is documented as template 12 in `docs/META-SETUP.md`. A companion
 `booking_form` template is listed there as an optional extra — build it if you

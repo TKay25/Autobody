@@ -317,7 +317,12 @@ Tap the button below to tell us about your vehicle and what you need. It takes
 about a minute, and our front desk will call you back with a firm quotation.
 ```
 
-Button → Flow action `Navigate`, screen `ENQUIRY`, flow token `enquiry`.
+Button → Flow action `Navigate`, screen `QUESTION_ONE`, flow token `enquiry`.
+
+> The screen name here must match the Flow exactly — Meta rejects a screen the
+> Flow does not define and the form will not open. `QUESTION_ONE` is what Meta's
+> own builder calls the first screen; if you rename it, set
+> `WA_FLOW_ENQUIRY_SCREEN` to match, because the app sends the name too.
 
 ### 13. `booking_form` — optional
 
@@ -340,7 +345,7 @@ Button → Flow action `Navigate`, screen `BOOKING`, flow token `booking`.
 ## Part 2 — The Flows
 
 > **This part is superseded by `docs/META-FLOWS.md`.** There are now **two**
-> Flows — the Request form (`ENQUIRY`) and the Booking form (`BOOKING`) — and the
+> Flows — the Request form (`QUESTION_ONE`) and the Booking form (`BOOKING`) — and the
 > service list below is out of date. Build them from `docs/META-FLOWS.md`; this
 > section is kept only so a reader who follows an old link is pointed somewhere
 > useful.
@@ -357,34 +362,39 @@ The chat-based fallback described below still works and is still what runs today
 
 So the design is:
 
-1. The customer fills in **the form** — plate, service, description, day.
-2. The bot then **asks for the photographs in the chat**, and any photo or PDF
-   they send is attached to the enquiry automatically.
+1. The customer fills in **the form** — service, vehicle make & model, and
+   (optionally) photographs of the damage, inside the Flow's own picker.
+2. If the Flow carried no photographs, the bot then **asks for them in the chat**,
+   and any photo or PDF they send is attached to the enquiry automatically.
 
-You do **not** need to do anything to enable step 2 — it already works, keeps up
-to the **last 8 attachments**, and accepts images and PDFs together. A customer
-who sends 3 damage photos plus an assessor's PDF gets all 4 attached to the
-enquiry with their own filenames kept.
+You do **not** need to do anything to enable the chat fallback — it already works,
+keeps up to the **last 8 attachments**, and accepts images and PDFs together. A
+customer who sends 3 damage photos plus an assessor's PDF gets all 4 attached to
+the enquiry with their own filenames kept.
 
 ### The screen and fields
 
-The Flow needs **one screen with the API name `ENQUIRY`** (the code opens
-`flow_action_payload.screen = "ENQUIRY"`).
+The Flow needs **one screen**, and **the screen's API name must match what the app
+sends** — Meta rejects a screen the Flow does not define, so the form simply will
+not open. Meta's builder calls the first screen `QUESTION_ONE`, which is the
+default; `WA_FLOW_ENQUIRY_SCREEN` overrides it.
 
-These field names must be used **exactly** — they are what
-`IntentRouter._lead_from_flow` reads. Misspelling one does not raise; that field
-simply arrives empty.
+⚠️ **The field names do not need to match the app.** They are read by meaning —
+see `docs/META-FLOWS.md` §0 — so the builder's own names work as they are. The
+form asks for **three** things, because the name comes from the WhatsApp profile
+and the plate is taken when the car arrives.
 
-| Field label in the builder | API name (must match) | Component | Required |
+| Field label in the builder | Component `name` (the builder's is fine) | Component | Required |
 |---|---|---|---|
-| Your name | `contact_name` | Text input | yes |
-| Mobile or email | `contact_email` | Text input | no |
-| Registration number | `reg_no` | Text input | yes |
-| Vehicle | `vehicle` | Text input | no |
-| What do you need? | `service` | Dropdown | yes |
-| Describe the damage | `damage` | Text area | yes |
-| Preferred day | `preferred_date` | Date picker | no |
-| Preferred time | `preferred_time` | Dropdown | no |
+| What do you need | `What_do_you_need_11da7f` | Dropdown | **yes** |
+| Vehicle Make, Model | `Vehicle_Make_Model_2e7fab` | Text input | **yes** |
+| Describe the enquiry | `Describe_the_enquiry` | Text area | no |
+| Photos of the damage or vehicle | `Photos_of_the_damage` | `PhotoPicker` or `DocumentPicker` | no |
+
+**The names are resolved by meaning**, so a rename in the builder degrades to a
+blank on the record rather than an error. The `enquiry_form` template's *Open
+form* button must point at the same screen the app names — `QUESTION_ONE` by
+default.
 
 **`service`** must offer the service lines exactly as they appear in the app
 (`app/constants.py → SERVICES`), because the answer is matched against them
@@ -398,26 +408,30 @@ to pick the rate card:
 - Paint Protection Film
 - Car Vinyl Wrapping
 
-**`preferred_time`** should offer the workshop's slots: `08:00`, `09:00`,
-`10:00`, `11:00`, `12:00`, `13:00`, `14:00`, `15:00`, `16:00`.
-
-**`preferred_date`** must send an ISO date (`YYYY-MM-DD`), which is what the
-date picker gives you by default.
+Set each option's **`id` and `title` to the same string**: a Dropdown returns the
+`id`, so `auto_body` would silently fall through to *Panel Beating & Spray
+Painting*. There are no day, time or registration fields on the enquiry form —
+those belong to the **booking** form.
 
 An unrecognised `service` is handled gracefully — the enquiry is still raised
 against the default service rather than being lost.
+
+> **`docs/META-FLOWS.md` is the authoritative spec** for both Flows: field tables,
+dropdown options, completion payloads and a JSON skeleton you can paste in.
 
 ### What happens when it is submitted
 
 1. Customer and vehicle are found or created (the plate is normalised, so
    `adz 4477` becomes `ADZ4477`).
 2. An **enquiry** is raised: `TC-ENQ-…`, status `REQUESTED`, source `whatsapp`.
-3. Every attachment sent earlier in the chat is attached to it.
-4. The customer gets a confirmation with the reference, then a prompt for photos.
+3. Every attachment is attached to it — the Flow's own picker files **and**
+   anything sent earlier in the chat, in one list.
+4. The customer gets a confirmation with the reference. The photo prompt follows
+   **only when the Flow carried no files**.
 
-A form that arrives empty or garbled is **not** turned into an enquiry — the
-customer is asked to resend, rather than the desk getting a record reading
-"reg TBC".
+A form whose answers are all blank is **not** turned into an enquiry — the
+customer is asked to resend, rather than the desk getting a hollow record for
+every retry.
 
 ### Wiring the Flow up
 
@@ -488,12 +502,11 @@ are handled.
 - [ ] `booking_reminder`: **Move it** (`b_move`) + **Cancel appointment**
       (`b_cancel`)
 - [ ] `job_feedback`: Excellent / Okay / Poor
-- [ ] `enquiry_form`: Flow button pointing at the published Enquiry Flow
-- [ ] Create the **Enquiry form** Flow with screen `ENQUIRY` and the field names above
-- [ ] Publish the Flow, copy its id
-- [ ] Set `WA_FLOW_ENQUIRY_ID` on the host and restart
-- [ ] Build the **Booking form** Flow per `docs/META-FLOWS.md` and set
-      `WA_FLOW_BOOKING_ID`; each menu row appears only once its id is set
+- [ ] `enquiry_form`: Flow button pointing at the published Request form Flow
+- [ ] Create the **Request form** Flow — screen `QUESTION_ONE`, one screen, three fields
+- [ ] Create the **Booking form** Flow — screen `BOOKING` (see `docs/META-FLOWS.md`)
+- [ ] Publish both Flows and copy their ids — a menu row appears only once its id is set
+- [ ] Set `WA_FLOW_ENQUIRY_ID` and `WA_FLOW_BOOKING_ID` on the host and restart
 - [ ] Set `WA_APP_SECRET` — still outstanding, and the webhook currently accepts
       unsigned posts, so anyone who learns the URL can forge a customer message
 - [ ] `PUBLIC_BASE_URL` must be public HTTPS: Meta fetches every PDF itself
