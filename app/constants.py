@@ -217,6 +217,14 @@ BOOKING_STATUS_LABELS = {
 # Still waiting on the customer or the workshop — used by the end-of-day report.
 BOOKING_OPEN_STATUSES = ["REQUESTED", "CONFIRMED", "ATTENDED", "ARRIVED"]
 
+# Appointments the workshop is still expecting but that have not turned up yet.
+# This is the set that *holds a slot* and the set a customer can still move or
+# cancel -- ARRIVED is excluded from both, because the vehicle is already on the
+# floor. One name rather than the same three strings written out in the slot
+# counter, the reminder job and the bot: if they ever disagreed, the bot would
+# offer a time the floor cannot take.
+BOOKING_EXPECTED_STATUSES = ["REQUESTED", "CONFIRMED", "ATTENDED"]
+
 # How a visit actually ended. Recorded once the customer has come through, so
 # the workshop can separate a job it won from one the customer walked away from.
 BOOKING_OUTCOMES = {

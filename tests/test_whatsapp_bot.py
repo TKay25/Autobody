@@ -6,7 +6,7 @@ import hmac
 import json
 from datetime import date, datetime, timedelta
 
-from app.constants import BOOKING_SLOT_CAPACITY
+from app.constants import BOOKING_EXPECTED_STATUSES, BOOKING_SLOT_CAPACITY
 from app.extensions import db
 from app.models import (Booking, BookingPhoto, Customer, Estimate, Invoice, JobCard, JobPhoto,
                         NotificationLog, PaymentProof, Task, Vehicle, WaConversation,
@@ -1337,7 +1337,12 @@ def test_a_submitted_enquiry_form_raises_an_enquiry(app, client):
 
 
 def test_attachments_sent_before_the_form_land_on_the_enquiry(app, client):
-    """A Flow cannot upload a file, so the pictures come in the chat.
+    """A submitted form is not the end of the conversation — the pictures still
+    come in the chat.
+
+    This form does not ask for files (a Flow can carry them via its Photo /
+    Document Picker, but ours does not use one yet), so the bot asks for the
+    damage photos itself.
 
     They arrive *before* the form is submitted, which means they are sitting in
     the conversation context. Losing them here would throw away the most useful
@@ -1367,7 +1372,7 @@ def test_attachments_sent_before_the_form_land_on_the_enquiry(app, client):
 
 
 def test_the_form_prompts_for_the_photographs(app, client):
-    """The Flow cannot carry a file, so the bot has to ask for one."""
+    """A form submission does not skip the photo request."""
     client.post("/webhooks/whatsapp", json=_flow_payload("263773330003",
                                                         ENQUIRY_ANSWERS))
     with app.app_context():
@@ -2101,3 +2106,299 @@ def test_the_pay_via_ecocash_button_answers_with_the_payment_details(app, auth_c
         assert f"{invoice.balance:,.2f}" in text, text
         # And it leaves the customer where a payment screenshot is captured.
         assert conversation.state == "PAYMENT_PROOF"
+
+
+# ── the reminder's Move it / Cancel appointment buttons ──────────────────────
+WA_NUMBER = "263776660001"
+
+
+def _appointment(app, *, wa_id=WA_NUMBER, days=1, slot="09:00", status="CONFIRMED"):
+    """A customer with one appointment coming up. Returns the booking id."""
+    with app.app_context():
+        customer = Customer(name="Tariro Moyo", phone=f"+{wa_id}", whatsapp=f"+{wa_id}")
+        db.session.add(customer)
+        db.session.flush()
+        booking = Booking(customer_id=customer.id, service="Car Detailing",
+                          slot_date=date.today() + timedelta(days=days),
+                          slot_time=slot, status=status, source="whatsapp")
+        db.session.add(booking)
+        db.session.commit()
+        return booking.id
+
+
+def _open_window(app, wa_id=WA_NUMBER):
+    with app.app_context():
+        from app.models import utcnow
+
+        conversation = get_or_create_conversation(wa_id, "Tariro Moyo")
+        conversation.last_inbound_at = utcnow()
+        db.session.commit()
+
+
+def _tap(app, choice, wa_id=WA_NUMBER):
+    with app.app_context():
+        conversation = get_or_create_conversation(wa_id)
+        return intent_router.handle_inbound(conversation, interactive_id=choice)
+
+
+def test_the_reminder_offers_move_and_cancel(app):
+    """Inside the window the pair is free-form; outside it they ride on the
+    approved template. Either way the customer gets the same two buttons.
+
+    *Move it* is first and *Cancel appointment* second on purpose: the
+    destructive one is not the one a thumb lands on.
+    """
+    _appointment(app)
+    _open_window(app)
+
+    with app.app_context():
+        booking = Booking.query.first()
+        assert notifications.notify_booking_reminder(booking) is True
+        conversation = get_or_create_conversation(WA_NUMBER)
+        db.session.expire_all()
+        sent = sorted(conversation.messages, key=lambda m: m.id)
+
+    message = next(m for m in sent if "Reminder" in (m.body or ""))
+    assert "Reference:" in message.body
+    assert "Let us know if anything has changed." in message.body
+    # The old wording pointed at the main menu, which is not a way to move a
+    # booking — the buttons are.
+    assert "Reply *menu*" not in message.body
+
+    button = next(m for m in sent if m.msg_type == "interactive")
+    assert button.payload["buttons"] == [
+        {"id": "b_move", "title": "Move it"},
+        {"id": "b_cancel", "title": "Cancel appointment"},
+    ], button.payload["buttons"]
+
+
+def test_a_quiet_customer_gets_the_reminder_as_the_template(app):
+    """Outside the 24h window the buttons have to come from the template."""
+    _appointment(app)
+    with app.app_context():
+        notifications.notify_booking_reminder(Booking.query.first())
+        conversation = get_or_create_conversation(WA_NUMBER)
+        db.session.expire_all()
+        sent = sorted(conversation.messages, key=lambda m: m.id)
+        kinds = [m.msg_type for m in sent]
+        body = sent[0].body
+
+    # One message, not a text plus a prompt that Meta would refuse.
+    assert kinds == ["template"], kinds
+    assert body.startswith("[template:booking_reminder]"), body
+
+
+def test_move_it_collects_a_new_day_then_a_time(app):
+    """Tapping *Move it* starts the day picker, not a fresh booking."""
+    _appointment(app)
+    replies = _tap(app, "b_move")
+
+    assert replies[0]["type"] == "text"
+    assert "Let's move" in replies[0]["body"], replies[0]["body"]
+    assert replies[1]["type"] == "list"
+    with app.app_context():
+        assert get_or_create_conversation(WA_NUMBER).state == "BOOK_DATE"
+
+
+def test_moving_an_appointment_moves_it_rather_than_adding_one(app):
+    """The whole point. A move must not leave the customer with two bookings.
+
+    The day and time are collected by the ordinary booking flow, which raises a
+    *new* booking. Remembering which one is being moved is what stops the
+    customer ending up with a duplicate while the original still holds its slot.
+    """
+    booking_id = _appointment(app, slot="09:00")
+    _tap(app, "b_move")
+    new_day = date.today() + timedelta(days=3)
+
+    with app.app_context():
+        conversation = get_or_create_conversation(WA_NUMBER)
+        picked = intent_router.handle_inbound(
+            conversation, interactive_id=f"day:{new_day.isoformat()}")
+        assert picked[0]["type"] == "list", picked
+        replies = intent_router.handle_inbound(
+            conversation, interactive_id=f"bslot:{new_day.isoformat()}:14:00")
+
+        db.session.expire_all()
+        assert Booking.query.count() == 1, "a move created a second appointment"
+        booking = db.session.get(Booking, booking_id)
+        assert booking.slot_date == new_day
+        assert booking.slot_time == "14:00"
+        assert booking.rescheduled_count == 1
+        # It frees the slot it was holding: nothing is still expected at 09:00.
+        held = Booking.query.filter(Booking.status.in_(BOOKING_EXPECTED_STATUSES),
+                                    Booking.slot_time == "09:00").count()
+        assert held == 0, "the old slot is still held after the move"
+
+    spoken = "\n".join(r.get("body", "") for r in replies)
+    assert "Moved" in spoken, spoken
+    # Both what it was and what it now is, and no asking who they are again.
+    assert "It was" in spoken, spoken
+    assert "your *name*" not in spoken, spoken
+
+
+def test_the_customer_is_told_about_the_move(app):
+    """Moving silently would be worse than not moving at all."""
+    _appointment(app, slot="09:00")
+    _tap(app, "b_move")
+    new_day = date.today() + timedelta(days=3)
+
+    with app.app_context():
+        conversation = get_or_create_conversation(WA_NUMBER)
+        intent_router.handle_inbound(conversation,
+                                     interactive_id=f"day:{new_day.isoformat()}")
+        intent_router.handle_inbound(
+            conversation, interactive_id=f"bslot:{new_day.isoformat()}:14:00")
+
+        logged = NotificationLog.query.filter_by(template="booking_rescheduled").all()
+        assert logged, "no reschedule notice was sent"
+        assert "Was:" in logged[-1].body and "Now:" in logged[-1].body
+
+
+def test_cancel_asks_before_cancelling(app):
+    """One tap must never lose an appointment."""
+    booking_id = _appointment(app)
+    replies = _tap(app, "b_cancel")
+
+    assert replies[0]["type"] == "buttons", replies
+    assert replies[0]["buttons"] == [{"id": "b_cancel_yes", "title": "Yes, cancel it"},
+                                     {"id": "b_cancel_keep", "title": "No, keep it"}]
+    with app.app_context():
+        assert db.session.get(Booking, booking_id).status == "CONFIRMED"
+
+
+def test_yes_cancels_it(app):
+    booking_id = _appointment(app)
+    _tap(app, "b_cancel")
+    replies = _tap(app, "b_cancel_yes")
+
+    with app.app_context():
+        booking = db.session.get(Booking, booking_id)
+        assert booking.status == "CANCELLED"
+        assert "Cancelled by customer" in (booking.notes or "")
+        # The slot is left where it was: the desk needs to see what was given up.
+        assert booking.slot_date is not None
+        assert booking.slot_time == "09:00"
+    assert "Cancelled" in replies[0]["body"]
+
+
+def test_no_keep_it_leaves_the_appointment_alone(app):
+    booking_id = _appointment(app)
+    _tap(app, "b_cancel")
+    replies = _tap(app, "b_cancel_keep")
+
+    with app.app_context():
+        assert db.session.get(Booking, booking_id).status == "CONFIRMED"
+    assert "Kept" in replies[0]["body"]
+
+
+def test_cancelling_twice_says_so_instead_of_confirming_nothing(app):
+    """Meta redelivers taps, and customers double-tap."""
+    booking_id = _appointment(app)
+    _tap(app, "b_cancel")
+    _tap(app, "b_cancel_yes")
+    replies = _tap(app, "b_cancel_yes")
+
+    with app.app_context():
+        booking = db.session.get(Booking, booking_id)
+        assert booking.status == "CANCELLED"
+        # One note, not two — the second tap changed nothing.
+        assert (booking.notes or "").count("Cancelled by customer") == 1
+    assert "no longer on the books" in replies[0]["body"], replies[0]["body"]
+
+
+def test_the_buttons_degrade_when_there_is_no_appointment(app):
+    """A stale tap from an old reminder must not raise into the webhook."""
+    moved = _tap(app, "b_move", wa_id="263776660009")
+    cancelled = _tap(app, "b_cancel", wa_id="263776660009")
+
+    assert moved and cancelled
+    assert all(r.get("type") != "buttons" for r in cancelled), cancelled
+    assert "could not find an appointment" in moved[0]["body"]
+    with app.app_context():
+        assert Booking.query.count() == 0
+
+
+def test_a_cancelled_appointment_is_not_offered_to_move(app):
+    """There is nothing to move, and saying so beats moving the wrong thing."""
+    _appointment(app, status="CANCELLED")
+    replies = _tap(app, "b_move")
+    assert "could not find an appointment" in replies[0]["body"], replies[0]["body"]
+
+
+def test_an_appointment_already_gone_is_not_moved_again(app):
+    """The day can pass between the reminder going out and the tap."""
+    _appointment(app, days=-1)
+    replies = _tap(app, "b_move")
+    assert "could not find an appointment" in replies[0]["body"], replies[0]["body"]
+
+
+def test_typing_cancel_my_appointment_does_not_decline_a_quotation(app):
+    """`decline` already owns the word "cancel", and it was winning.
+
+    A customer with a booking but no quotation who typed "cancel my appointment"
+    was told a member of staff would discuss their *quotation* — a sentence about
+    something that did not exist, with their appointment left standing.
+    """
+    booking_id = _appointment(app)
+    with app.app_context():
+        conversation = get_or_create_conversation(WA_NUMBER)
+        replies = intent_router.handle_inbound(conversation,
+                                               text_body="cancel my appointment")
+        assert replies[0]["type"] == "buttons", replies
+        assert replies[0]["buttons"][0]["id"] == "b_cancel_yes"
+        assert db.session.get(Booking, booking_id).status == "CONFIRMED"
+
+
+def test_a_bare_cancel_still_belongs_to_the_quotation(app):
+    """The other direction has to keep working: a plain "cancel" is not a booking.
+
+    Widening the booking phrases to catch a bare "cancel" would silently break the
+    quotation decline, which is the more expensive of the two mistakes.
+    """
+    booking_id = _appointment(app)
+    with app.app_context():
+        conversation = get_or_create_conversation(WA_NUMBER)
+        intent_router.handle_inbound(conversation, text_body="cancel")
+        assert db.session.get(Booking, booking_id).status == "CONFIRMED"
+
+
+def test_typing_reschedule_my_appointment_opens_the_day_picker(app):
+    _appointment(app)
+    with app.app_context():
+        conversation = get_or_create_conversation(WA_NUMBER)
+        replies = intent_router.handle_inbound(conversation,
+                                               text_body="reschedule my appointment")
+        assert "Let's move" in replies[0]["body"], replies[0]["body"]
+        assert replies[1]["type"] == "list"
+        assert conversation.state == "BOOK_DATE"
+
+
+def test_a_typed_time_into_a_full_slot_is_refused(app):
+    """The picker only offers free times; typing is the way round it.
+
+    Booking into a full slot is the kind of mistake that only surfaces on the
+    morning, when three cars are expected into one bay.
+    """
+    day = date.today() + timedelta(days=2)
+    with app.app_context():
+        for index in range(BOOKING_SLOT_CAPACITY):
+            customer = Customer(name=f"Booked {index}", phone=f"+26377666001{index}")
+            db.session.add(customer)
+            db.session.flush()
+            db.session.add(Booking(customer_id=customer.id, service="Car Detailing",
+                                   slot_date=day, slot_time="11:00",
+                                   status="CONFIRMED"))
+        db.session.commit()
+
+        conversation = get_or_create_conversation("263776660099", "Late Booker")
+        conversation.state = "BOOK_TIME"
+        conversation.ctx_set(book_date=day.isoformat(), service="Car Detailing")
+        db.session.commit()
+
+        replies = intent_router.handle_inbound(conversation, text_body="11:00")
+
+        assert "already full" in replies[0]["body"], replies[0]["body"]
+        # Still waiting for a time, and nothing extra was written.
+        assert conversation.state == "BOOK_TIME"
+        assert Booking.query.filter_by(slot_time="11:00").count() == BOOKING_SLOT_CAPACITY

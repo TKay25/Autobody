@@ -14,23 +14,161 @@ never serves the Flow.
 
 ---
 
-## 0. Read this first: two hard constraints
+## The two journeys, end to end
 
-### A Flow cannot upload a file
+There are **two requests a customer can make**, and **each has two ways in** — a
+guided chat flow and a form. Both ways end at the same record.
 
-There is **no file-upload component** in WhatsApp Flows. This is a platform
-limitation, not a gap in this app — ConnectLink has the same constraint. So:
+### Request — "something is wrong with my vehicle, what will it cost?"
 
-1. The customer fills in the **form** — plate, service, description, day.
-2. The bot then **asks for the photographs in the chat**, and anything they send
-   is attached to the enquiry automatically.
+```
+ENTRY (any of three)
+  a) Main menu row ... "Get a quote"            -> m_quote
+  b) Main menu row ... "Enquiry form"           -> m_form   (the WhatsApp Flow)
+  c) Typed ........... "quote", "price", "how much"
 
-Step 2 needs nothing from you. It keeps the **last 8 attachments** and accepts
-images and PDFs together. A customer who sends 3 damage photos plus an assessor's
-PDF gets all 4 attached to the enquiry, with their own filenames kept.
+CHAT PATH  (states in WaConversation.state)
+  QUOTE_REG      "Sure. What is the vehicle registration number? (e.g. ABC 1234)"
+                 -> plate normalised: "adz 4477" becomes "ADZ4477"; under 3 chars is rejected
+  QUOTE_SERVICE  a list of the 7 services, with "from USD n" beside each
+  QUOTE_DESC     "Please describe the damage. Send photos, and a PDF of any assessment…"
+                 -> any photo or PDF sent here is attached to the record
+  QUOTE_CONTACT  "what name should we put on the job card?"  (*skip* uses the WhatsApp profile name)
+  QUOTE_EMAIL    "And an email address for the quotation?"   (*skip* is fine — never re-asked)
+  -> _create_lead()
 
-The **booking** form does *not* ask for photos — an appointment is not a damage
-report, and the confirmation must not read like one.
+FORM PATH
+  The customer taps "Enquiry form" -> the ENQUIRY screen opens inside WhatsApp.
+  On submit, _lead_from_flow() writes the same context and calls the SAME
+  _create_lead(), then asks for the photographs in the chat.
+
+RAISED
+  Customer + Vehicle found or created        (plate normalised, never "TBC")
+  Booking: TC-ENQ-…, status REQUESTED, source whatsapp
+  Every attachment sent at any point, up to 8, attached
+
+CUSTOMER GETS
+  "Request logged, <first name>." then reference, vehicle, service, and an
+  indicative price — that last one only for the services we can price from the
+  rate card without seeing the vehicle (Car Detailing, Ceramic Coating, Paint
+  Protection Film, Car Vinyl Wrapping).
+  Each of the following appears only when it is true: the preferred slot if a day
+  was given, the attachment count if anything was sent, the email if one was
+  captured. Closing line: the front desk will confirm the booking and send the
+  firm quotation during business hours. Plus "Anything else I can help with?".
+  The form path gets one extra message before the menu: send photographs of the
+  damage, and any assessor's report as a PDF.
+```
+
+### Booking request — "I want to bring it in on a day"
+
+```
+ENTRY (any of four)
+  a) Main menu row ... "Book a service"          -> m_book
+  b) Main menu row ... "Booking form"            -> m_bform  (the WhatsApp Flow)
+  c) Typed ........... "book", "appointment", "slot"
+  d) The reminder's "Move it" button             -> b_move   (MOVES an existing one)
+
+CHAT PATH
+  BOOK_SERVICE   the same 7 services, but under their own "bsvc:" ids so a tap
+                 cannot be mistaken for the quote flow's "svc:" ids
+  BOOK_DATE      the next 6 days, Saturday marked "Limited (Saturday)"
+  BOOK_TIME      only the times with room — capacity is 2 vehicles per slot,
+                 and a typed time into a full slot is refused
+  BOOK_CONTACT   name (or *skip*) -> _create_lead()
+
+FORM PATH
+  The "Booking form" row opens the BOOKING screen. On submit,
+  _booking_from_flow() checks the slot's capacity BEFORE writing the record,
+  then calls _create_lead(). No plate needed; no photo request.
+
+REMINDER PATH  (the day before: booking_reminder template)
+  "Move it"      -> _booking_move()   reminds the context WHICH booking is being
+                    moved, then reuses BOOK_DATE -> BOOK_TIME and lands the new
+                    slot on that same booking. It does not raise a second one.
+  "Cancel appointment" -> asks "Yes, cancel it / No, keep it" first.
+
+RAISED
+  Booking: TC-ENQ-…, status REQUESTED, source whatsapp, with the chosen slot
+  Moveable and cancellable by the customer right up to the day
+
+CUSTOMER GETS
+  "Request logged, <first name>." then reference, service, indicative price, and
+  the slot. A booking adds one line an enquiry does not: either "Every appointment
+  is confirmed by the desk, so watch for a message" or, if the slot was already
+  full, that the desk will offer the nearest alternative.
+```
+
+### What the desk does with it
+
+Both arrive on **Enquiries & Bookings** as a `REQUESTED` record. The desk drives
+it from there, and the wording follows the house rule — a staff member *attends to
+an enquiry*, a *booking* is *confirmed*:
+
+```
+REQUESTED   "New enquiry"          nobody has picked it up yet
+ATTENDED    "Attended to"          a staff member has dealt with it
+CONFIRMED   "Booking confirmed"    only now is it a booking, and only now does it
+                                   earn a TC-BKG-… reference beside its TC-ENQ-…
+ARRIVED     "Customer came through"
+COMPLETED   "Completed"  |  NO_SHOW "Did not arrive"  |  CANCELLED "Cancelled"
+```
+
+Moving a confirmed booking from the desk (`POST /api/bookings/<id>/reschedule`)
+and moving it from the customer's *Move it* button run the **same code**
+(`app/services/bookings.py`), so the two can never disagree about what changed.
+
+---
+
+## 0. Read this first
+
+### A Flow **can** carry a file — I had this wrong
+
+An earlier version of this document claimed Flows have no file-upload component.
+**That was wrong.** Meta's Flow component reference has a *Media upload* section,
+and its component list includes **Photo Picker** and **Document Picker** — the
+`sensitive`-field table on the same page even specifies how each is masked
+("Hidden uploaded media completely" / "Hidden uploaded documents completely").
+
+ConnectLink uses exactly this: its enquiry Flow's `response_json` carries
+
+```json
+"attachment": [ { "id": "…", "mime_type": "…", "sha256": "…", "file_name": "…" } ]
+```
+
+and the business then downloads each entry from the Graph API by that `id`, stores
+the bytes against the enquiry, and can hand it back later with a Download button.
+That is the pattern to copy.
+
+**Status in this repo.** The picker is *not* wired up yet — our parser reads text
+fields only, and the bot still asks for photographs in the chat after the form.
+Both routes work, and they are not mutually exclusive:
+
+| Route | When | State |
+|---|---|---|
+| **In the Flow** (Photo / Document Picker) | customer fills the form | **to build** — see below |
+| **In the chat**, after the form | customer skipped the picker | **working today** |
+
+The chat route needs nothing from you: it keeps the **last 8 attachments** and
+accepts images and PDFs together. A customer who sends 3 damage photos plus an
+assessor's PDF gets all 4 attached to the enquiry, with their own filenames kept.
+
+The **booking** form asks for neither — an appointment is not a damage report, and
+its confirmation must not read like one.
+
+### To wire the picker up, two things are needed
+
+1. **Meta side** — add a `PhotoPicker` (and, for the assessor's report, a
+   `DocumentPicker`) to the `ENQUIRY` screen, and include `attachment` in the
+   screen's `complete` payload so it reaches us in `response_json`.
+2. **Code side** — read `data["attachment"]` in `IntentRouter._lead_from_flow`,
+   download each entry from `GET /{media-id}` with the access token, and store it
+   as a `BookingPhoto` against the enquiry — the same shape the chat route already
+   creates, so the desk sees one kind of attachment either way.
+
+Confirm the exact component property names on Meta's *media upload* guide before
+pasting any JSON: this document has already been wrong once about this feature.
+
 
 ### The field **API names** are a contract with this code
 

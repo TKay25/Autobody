@@ -19,6 +19,7 @@ from decimal import Decimal
 from flask import current_app
 
 from ..constants import (
+    BOOKING_EXPECTED_STATUSES,
     BOOKING_SLOT_CAPACITY,
     BOOKING_SLOTS,
     SERVICES,
@@ -31,6 +32,7 @@ from ..constants import (
 from ..extensions import db
 from ..models import (Booking, BookingPhoto, Customer, Estimate, Invoice, JobCard, JobPhoto,
                       Payment, PaymentProof, Task, Vehicle, WaConversation, utcnow)
+from . import bookings as booking_ops
 from .notifications import public_url
 from .pricing import quick_quote
 
@@ -204,6 +206,25 @@ INTENT_PATTERNS = [
     ("menu", r"^(menu|main menu|start|hello|hi|hey|hie|mhoro|sawubona|good (morning|afternoon|day))[\s!.,]*$"),
     ("stop", r"\b(stop|unsubscribe|opt out)\b"),
 ]
+
+
+# Wording that can only mean the *appointment*, never the quotation. A bare
+# "cancel" belongs to the estimate decline path — `decline` already owns that
+# word — so every phrase here names the appointment. Getting this wrong in the
+# other direction would be far worse: a customer who typed "cancel my booking"
+# used to be told a member of staff would discuss their quotation.
+BOOKING_MOVE_PHRASES = (
+    r"move (my|the|our) (appointment|booking)",
+    r"(change|shift|reschedule|postpone) (my|the|our)?\s*(appointment|booking|slot|time)",
+    r"\breschedule\b",
+    r"\bmove it\b",
+)
+BOOKING_CANCEL_PHRASES = (
+    r"cancel (my|the|our) (appointment|booking|slot)",
+    r"\bcancel appointment\b",
+    r"(can'?t|cannot|won'?t|will not) (make|attend) it\b",
+    r"not (coming|going to make it)\b",
+)
 
 
 def detect_intent(text: str) -> str | None:
@@ -525,8 +546,12 @@ class IntentRouter:
 
         A Flow gathers the structured answers a free-text chat cannot — the plate,
         the service, the day — as one tidy payload instead of five messages the
-        desk has to piece together. It cannot carry a file, so the bot asks for the
-        photographs straight afterwards (see :meth:`_lead_from_flow`).
+        desk has to piece together.
+
+        A Flow **can** carry a file (Meta ships Photo Picker / Document Picker and
+        returns media ids in ``response_json``'s ``attachment`` array), but this
+        Flow does not use them yet, so the bot asks for the photographs straight
+        afterwards — see :meth:`_lead_from_flow`.
         """
         flow_id = self.cfg.get("WA_FLOW_ENQUIRY_ID") or ""
         if not flow_id:
@@ -578,11 +603,14 @@ class IntentRouter:
     def _handle_flow(self, flow: dict) -> list[dict]:
         """A completed WhatsApp Flow.
 
-        A Flow collects the structured answers; **the files still arrive in the
-        chat**, because WhatsApp Flows have no file-upload component. So the
-        answers are written into the conversation context and handed to the same
-        ``_create_lead`` the chat path uses, which already attaches every photo
-        and PDF the customer sent before or alongside the form.
+        The answers are written into the conversation context and handed to the
+        same ``_create_lead`` the chat path uses, which already attaches every
+        photo and PDF the customer sent before or alongside the form.
+
+        A Flow can also return files of its own in ``data["attachment"]`` (a list
+        of media ids from its Photo / Document Picker). That is **not read here
+        yet** — when it is, each entry becomes a ``BookingPhoto`` the same way a
+        chat attachment does, so the desk sees one kind of attachment either way.
         """
         token = str(flow.get("flow_token") or "").strip()
         data = flow.get("data") or {}
@@ -678,13 +706,15 @@ class IntentRouter:
         )
         replies = self._create_lead(name, email=email)
 
-        # A form cannot carry a photo, so ask for them explicitly — the damage
-        # pictures are the single most useful thing the desk can receive. Slotted
-        # ahead of the catch-all menu so the order reads confirmation → next step.
+        # The damage pictures are the single most useful thing the desk can
+        # receive, and this form does not ask for them (a Flow *can* carry files
+        # via its Photo / Document Picker, but ours does not use one yet), so ask
+        # for them here. Slotted ahead of the catch-all menu so the order reads
+        # confirmation → next step.
         invitation = text(
-            "One thing the form cannot carry is the pictures.\n\n"
-            "Send photographs of the damage here in the chat — the whole panel, "
-            "then close-ups — and any assessor's report or quotation as a PDF. "
+            "Send us photographs of the damage and we will quote faster.\n\n"
+            "A picture of the whole panel and a close-up is enough, and any "
+            "assessor's report or existing quotation can come as a PDF. "
             "Everything you send is attached to your enquiry."
         )
         return replies[:-1] + [invitation] + replies[-1:]
@@ -794,6 +824,13 @@ class IntentRouter:
             "m_services": self._menu_services,
             "m_form": self._menu_form,
             "m_bform": self._menu_book_form,
+            # The day-before reminder's buttons. Bare payloads, identical to the
+            # ids on the approved `booking_reminder` template, so a tap means the
+            # same thing either side of the 24-hour window.
+            "b_move": self._booking_move,
+            "b_cancel": self._booking_cancel,
+            "b_cancel_yes": self._booking_cancel_confirm,
+            "b_cancel_keep": self._booking_cancel_keep,
             "m_lang": self._menu_lang,
             "a_approve": lambda: [text(
                 "Great — thank you for approving. We will order the parts and start work. "
@@ -818,6 +855,13 @@ class IntentRouter:
         switch = self._language_request(raw)
         if switch is not None:
             return switch
+
+        # Someone who has gone quiet may type the request rather than tap the
+        # reminder, and `decline` already owns the word "cancel". Checked before
+        # the state handlers and the intents, exactly as the language switch is.
+        booking_request = self._booking_request(raw)
+        if booking_request is not None:
+            return booking_request
 
         # A state that is waiting for data consumes the message first.
         state_handler = {
@@ -966,6 +1010,24 @@ class IntentRouter:
         for code, names in LANGUAGE_NAMES.items():
             if any(word in names for word in words):
                 return code
+        return None
+
+    def _booking_request(self, raw: str) -> list[dict] | None:
+        """A typed request to move or cancel the appointment, or ``None``.
+
+        Only phrases that name the appointment match. A bare *cancel* is left
+        alone on purpose: it belongs to the quotation's decline path, and
+        hijacking that would be a worse bug than asking someone to tap a button.
+        """
+        low = (raw or "").strip().lower()
+        if not low:
+            return None
+        for pattern in BOOKING_MOVE_PHRASES:
+            if re.search(pattern, low):
+                return self._booking_move()
+        for pattern in BOOKING_CANCEL_PHRASES:
+            if re.search(pattern, low):
+                return self._booking_cancel()
         return None
 
     def _language_request(self, raw: str) -> list[dict] | None:
@@ -1579,7 +1641,7 @@ class IntentRouter:
         return Booking.query.filter(
             Booking.slot_date == day,
             Booking.slot_time == slot,
-            Booking.status.in_(("REQUESTED", "CONFIRMED", "ATTENDED")),
+            Booking.status.in_(BOOKING_EXPECTED_STATUSES),
         ).count()
 
     def _time_list(self, day: date) -> dict | None:
@@ -1645,6 +1707,27 @@ class IntentRouter:
                 return self._fallback()
             return [text("Sorry, that is not one of our times."), slots]
 
+        # A typed time is accepted, but not one the floor cannot take. The picker
+        # only offers free slots; typing is the way round that, and booking into
+        # a full slot is the sort of thing that only shows up on the day.
+        if day and self._slot_taken(day, slot) >= BOOKING_SLOT_CAPACITY:
+            slots = self._time_list(day)
+            if not slots:
+                return [text(
+                    f"{day.strftime('%a %d %b')} is fully booked. Would another day "
+                    "work?"
+                ), self._day_list(self.conv.ctx_get("service") or "Your service")]
+            return [text(
+                f"{slot} on {day.strftime('%a %d %b')} is already full. "
+                "Please pick another time:"
+            ), slots]
+
+        # A move, not a new booking: the customer tapped *Move it*, so this
+        # replaces the appointment they already have instead of adding a second.
+        pending = self._pending_booking("reschedule_booking_id")
+        if pending is not None and day:
+            return self._apply_reschedule(pending, day, slot)
+
         self.conv.ctx_set(book_time=slot)
         self.conv.state = "BOOK_CONTACT"
         db.session.commit()
@@ -1660,6 +1743,136 @@ class IntentRouter:
             customer = self.conv.customer or self._customer_by_wa()
             name = customer.name if customer else f"WhatsApp +{self.conv.wa_id}"
         return self._create_lead(name)
+
+    # ── moving / cancelling an appointment ───────────────────────────────
+    # Reached from the *Move it* and *Cancel appointment* buttons on the
+    # day-before reminder, or from a typed phrase naming the appointment.
+    def _customer_booking(self) -> Booking | None:
+        """The appointment a customer means by "my booking".
+
+        Their soonest one that is still expected and has not been. A cancelled or
+        completed appointment is not something to move, and one that has already
+        happened is not something to cancel, so offering either would be worse
+        than saying we could not find it.
+        """
+        customer = self.conv.customer or self._customer_by_wa()
+        if not customer:
+            return None
+        return (Booking.query
+                .filter(Booking.customer_id == customer.id,
+                        Booking.status.in_(BOOKING_EXPECTED_STATUSES),
+                        Booking.slot_date >= date.today())
+                .order_by(Booking.slot_date.asc(), Booking.slot_time.asc())
+                .first())
+
+    def _pending_booking(self, key: str) -> Booking | None:
+        """The booking a tapped button refers to, re-read by id.
+
+        By id rather than "the customer's next one", so a tap can only ever act
+        on the appointment the customer was actually shown. If they booked a
+        second vehicle in between, *that* one must not be the one cancelled.
+        """
+        booking_id = self.conv.ctx_get(key)
+        try:
+            booking = db.session.get(Booking, int(booking_id)) if booking_id else None
+        except (TypeError, ValueError):
+            # A corrupt context must degrade, never raise into the webhook.
+            return None
+        if booking is None or booking.status not in BOOKING_EXPECTED_STATUSES:
+            return None
+        return booking
+
+    def _booking_move(self) -> list[dict]:
+        """Start moving an appointment: collect the new day and time."""
+        booking = self._customer_booking()
+        if booking is None:
+            return [text(
+                "I could not find an appointment coming up against this number, so "
+                "there is nothing for me to move. Our front desk will pick it up from "
+                "this chat — or reply *book* to make a new one."
+            ), more_menu_reply(self.lang)]
+
+        # Which booking is being moved. The day and time that follow are
+        # collected by the ordinary booking flow, and without this the customer
+        # would finish with a *second* appointment beside the one they meant to
+        # change.
+        self.conv.ctx_set(reschedule_booking_id=booking.id, service=booking.service)
+        self.conv.state = "BOOK_DATE"
+        db.session.commit()
+        return [text(
+            f"Let's move *{booking.display_reference}* — currently "
+            f"{booking_ops.slot_text(booking)}.\n\nWhich day suits you instead?"
+        ), self._day_list(booking.service)]
+
+    def _booking_cancel(self) -> list[dict]:
+        """Ask first. An appointment is worth more than the tap that loses it."""
+        booking = self._customer_booking()
+        if booking is None:
+            return [text(
+                "I could not find an appointment coming up against this number, so "
+                "there is nothing for me to cancel. Our front desk will pick it up "
+                "from this chat."
+            ), more_menu_reply(self.lang)]
+
+        self.conv.ctx_set(cancel_booking_id=booking.id)
+        db.session.commit()
+        return [buttons(
+            f"Cancel your appointment on *{booking_ops.slot_text(booking)}*?\n\n"
+            f"Reference: {booking.display_reference}",
+            [("b_cancel_yes", "Yes, cancel it"), ("b_cancel_keep", "No, keep it")],
+            header="Cancel appointment",
+        )]
+
+    def _booking_cancel_confirm(self) -> list[dict]:
+        """Only reached from *Yes, cancel it*."""
+        booking = self._pending_booking("cancel_booking_id")
+        self.conv.ctx_clear("cancel_booking_id", "reschedule_booking_id")
+        self.conv.state = "MAIN_MENU"
+        db.session.commit()
+
+        if booking is None:
+            return [text(
+                "That appointment is no longer on the books, so I have not cancelled "
+                "anything. Our front desk will pick it up from this chat."
+            ), more_menu_reply(self.lang)]
+
+        when = booking_ops.slot_text(booking)
+        if not booking_ops.cancel(booking, by="customer"):
+            return [text(
+                f"*{when}* was already cancelled, so nothing has changed."
+            ), more_menu_reply(self.lang)]
+
+        return [text(
+            f"Cancelled — {when} is clear. Nothing further is needed from you.\n\n"
+            "Reply *book* whenever you would like another time."
+        ), more_menu_reply(self.lang)]
+
+    def _booking_cancel_keep(self) -> list[dict]:
+        """*No, keep it* — say so, and leave the appointment alone."""
+        booking = self._pending_booking("cancel_booking_id")
+        self.conv.ctx_clear("cancel_booking_id")
+        db.session.commit()
+        if booking is None:
+            return [text("Nothing has changed."), more_menu_reply(self.lang)]
+        return [text(
+            f"Kept — we will see you on *{booking_ops.slot_text(booking)}*."
+        ), more_menu_reply(self.lang)]
+
+    def _apply_reschedule(self, booking: Booking, day: date, slot: str) -> list[dict]:
+        """Land the new day and time on the existing appointment."""
+        previous = booking_ops.slot_text(booking)
+        self.conv.ctx_clear("reschedule_booking_id", "service", "book_date", "book_time")
+        self.conv.state = "MAIN_MENU"
+        db.session.commit()
+
+        # Shared with the desk's Reschedule dialog, so the customer and the front
+        # desk cannot be given different answers for the same change.
+        booking_ops.reschedule(booking, slot_date=day, slot_time=slot)
+        return [text(
+            f"Moved — *{booking.display_reference}* is now "
+            f"{booking_ops.slot_text(booking)}.\n\n"
+            f"It was {previous}."
+        ), more_menu_reply(self.lang)]
 
     # ── payment proof ────────────────────────────────────────────────────
     def _menu_pay(self) -> list[dict]:

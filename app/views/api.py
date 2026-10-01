@@ -49,6 +49,7 @@ from ..models import (
     gen_ref,
     utcnow,
 )
+from ..services import bookings as booking_ops
 from ..services import documents, job_flow, notifications, pricing, reporting
 from ..services.activity import log_activity, recent_activity
 from ..services.whatsapp_client import log_inbound, normalise_msisdn
@@ -1317,16 +1318,9 @@ def reschedule_booking(booking_id: int):
     if slot_date == booking.slot_date and slot_time == (booking.slot_time or None):
         return bad("That is the slot the booking is already on.")
 
-    previous = booking.slot_date.strftime("%a %d %b %Y") if booking.slot_date else "—"
-    if booking.slot_time:
-        previous += f" at {booking.slot_time}"
-
-    booking.slot_date = slot_date
-    booking.slot_time = slot_time
-    booking.rescheduled_count = (booking.rescheduled_count or 0) + 1
-    db.session.commit()
-
-    notified = notifications.notify_booking_rescheduled(booking, previous)
+    previous = booking_ops.slot_text(booking)
+    result = booking_ops.reschedule(booking, slot_date=slot_date, slot_time=slot_time)
+    notified = result["notified"]
     log_activity(
         "booking.rescheduled",
         f"Moved booking {booking.display_reference} from {previous} to "

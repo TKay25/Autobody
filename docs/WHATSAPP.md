@@ -302,7 +302,7 @@ These fire from the web app, not from the bot. Every attempt is written to
 | Last blocking part received | `parts_received` | Part list, "work continues" |
 | Invoice issued | `payment_due` | Invoice no., balance due, payment methods, plus **Download Invoice** and **Pay via EcoCash** |
 | Vehicle collected | `warranty_registered` | The 12-month workmanship terms |
-| **Day before an appointment** | `booking_reminder` | Reference, service, time, address |
+| **Day before an appointment** | `booking_reminder` | Reference, service, time, address, plus **Move it** and **Cancel appointment** |
 | **Day after collection** | `job_feedback` | The three rating buttons |
 
 ### ⚠️ Templates must exist in WhatsApp Manager

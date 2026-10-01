@@ -37,16 +37,15 @@ Names must match exactly — they are the constants in
 | 7 | `payment_due` | **Text** `INVOICE` | 3 | 2 quick-reply |
 | 8 | `parts_received` | — | 2 | — |
 | 9 | `warranty_registered` | — | 2 | — |
-| 10 | `booking_reminder` | — | 3 | — |
+| 10 | `booking_reminder` | — | 3 | 2 quick-reply |
 | 11 | `job_feedback` | — | 2 | 3 quick-reply |
 | 12 | `enquiry_form` | — | 0 | 1 Flow button |
 | 13 | `booking_form` *(optional)* | — | 1 | 1 Flow button |
 
 **Thirteen templates** (twelve required, `booking_form` optional). Every one that
 delivers or refers to a document carries a Download button, and each button names
-what it fetches. `parts_received`,
-`warranty_registered` and `booking_reminder` have no button because there is no
-file behind them — don't add one.
+what it fetches. `parts_received` and `warranty_registered` have no button because
+there is no file behind them — don't add one.
 
 ---
 
@@ -257,7 +256,8 @@ schedule.
 
 ### 10. `booking_reminder`
 
-No button. `{{1}}` customer name, `{{2}}` when, `{{3}}` reference.
+Two quick-reply buttons, so the customer can change or drop the appointment
+without typing. `{{1}}` customer name, `{{2}}` when, `{{3}}` reference.
 **Note `{{3}}` prints before `{{2}}`** — deliberate, the reference sits by its label.
 
 ```
@@ -266,8 +266,23 @@ Hello {{1}}, a reminder about your appointment.
 Reference: {{3}}
 When: {{2}}
 
-Reply *menu* if you need to move it.
+Let us know if anything has changed.
 ```
+
+Buttons (type: **Quick reply**, in this order):
+
+| Button text | Payload |
+|---|---|
+| Move it | `b_move` |
+| Cancel appointment | `b_cancel` |
+
+> **The order is deliberate.** *Move it* — the one people actually want — is
+> first, and the destructive button is not where a thumb lands. *Cancel* does not
+> cancel on the tap either: it asks “Yes, cancel it / No, keep it” first, and only
+> `b_cancel_yes` cancels. An appointment is worth more than the tap that loses it.
+>
+> The wording moved off “Reply *menu* if you need to move it”, which pointed at
+> the main menu — a list of eight options, none of them “move my appointment”.
 
 ### 11. `job_feedback`
 
@@ -330,11 +345,15 @@ Button → Flow action `Navigate`, screen `BOOKING`, flow token `booking`.
 > section is kept only so a reader who follows an old link is pointed somewhere
 > useful.
 
-### ⚠️ A Flow cannot upload a file
+### ⚠️ CORRECTED — a Flow **can** carry a file
 
-There is **no file-upload component** in WhatsApp Flows — this is a platform
-limitation, not a gap in this app. (ConnectLink has the same constraint; its
-Flow is a form too.)
+This section used to claim Flows have no file-upload component. **That was
+wrong.** Meta's Flow component reference has a *Media upload* section listing
+**Photo Picker** and **Document Picker**, and ConnectLink reads the result from
+`response_json` as an `attachment` array of media ids.
+
+See `docs/META-FLOWS.md` for the corrected position and what is still to build.
+The chat-based fallback described below still works and is still what runs today.
 
 So the design is:
 
@@ -444,6 +463,10 @@ what Meta requires while you are building it. Once published, change
 | `doc_invoice` | invoice + payment buttons | Sends the invoice PDF |
 | `doc_receipt` | receipt buttons | Sends the receipt PDF |
 | `m_pay` | collection notice, invoice notice | Payment details, then waits for proof |
+| `b_move` | booking reminder | New day and time, then moves the appointment |
+| `b_cancel` | booking reminder | Asks before cancelling |
+| `b_cancel_yes` | the confirm prompt | Booking → `CANCELLED` |
+| `b_cancel_keep` | the confirm prompt | Leaves it alone |
 | `rate:5` / `rate:3` / `rate:1` | feedback buttons | Records the rating |
 | `m_*` | the menus | Menu navigation |
 
@@ -455,13 +478,15 @@ are handled.
 
 ## Part 4 — Checklist
 
-- [ ] Create the 12 templates above (names exactly as written, `Utility`)
+- [ ] Create the 13 templates above (names exactly as written, `Utility`)
 - [ ] `quotation_share`: document header + Approve / Decline / Download quotation
 - [ ] `invoice_share`: document header + Download invoice
 - [ ] `receipt_share`: document header + Download receipt
 - [ ] `payment_due`: text header `INVOICE`, footer, and **Download Invoice**
       (`doc_invoice`) + **Pay via EcoCash** (`m_pay`)
 - [ ] `vehicle_ready`: Check balance
+- [ ] `booking_reminder`: **Move it** (`b_move`) + **Cancel appointment**
+      (`b_cancel`)
 - [ ] `job_feedback`: Excellent / Okay / Poor
 - [ ] `enquiry_form`: Flow button pointing at the published Enquiry Flow
 - [ ] Create the **Enquiry form** Flow with screen `ENQUIRY` and the field names above

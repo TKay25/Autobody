@@ -116,6 +116,13 @@ class User(UserMixin, TimestampMixin, db.Model):
             "role_label": self.role_label,
             "initials": self.initials,
             "is_manager": self.is_manager,
+            # The console's Active column and the edit dialog's Active switch both
+            # read this. Leaving it out of the payload made the switch start OFF
+            # for everybody, so the badge read "Disabled" against every account
+            # *and* saving an ordinary edit sent is_active_user: false — silently
+            # disabling the person being edited, including the owner editing
+            # themselves.
+            "is_active_user": self.is_active_user,
         }
 
     def __repr__(self) -> str:  # pragma: no cover

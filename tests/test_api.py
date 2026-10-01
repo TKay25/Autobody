@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from app.extensions import db
-from app.models import JobCard, Vehicle
+from app.models import JobCard, User, Vehicle
 from app.services import job_flow
 
 
@@ -172,6 +172,64 @@ def test_manager_can_create_staff_and_front_desk_cannot(auth_client, client):
         "full_name": "Nope", "email": "nope@topclass.co.zw", "password": "x", "role": "owner",
     })
     assert res.status_code == 403
+
+
+def test_a_staff_edit_does_not_silently_disable_the_account(auth_client):
+    """The console's edit dialog posts back the row the list gave it.
+
+    `is_active_user` was missing from the payload, so the dialog's Active switch
+    started OFF for everybody — the table's badge read "Disabled" against every
+    account, *including the owner signed in at the time*, and saving an ordinary
+    edit sent `is_active_user: false`, disabling the person being edited. The
+    owner changing their own phone number would have locked themselves out.
+    """
+    rows = auth_client.get("/api/users").get_json()["items"]
+    owner = next(r for r in rows if r["role"] == "owner")
+    assert owner["is_active_user"] is True, "the payload lost the flag"
+
+    # Exactly what the dialog would post: the row it was handed, minus the
+    # read-only decorations, with the phone changed.
+    posted = {k: v for k, v in owner.items()
+              if k not in {"id", "initials", "role_label", "is_manager"}}
+    posted["phone"] = "+263 77 555 0555"
+    res = auth_client.patch(f"/api/users/{owner['id']}", json=posted)
+
+    assert res.status_code == 200, res.get_json()
+    assert res.get_json()["user"]["is_active_user"] is True
+
+    with auth_client.application.app_context():
+        from app.models import User
+
+        assert User.query.filter_by(email=owner["email"]).first().is_active_user is True
+
+
+def test_an_account_can_still_be_disabled_on_purpose(auth_client):
+    """The flag has to keep working in the other direction."""
+    rows = auth_client.get("/api/users").get_json()["items"]
+    target = next(r for r in rows if r["role"] != "owner")
+
+    res = auth_client.patch(f"/api/users/{target['id']}", json={"is_active_user": False})
+    assert res.status_code == 200
+    assert res.get_json()["user"]["is_active_user"] is False
+
+    # And a disabled account really cannot sign in.
+    from app import create_app
+    from config import TestConfig
+
+    fresh = create_app(TestConfig)
+    with fresh.app_context():
+        db.create_all()
+        from app.seed import run_seed
+
+        run_seed(with_demo=False)
+        user = User.query.filter_by(email=target["email"]).first()
+        user.is_active_user = False
+        db.session.commit()
+        anon = fresh.test_client()
+        res = anon.post("/auth/login", json={"email": target["email"],
+                                            "password": "topclass123"})
+        assert res.status_code == 401, res.status_code
+        db.drop_all()
 
 
 def test_metrics_after_creating_jobs(auth_client):

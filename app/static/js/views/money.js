@@ -995,7 +995,7 @@
             h('li', 'Webhook: POST /webhooks/whatsapp'),
             h('li', 'Verification token: from WA_VERIFY_TOKEN'),
             h('li', 'Switch to live with WA_MODE=live + access token'),
-            h('li', 'Templates: job_stage_update, vehicle_ready, quotation_ready, quotation_share, invoice_share, receipt_share, payment_due, parts_received, warranty_registered, booking_reminder, job_feedback'),
+            h('li', 'Templates: job_stage_update, vehicle_ready, quotation_ready, quotation_share, invoice_share, receipt_share, payment_due, parts_received, warranty_registered, booking_reminder, job_feedback, enquiry_form, booking_form'),
           ])),
         ]),
       }),

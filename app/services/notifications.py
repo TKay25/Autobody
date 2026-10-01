@@ -11,9 +11,11 @@ from decimal import Decimal
 
 from flask import current_app, has_request_context, request
 
-from ..constants import STAGE_CUSTOMER_TEXT, STAGE_LABELS, WARRANTY_TEXT
+from ..constants import (BOOKING_EXPECTED_STATUSES, STAGE_CUSTOMER_TEXT, STAGE_LABELS,
+                         WARRANTY_TEXT)
 from ..extensions import db
 from ..models import JobCard, NotificationLog, utcnow
+from .bookings import slot_text
 from .whatsapp_client import WhatsAppClient, get_or_create_conversation, log_outbound
 
 log = logging.getLogger(__name__)
@@ -46,6 +48,17 @@ FEEDBACK_RATINGS = [
     (5, "Excellent"),
     (3, "Okay"),
     (1, "Poor"),
+]
+
+# The two things a customer can do with an appointment the day before it is due.
+# Bare payloads, because these are the ids on the approved `booking_reminder`
+# template and a template's payload is frozen — the same ids are sent free-form
+# inside the 24-hour window so both paths run the same resolution code.
+# *Move it* first and *Cancel* second: the destructive one is not the one a
+# thumb lands on.
+BOOKING_REMINDER_BUTTONS = [
+    {"id": "b_move", "title": "Move it"},
+    {"id": "b_cancel", "title": "Cancel appointment"},
 ]
 
 
@@ -560,10 +573,7 @@ def notify_warranty(job: JobCard) -> bool:
 
 def _slot_text(booking) -> str:
     """'Mon 23 Sep 2026 at 08:00', or just the day when no time was booked."""
-    if not booking.slot_date:
-        return "to be advised"
-    when = booking.slot_date.strftime("%a %d %b %Y")
-    return f"{when} at {booking.slot_time}" if booking.slot_time else when
+    return slot_text(booking)
 
 
 def notify_booking_confirmed(booking) -> bool:
@@ -643,18 +653,23 @@ def send_due_feedback_requests(day: date | None = None) -> dict:
         JobCard.collected_at < end,
     ).order_by(JobCard.id.asc()).all()
 
-    sent = 0
-    for job in pending:
-        if notify_feedback_request(job):
-            job.feedback_requested_at = utcnow()
-            sent += 1
-
+    # Counted BEFORE the loop. Counting afterwards counted the messages this run
+    # had just sent, so a run that did everything reported "1 due, 1 already
+    # asked" — the exact opposite of what happened. ``skipped`` means "already
+    # dealt with before this run".
     already = JobCard.query.filter(
         JobCard.stage == "COLLECTED",
         JobCard.feedback_requested_at.isnot(None),
         JobCard.collected_at >= start,
         JobCard.collected_at < end,
     ).count()
+
+    sent = 0
+    for job in pending:
+        if notify_feedback_request(job):
+            job.feedback_requested_at = utcnow()
+            sent += 1
+
     db.session.commit()
     return {"day": day.isoformat(), "due": len(pending), "sent": sent,
             "skipped": already}
@@ -727,12 +742,16 @@ def send_custom(conversation, body: str, *, is_bot: bool = False, user=None):
 
 
 def notify_booking_reminder(booking) -> bool:
-    """The day-before nudge.
+    """The day-before nudge, with the two buttons a customer actually needs.
 
     Unlike the other booking notices this one is *designed* to land outside the
     24-hour service window — the customer booked days ago and has said nothing
     since. Free-form text would be rejected outright by Meta, so when the window
-    is shut this goes out as the approved template instead.
+    is shut this goes out as the approved template instead, buttons and all.
+
+    The buttons carry ``b_move`` and ``b_cancel`` — the same ids free-form inside
+    the window, so both paths resolve against the same code. *Cancel* asks first:
+    an appointment is worth more than the tap it takes to lose it.
     """
     customer = booking.customer
     if not customer or not customer.wa_number:
@@ -741,14 +760,14 @@ def notify_booking_reminder(booking) -> bool:
         _log(None, customer.wa_number, TEMPLATE_BOOKING_REMINDER, "", "skipped_optout")
         return False
 
-    when = _slot_text(booking)
+    when = slot_text(booking)
     body = (
         f"*Reminder — your appointment*\n\n"
         f"Reference: {booking.display_reference}\n"
         f"Service: {booking.service}\n"
         f"When: {when}"
         f"\n\n {current_app.config['COMPANY_ADDRESS']}"
-        "\n\nReply *menu* if you need to move it."
+        "\n\nLet us know if anything has changed."
     )
     client = WhatsAppClient()
     conversation = get_or_create_conversation(customer.wa_number, customer.name)
@@ -756,6 +775,14 @@ def notify_booking_reminder(booking) -> bool:
         if conversation.is_session_open:
             client.send_text(customer.wa_number, body, conversation=conversation,
                              intent=TEMPLATE_BOOKING_REMINDER)
+            # Only in the window. Outside it the approved template carries the
+            # same two buttons, and a free-form interactive would be a 400.
+            _action_prompt(
+                customer.wa_number, conversation,
+                body="Has anything changed?",
+                buttons=BOOKING_REMINDER_BUTTONS,
+                job_id=None, intent="booking_reminder_actions",
+            )
         else:
             client.send_template(
                 customer.wa_number, TEMPLATE_BOOKING_REMINDER,
@@ -784,9 +811,15 @@ def send_due_booking_reminders(day: date | None = None) -> dict:
     day = day or (date.today() + timedelta(days=1))
     pending = Booking.query.filter(
         Booking.slot_date == day,
-        Booking.status.in_(("REQUESTED", "CONFIRMED", "ATTENDED")),
+        Booking.status.in_(BOOKING_EXPECTED_STATUSES),
         Booking.reminder_sent_at.is_(None),
     ).order_by(Booking.slot_time.asc()).all()
+
+    # Counted BEFORE the loop, for the same reason as the feedback run: counted
+    # afterwards, ``skipped`` included the reminders this run had just sent.
+    already = Booking.query.filter(
+        Booking.slot_date == day, Booking.reminder_sent_at.isnot(None),
+    ).count()
 
     sent = 0
     for booking in pending:
@@ -794,9 +827,6 @@ def send_due_booking_reminders(day: date | None = None) -> dict:
             booking.reminder_sent_at = utcnow()
             sent += 1
 
-    already = Booking.query.filter(
-        Booking.slot_date == day, Booking.reminder_sent_at.isnot(None),
-    ).count()
     db.session.commit()
     return {"day": day.isoformat(), "due": len(pending), "sent": sent,
             "skipped": already}
