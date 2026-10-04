@@ -90,19 +90,29 @@ URL alone does not deliver anything.
 
 Any of `hi`, `hello`, `hie`, `mhoro`, `sawubona`, `menu` opens the greeting and
 the main menu. It is a **list**, not buttons: WhatsApp caps buttons at three, and
-that cap is what used to keep "Book a service" (and the language switch) off the
-greeting entirely.
+that cap is what used to keep the extra rows off the greeting entirely.
 
 | Row | Id | What it does |
 |---|---|---|
-| Get a quote | `m_quote` | Enquiry capture (registration → service → description → name → email) |
-| Book a service | `m_book` | Appointment: service → day → **time** → contact |
+| Enquiries | `m_enquiries` | The seven services → a short brief on the one picked → the enquiry form (or the chat enquiry when no Flow is built) |
 | Track my repair | `m_track` | Job number or registration plate |
-| I've paid — send proof | `m_pay` | Bank/EcoCash details, then waits for a screenshot |
+| I have paid — send proof | `m_pay` | Bank/EcoCash details, then waits for a screenshot |
 | Our services & prices | `m_services` | The seven service lines with "from USD" prices |
 | Talk to a person | `m_human` | Hands over **and** raises a callback ticket |
-| 🌐 Language | `m_lang` | English / Shona / Ndebele |
+| Language | `m_lang` | English / Shona / Ndebele |
 | Contact details | `m_info` | Address, hours, phone, email, website |
+| Booking form | `m_bform` | The booking Flow. **Only answered, never offered** — see below |
+
+There is **no "Get a quote" or "Book a service" row.** They led to the same desk
+and asked overlapping questions, so the service choice they hid is on the screen
+"Enquiries" now opens; two rows that differ only in wording is how a menu stops
+being readable.
+
+Booking is **not** advertised either. Holding a slot is a promise the workshop
+makes, and the front desk owns that promise — so the customer enquires and the desk
+books them in. A customer who does ask still gets the booking flow by typing
+*book*, *appointment*, *slot* or *schedule*. `m_bform` stays in the handler table
+so a thread that cached the old row cannot dead-end.
 
 A "what next?" menu (also a list) carries the same rows plus **Warranty**
 (`m_warranty`).
@@ -160,8 +170,12 @@ Points worth knowing:
 ### 3.2 Booking a service → an appointment with a time
 
 ```
-m_book → service list (bsvc:) → next 6 days (day:) → times (bslot:) → contact
+typed "book" | "appointment" | "slot" | "schedule"
+  → service list (bsvc:) → next 6 days (day:) → times (bslot:) → contact
 ```
+
+There is no menu row for this. The desk books customers in; the bot only answers a
+customer who asks outright. See the menu table above for why.
 
 - The **time picker is real**: `BOOKING_SLOTS` (`08:00`–`16:00`) filtered by
   `BOOKING_SLOT_CAPACITY` (2 vehicles per slot, `app/constants.py`). A slot only
@@ -371,22 +385,34 @@ Guards:
 
 ## 6. Testing without a Meta account
 
-1. **In the app** — `#/inbox` → *Bot simulator*. Type as the customer, or click
-   the quick-test buttons. Every reply is rendered in the thread.
-2. **Over HTTP** — `POST /api/whatsapp/simulate` (authenticated):
+**There is no in-app bot simulator any more.** The inbox used to carry a "Try the
+bot" panel — a customer-number box, a say-something box and six quick-reply
+buttons — and it was removed: it was a second, fake way to drive a conversation
+sitting directly under the real one, and the bot's replies appeared in a thread it
+had invented rather than in the customer's. Nothing on the WhatsApp screen
+fabricates an inbound message now; the thread only shows what actually arrived.
+
+1. **Over HTTP** — `POST /api/whatsapp/simulate` (authenticated):
 
 ```jsonc
 { "wa_id": "+263775550555", "body": "quote" }
 { "wa_id": "+263775550555", "interactive_id": "m_track" }
 ```
 
-> The simulator takes **text and interactive ids only** — there is no `media_url`
-> field, so the photo flows (enquiry photos, payment proof, warranty photos)
-> cannot be driven from it. Use the unit tests for those, or post a real message
-> to the live number.
+It returns the conversation it landed in (`conversation`, `replies_sent`, `state`),
+so a script can read back exactly what the customer would have seen.
 
-The whole bot is covered by `tests/test_whatsapp_bot.py` with no network in
-simulator mode.
+> It takes **text and interactive ids only** — there is no `media_url` field, so
+> the photo flows (enquiry photos, payment proof, warranty photos) cannot be driven
+> from it. Use the unit tests for those, or post a real message to the live number.
+
+2. **The unit tests.** The whole bot is covered by `tests/test_whatsapp_bot.py`
+   with no network in simulator mode. This is the intended way to exercise it.
+
+3. **A real phone.** With `WA_MODE=live`, message the business number. The thread,
+   the state machine, the templates and the timing are all the same as production —
+   which is the only test that proves the webhook, the signature check and the send
+   loop actually work.
 
 ---
 

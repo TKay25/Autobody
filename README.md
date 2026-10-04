@@ -5,7 +5,8 @@ An in-house workshop management system plus a WhatsApp chatbot, built for
 
 > **Flask** (Python) + **SQLAlchemy** backend · **Bootstrap 5 + vanilla JS** front end
 > with a React-style SPA shell (hyperscript components, store, hash router,
-> optimistic updates) · **WhatsApp Cloud API** chatbot with a built-in simulator.
+> optimistic updates) · **WhatsApp Cloud API** chatbot, with a simulator mode for
+> running the whole flow without a Meta account.
 
 ### Design language
 
@@ -34,7 +35,7 @@ Every token lives in one place (`:root` in `app/static/css/app.css`), and
 | Bookings | `#/bookings` | Website/WhatsApp/phone booking requests → confirm and schedule |
 | Customers | `#/customers` | CRM records, portal links, WhatsApp opt-in management |
 | Vehicles | `#/vehicles` | Registration-keyed vehicle register |
-| WhatsApp inbox | `#/inbox` | Live conversations, human takeover, and a bot simulator |
+| WhatsApp inbox | `#/inbox` | Live conversations, and human takeover |
 | Claims | `#/claims` | All 7 panel insurers, aging, excess, shortfall tracking |
 | Invoices | `#/invoices` | Issue invoices, record EcoCash/InnBucks/bank payments, issue and resend receipts |
 | Reports | `#/reports` | Turnaround, work mix, insurer performance, technician productivity |
@@ -100,11 +101,11 @@ Supported intents:
 
 | Intent | Example | Result |
 |---|---|---|
-| Greeting / menu | `hi`, `mhoro`, `sawubona` | Main menu buttons |
-| Get a quote | `get a quote`, `how much for a bumper respray` | Reg → service → damage → **Booking + estimate reference** |
+| Greeting / menu | `hi`, `mhoro`, `sawubona` | Main menu list |
+| Enquiry | `enquiries`, `get a quote`, `how much for a bumper respray` | Service → a short brief → the enquiry form → **Booking + estimate reference** |
 | Track repair | `track TC-2026-0001`, `where is my car` | Stage, % complete bar, blocking parts, promised date, balance due |
-| My claim | `my claim`, `old mutual claim CLM12345` | Insurer, assessor date, approved amount, excess, aging |
-| Book a service | `book` | Service → day → contact → booking |
+| Book | `book`, `appointment` | Service → day → time → contact → booking |
+| Move an appointment | `move my appointment`, `reschedule` | A **request** to the front desk; the desk agrees it and the customer is messaged |
 | Hours / location | `what time are you open` | Trading hours, address, phone |
 | Warranty | `warranty` | 12-month workmanship terms |
 | Talk to a person | `human`, `speak to someone` | Pauses the bot, flags the thread for the team |

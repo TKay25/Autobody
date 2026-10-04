@@ -432,15 +432,21 @@ def main_menu_reply(company: str, lang: str, prefix: str = "") -> dict:
     """The greeting menu.
 
     A list rather than buttons. WhatsApp caps buttons at three, and that cap is
-    exactly what kept "Book a service" off the greeting — the flow existed, but
+    exactly what once kept the booking flow off the greeting — it existed, but
     customers could only find it by typing *book*. A list shows everything.
 
-    **"Get a quote" and "Book a service" used to be separate rows.** They are one
-    journey — tell us what you need and the desk calls you back — so they are one
-    row now, and the service choice that used to be hidden behind them is on the
-    screen the customer lands on. Two rows that lead to the same desk, ask
-    overlapping questions and differ only in wording is how a menu stops being
-    readable.
+    **One row: "Enquiries".** "Get a quote", "Book a service" and "Book an
+    appointment" were all removed. They lead to the same desk, ask overlapping
+    questions and differ only in wording, and three of them is how a menu stops
+    being readable. The service list that used to hide behind them is on the
+    screen "Enquiries" opens.
+
+    Booking is deliberately **not** offered here. Holding a slot is a promise
+    the workshop makes, and the desk owns that promise — a customer books by
+    enquiring and the front desk books them in. A customer who does ask still
+    reaches the booking flow by typing *book*, *appointment*, *slot* or
+    *schedule* (:meth:`_menu_book`). ``m_bform`` survives as a handler for a
+    thread that cached the old row, and so the handler cannot rot.
 
     The ``menu: "main"`` marker is how :meth:`IntentRouter.handle` finds this
     reply to hang the greeting on, rather than guessing at its button label.
@@ -460,17 +466,6 @@ def main_menu_reply(company: str, lang: str, prefix: str = "") -> dict:
         {"id": "m_lang", "title": "Language"},
         {"id": "m_info", "title": "Contact details"},
     ]
-    # Only offered once a Flow has actually been built and its id configured.
-    # Tapping a row that opens nothing is worse than the row not being there.
-    try:
-        booking_form_id = (current_app.config or {}).get("WA_FLOW_BOOKING_ID") or ""
-    except RuntimeError:      # no app context, e.g. a text-only unit test
-        booking_form_id = ""
-    if booking_form_id:
-        # Directly under "Enquiries": the same journey, but the customer picks the
-        # day rather than waiting for a call.
-        rows.insert(1, {"id": "m_bform", "title": "Book an appointment",
-                        "description": "Pick a day and time on a form"})
 
     return {
         "type": "list",
@@ -1305,11 +1300,34 @@ class IntentRouter:
             return None
         for pattern in BOOKING_MOVE_PHRASES:
             if re.search(pattern, low):
-                return self._booking_move()
+                return self._booking_move(note=self._move_reason(raw))
         for pattern in BOOKING_CANCEL_PHRASES:
             if re.search(pattern, low):
                 return self._booking_cancel()
         return None
+
+    def _move_reason(self, raw: str) -> str | None:
+        """What the customer said *beyond* the bare command, if anything.
+
+        "move my appointment" is a command and carries nothing worth keeping, so
+        a message that is only a move phrase yields no note. "move my appointment,
+        the car won't be ready until Friday" does, and that sentence is often the
+        only thing that tells the desk how hard to try to fit them in.
+        """
+        said = (raw or "").strip()
+        if not said:
+            return None
+        low = said.lower()
+        for pattern in BOOKING_MOVE_PHRASES:
+            low = re.sub(pattern, " ", low)
+        # Whatever is left, once the command itself is stripped out.
+        leftover = re.sub(r"\b(please|pls|kindly|i|my|the|our|a|to|would|like|want|"
+                          r"need|can|could|you|hi|hello|hey|is|it|and)\b", " ", low)
+        leftover = re.sub(r"[^a-z0-9 ]", " ", leftover)
+        leftover = " ".join(leftover.split())
+        if len(leftover) < 4:
+            return None                      # just the command, reworded
+        return said[:300]
 
     def _language_request(self, raw: str) -> list[dict] | None:
         """Reply to a spoken language request, or None if it is not one.
@@ -2078,7 +2096,7 @@ class IntentRouter:
         # replaces the appointment they already have instead of adding a second.
         pending = self._pending_booking("reschedule_booking_id")
         if pending is not None and day:
-            return self._apply_reschedule(pending, day, slot)
+            return self._request_reschedule(pending, day, slot)
 
         self.conv.ctx_set(book_time=slot)
         self.conv.state = "BOOK_CONTACT"
@@ -2134,8 +2152,13 @@ class IntentRouter:
             return None
         return booking
 
-    def _booking_move(self) -> list[dict]:
-        """Start moving an appointment: collect the new day and time."""
+    def _booking_move(self, note: str | None = None) -> list[dict]:
+        """Take a request to move an appointment: collect the day and time.
+
+        ``note`` is whatever the customer said beyond the bare command, kept for
+        the desk — "move my appointment, the car won't be ready" tells them how
+        hard to try, and that context is lost the moment the day picker opens.
+        """
         booking = self._customer_booking()
         if booking is None:
             return [text(
@@ -2149,11 +2172,17 @@ class IntentRouter:
         # would finish with a *second* appointment beside the one they meant to
         # change.
         self.conv.ctx_set(reschedule_booking_id=booking.id, service=booking.service)
+        if note:
+            self.conv.ctx_set(reschedule_note=note)
         self.conv.state = "BOOK_DATE"
         db.session.commit()
+        # "Let's move" would imply the customer can move it themselves. They
+        # cannot — they are telling us what they need and the desk agrees it.
         return [text(
-            f"Let's move *{booking.display_reference}* — currently "
-            f"{booking_ops.slot_text(booking)}.\n\nWhich day suits you instead?"
+            f"*{booking.display_reference}* is currently "
+            f"{booking_ops.slot_text(booking)}.\n\n"
+            "Which day would suit you better? I will pass it to our front desk to "
+            "confirm — an appointment only moves once they have agreed it."
         ), self._day_list(booking.service)]
 
     def _booking_cancel(self) -> list[dict]:
@@ -2210,20 +2239,33 @@ class IntentRouter:
             f"Kept — we will see you on *{booking_ops.slot_text(booking)}*."
         ), more_menu_reply(self.lang)]
 
-    def _apply_reschedule(self, booking: Booking, day: date, slot: str) -> list[dict]:
-        """Land the new day and time on the existing appointment."""
-        previous = booking_ops.slot_text(booking)
-        self.conv.ctx_clear("reschedule_booking_id", "service", "book_date", "book_time")
+    def _request_reschedule(self, booking: Booking, day: date, slot: str) -> list[dict]:
+        """Pass the customer's ask to the desk. The appointment does **not** move.
+
+        The workshop is the side that promises a slot, so a customer cannot take
+        one on their own. Tapping *Move it* used to move the appointment outright,
+        which let a customer silently overwrite an arrangement the front desk had
+        made with them — and then read a confirmation for a time nobody had
+        agreed. Now it is a request the desk accepts or declines, and the reply
+        says so rather than implying it is done.
+        """
+        held = booking_ops.slot_text(booking)
+        self.conv.ctx_clear("reschedule_booking_id", "reschedule_note",
+                            "service", "book_date", "book_time")
         self.conv.state = "MAIN_MENU"
         db.session.commit()
 
-        # Shared with the desk's Reschedule dialog, so the customer and the front
-        # desk cannot be given different answers for the same change.
-        booking_ops.reschedule(booking, slot_date=day, slot_time=slot)
+        asked_for = booking_ops.request_reschedule(
+            booking, slot_date=day, slot_time=slot,
+            note=self.conv.ctx_get("reschedule_note"))["text"]
+
         return [text(
-            f"Moved — *{booking.display_reference}* is now "
-            f"{booking_ops.slot_text(booking)}.\n\n"
-            f"It was {previous}."
+            f"*Asked for*\n\n"
+            f"Reference: {booking.display_reference}\n"
+            f"Currently: {held}\n"
+            f"You asked for: {asked_for}"
+            "\n\nOur front desk will confirm the new time with you shortly. "
+            "Nothing has changed yet."
         ), more_menu_reply(self.lang)]
 
     # ── payment proof ────────────────────────────────────────────────────

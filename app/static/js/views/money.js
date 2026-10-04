@@ -988,8 +988,9 @@
           h('div.col-md-6', [
             h('p.small.text-secondary.mb-2',
               'The bot answers customer questions, logs quote requests, tracks repairs and ' +
-              'takes bookings. Test it without a Meta account in simulator mode.'),
-            h('a.btn.btn-success.btn-sm', { href: '#/inbox' }, T.icon('whatsapp'), ' Open inbox & simulator'),
+              'takes bookings. Every thread it has handled is on the WhatsApp screen, ' +
+              'where you can read it and take over by hand.'),
+            h('a.btn.btn-success.btn-sm', { href: '#/inbox' }, T.icon('whatsapp'), ' Open the inbox'),
           ]),
           h('div.col-md-6', h('ul.small.text-secondary.mb-0', [
             h('li', 'Webhook: POST /webhooks/whatsapp'),

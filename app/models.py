@@ -980,6 +980,16 @@ class Booking(TimestampMixin, db.Model):
     # makes the reminder job safe to run as often as you like.
     reminder_sent_at = db.Column(db.DateTime)
 
+    # A customer asking to move their appointment. A *request*, not a move: the
+    # workshop is the side that promises a slot, so a customer cannot take one
+    # on their own. `requested_at` non-null means the ask is still open —
+    # accepting or declining it clears the field, exactly like
+    # `reminder_sent_at`. The desk sees it as a banner on the bookings screen.
+    requested_slot_date = db.Column(db.Date)
+    requested_slot_time = db.Column(db.String(10))
+    requested_at = db.Column(db.DateTime)
+    requested_note = db.Column(db.Text)
+
     customer = db.relationship("Customer", back_populates="bookings")
     vehicle = db.relationship("Vehicle")
     # Two foreign keys onto the same table, so the joins have to be explicit.
@@ -997,6 +1007,19 @@ class Booking(TimestampMixin, db.Model):
     def photo_count(self) -> int:
         """How many photos the customer sent with the enquiry."""
         return len(self.photos)
+
+    @property
+    def has_reschedule_request(self) -> bool:
+        """True while the customer is waiting on an answer about moving it."""
+        return self.requested_at is not None
+
+    @property
+    def requested_slot_text(self) -> str | None:
+        """What the customer asked for: "Tue 24 Sep 2026 at 09:00"."""
+        if not self.requested_slot_date:
+            return None
+        when = self.requested_slot_date.strftime("%a %d %b %Y")
+        return f"{when} at {self.requested_slot_time}" if self.requested_slot_time else when
 
     def to_dict(self) -> dict:
         return {
@@ -1029,6 +1052,18 @@ class Booking(TimestampMixin, db.Model):
             "rescheduled_count": self.rescheduled_count or 0,
             "reminder_sent_at": (self.reminder_sent_at.isoformat()
                                  if self.reminder_sent_at else None),
+            # The customer's open ask to move it, if there is one. The screen
+            # reads `has_reschedule_request` to decide whether to show the
+            # banner, so it is exposed rather than left to be inferred from a
+            # nullable date.
+            "has_reschedule_request": self.has_reschedule_request,
+            "requested_slot_date": (self.requested_slot_date.isoformat()
+                                    if self.requested_slot_date else None),
+            "requested_slot_time": self.requested_slot_time,
+            "requested_slot_text": self.requested_slot_text,
+            "requested_at": (self.requested_at.isoformat()
+                             if self.requested_at else None),
+            "requested_note": self.requested_note,
             "photos": [p.to_dict() for p in self.photos],
             "photo_count": self.photo_count,
             "created_at": self.created_at.isoformat(),

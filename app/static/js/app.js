@@ -267,8 +267,16 @@
     async function loadEnquiries() {
       T.mount(enqBody, T.spinner('Checking for enquiries…'));
       try {
-        const data = await api.get('/api/bookings?status=REQUESTED', { silent: true });
-        renderEnquiries(data.items || []);
+        /* Two different lists, because they are two different jobs. A new
+           enquiry is waiting for a decision; a reschedule request is a customer
+           waiting on an answer about a booking that is already confirmed. Only
+           the first is `status=REQUESTED`, so the second needs its own call —
+           and it is the one nobody would otherwise notice. */
+        const [data, asked] = await Promise.all([
+          api.get('/api/bookings?status=REQUESTED', { silent: true }),
+          api.get('/api/bookings?reschedule_requests=1', { silent: true }),
+        ]);
+        renderEnquiries(data.items || [], asked.items || []);
       } catch (err) {
         T.mount(enqBody, h('div.tc-bell-note', 'Could not load the enquiry list.'));
       }
@@ -276,13 +284,15 @@
 
     /* An enquiry is not a booking until somebody confirms it — hence
        "Confirm" here and "Attend" for recording who dealt with it. */
-    function renderEnquiries(items) {
-      attnCount.enquiries = items.length;
-      enqTabCount.textContent = String(items.length);
-      enqTabCount.hidden = !items.length;
+    function renderEnquiries(items, asked) {
+      const requests = asked || [];
+      const total = items.length + requests.length;
+      attnCount.enquiries = total;
+      enqTabCount.textContent = String(total);
+      enqTabCount.hidden = !total;
       setBellCount();
 
-      if (!items.length) {
+      if (!total) {
         T.mount(enqBody, h('div.tc-bell-note.is-clear', [
           h('span.tc-bell-ok', T.icon('check2-circle')),
           ' Nothing waiting — every enquiry has been dealt with.',
@@ -290,30 +300,58 @@
         return;
       }
 
-      T.mount(enqBody, h('div.tc-bell-rows', items.map((b) => h('div.tc-bell-row', [
-        h('div.tc-bell-row-main', [
-          h('span.tc-bell-ref', b.reference),
-          h('span.tc-bell-name', b.customer_name || '—'),
-          h('span.tc-bell-meta', [
-            b.service,
-            ` · ${dateShort(b.slot_date)}`,
-            b.slot_time ? ` ${b.slot_time}` : '',
-            ` · ${b.source}`,
+      /* Requests first: somebody is waiting on an answer about a time they
+         have already been given, and the clock is running against it. */
+      T.mount(enqBody, h('div.tc-bell-rows', [
+        ...requests.map((b) => h('div.tc-bell-row.is-request', [
+          h('div.tc-bell-row-main', [
+            h('span.tc-bell-ref', b.display_reference || b.reference),
+            h('span.tc-bell-name', b.customer_name || '—'),
+            h('span.tc-bell-meta', [
+              'Wants to move to ',
+              h('strong', b.requested_slot_text || 'another time'),
+              ` · currently ${dateShort(b.slot_date)}${b.slot_time ? ` ${b.slot_time}` : ''}`,
+            ]),
+            b.requested_note
+              ? h('span.tc-bell-meta.is-note', `"${b.requested_note}"`)
+              : null,
           ]),
-        ]),
-        h('div.tc-bell-row-actions', [
-          h('button.btn.btn-sm.btn-brand', {
-            type: 'button', onclick: () => act(() => T.bookingConfirm(b)),
-          }, 'Confirm'),
-          h('button.btn.btn-sm.btn-outline-secondary', {
-            type: 'button', onclick: () => act(() => T.bookingAttend(b)),
-          }, 'Attend'),
-          h('button.btn.btn-sm.btn-outline-secondary', {
-            type: 'button', title: 'Reschedule and notify the customer',
-            onclick: () => act(() => T.bookingReschedule(b)),
-          }, T.icon('calendar-week')),
-        ]),
-      ]))));
+          h('div.tc-bell-row-actions', [
+            h('button.btn.btn-sm.btn-brand', {
+              type: 'button', title: 'Agree to the new time and tell the customer',
+              onclick: () => act(() => T.bookingAcceptReschedule(b)),
+            }, 'Do as asked'),
+            h('button.btn.btn-sm.btn-outline-secondary', {
+              type: 'button', title: 'Keep the appointment where it is',
+              onclick: () => act(() => T.bookingDeclineReschedule(b)),
+            }, 'Keep as is'),
+          ]),
+        ])),
+        ...items.map((b) => h('div.tc-bell-row', [
+          h('div.tc-bell-row-main', [
+            h('span.tc-bell-ref', b.reference),
+            h('span.tc-bell-name', b.customer_name || '—'),
+            h('span.tc-bell-meta', [
+              b.service,
+              ` · ${dateShort(b.slot_date)}`,
+              b.slot_time ? ` ${b.slot_time}` : '',
+              ` · ${b.source}`,
+            ]),
+          ]),
+          h('div.tc-bell-row-actions', [
+            h('button.btn.btn-sm.btn-brand', {
+              type: 'button', onclick: () => act(() => T.bookingConfirm(b)),
+            }, 'Confirm'),
+            h('button.btn.btn-sm.btn-outline-secondary', {
+              type: 'button', onclick: () => act(() => T.bookingAttend(b)),
+            }, 'Attend'),
+            h('button.btn.btn-sm.btn-outline-secondary', {
+              type: 'button', title: 'Reschedule and notify the customer',
+              onclick: () => act(() => T.bookingReschedule(b)),
+            }, T.icon('calendar-week')),
+          ]),
+        ])),
+      ]));
     }
 
     async function act(action) {
@@ -578,9 +616,42 @@
       '13:00', '14:00', '15:00', '16:00'];
   }
 
+  /* A customer cannot move their own appointment — they ask, and the desk
+     agrees. These two are the desk answering, and they live here beside the
+     other booking actions so the bell and the screen cannot offer different
+     answers to the same request. */
+  async function bookingAcceptReschedule(booking) {
+    const res = await api.post(`/api/bookings/${booking.id}/reschedule/accept`, {});
+    T.toast(res.message, res.notified ? 'success' : 'warning');
+    return res;
+  }
+
+  async function bookingDeclineReschedule(booking) {
+    const opts = await T.formModal({
+      title: `Keep ${booking.display_reference || booking.reference} as it is`,
+      subtitle: `${booking.customer_name || 'The customer'} asked for `
+        + `${booking.requested_slot_text || 'another time'}. They are messaged `
+        + 'either way, so say why — a refusal with a reason is still an answer.',
+      icon: 'calendar-x',
+      fields: [{
+        name: 'reason', label: 'What should we tell them? *', type: 'textarea',
+        col: 12, required: true,
+        placeholder: 'e.g. That morning is fully booked — we can do the afternoon.',
+        hint: 'Sent to the customer word for word.',
+      }],
+      submitLabel: 'Keep the appointment',
+    });
+    if (!opts) return null;
+    const res = await api.post(`/api/bookings/${booking.id}/reschedule/decline`, opts);
+    T.toast(res.message, res.notified ? 'success' : 'warning');
+    return res;
+  }
+
   T.bookingConfirm = bookingConfirm;
   T.bookingAttend = bookingAttend;
   T.bookingReschedule = bookingReschedule;
+  T.bookingAcceptReschedule = bookingAcceptReschedule;
+  T.bookingDeclineReschedule = bookingDeclineReschedule;
 
   function scrim() {
     let el = document.getElementById('sidebarScrim');

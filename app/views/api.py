@@ -1141,6 +1141,11 @@ def list_bookings():
     query = Booking.query
     if status:
         query = query.filter(Booking.status == status)
+    # The customers who have asked to move an appointment and are waiting on an
+    # answer. Not expressible as a status: the booking is confirmed, it is the
+    # *request* that is outstanding, which is why it needs its own filter.
+    if want(request.args, "reschedule_requests"):
+        query = query.filter(Booking.requested_at.isnot(None))
     # The attribution names are shown on every row, so join them up front
     # rather than letting each booking lazy-load its own two staff rows.
     query = query.options(
@@ -1354,6 +1359,94 @@ def reschedule_booking(booking_id: int):
         "previous": previous,
         "message": ("Booking moved and the customer has been notified." if notified
                     else "Booking moved. The customer could not be notified."),
+    })
+
+
+@bp.post("/bookings/<int:booking_id>/reschedule/accept")
+@login_required
+def accept_reschedule_request(booking_id: int):
+    """Do as the customer asked, and tell them.
+
+    A customer cannot move their own appointment: they asked, and the workshop is
+    the side that promises a slot. This is the desk agreeing, and it delegates to
+    the same service the Reschedule dialog uses, so agreeing to a request and
+    moving it by hand cannot produce different outcomes for the same change.
+    """
+    booking = db.session.get(Booking, booking_id)
+    if not booking:
+        return bad("Booking not found.", 404)
+
+    result = booking_ops.accept_reschedule_request(booking)
+    if not result["moved"]:
+        if result["reason"] == "no_request":
+            return bad("There is no reschedule request on this booking.")
+        # They asked for the slot they are already on. Clearing the request was
+        # the whole job, and there is nothing worth waking the customer for.
+        return jsonify({
+            "booking": booking.to_dict(),
+            "moved": False,
+            "notified": False,
+            "message": "The customer asked for the time they are already on, so "
+                       "nothing changed.",
+        })
+
+    log_activity(
+        "booking.rescheduled",
+        f"Agreed to a reschedule request: {booking.display_reference} moved from "
+        f"{result['previous']} to {booking_ops.slot_text(booking)}",
+        entity_type="booking", entity_id=booking.id,
+        entity_ref=booking.display_reference,
+        meta={"previous": result["previous"], "notified": result["notified"],
+              "requested_by": "customer"},
+        commit=True,
+    )
+    return jsonify({
+        "booking": booking.to_dict(),
+        "moved": True,
+        "notified": result["notified"],
+        "previous": result["previous"],
+        "message": ("Moved as requested and the customer has been notified."
+                    if result["notified"]
+                    else "Moved as requested. The customer could not be notified."),
+    })
+
+
+@bp.post("/bookings/<int:booking_id>/reschedule/decline")
+@login_required
+def decline_reschedule_request(booking_id: int):
+    """Turn the requested time down, leaving the appointment where it is.
+
+    An optional ``reason`` is passed to the customer verbatim — a refusal that
+    names the reason is an answer, and one that does not is a wall. The customer
+    is always told, because silently ignoring an ask is worse than saying no.
+    """
+    booking = db.session.get(Booking, booking_id)
+    if not booking:
+        return bad("Booking not found.", 404)
+
+    data = payload()
+    reason = want(data, "reason")
+    result = booking_ops.decline_reschedule_request(booking, reason=reason)
+    if not result["declined"]:
+        return bad("There is no reschedule request on this booking.")
+
+    log_activity(
+        "booking.reschedule_declined",
+        f"Declined a reschedule request for {booking.display_reference}; it stays "
+        f"on {result['slot']}" + (f" ({reason})" if reason else ""),
+        entity_type="booking", entity_id=booking.id,
+        entity_ref=booking.display_reference,
+        meta={"slot": result["slot"], "notified": result["notified"],
+              "reason": reason or ""},
+        commit=True,
+    )
+    return jsonify({
+        "booking": booking.to_dict(),
+        "declined": True,
+        "notified": result["notified"],
+        "message": ("Request declined and the customer has been told."
+                    if result["notified"]
+                    else "Request declined. The customer could not be notified."),
     })
 
 

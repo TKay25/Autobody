@@ -11,6 +11,7 @@ from app.extensions import db
 from app.models import (Booking, BookingPhoto, Customer, Estimate, Invoice, JobCard, JobPhoto,
                         NotificationLog, PaymentProof, Task, Vehicle, WaConversation,
                         WaMessage)
+from app.services import bookings as booking_ops
 from app.services import intent_router, notifications
 from app.services.whatsapp_client import get_or_create_conversation
 
@@ -2132,19 +2133,18 @@ class _WithForm:
         return WithForm
 
 
-def test_the_booking_form_is_offered_only_when_one_is_configured(app):
-    """A menu row that opens nothing is worse than no row at all.
+def test_the_main_menu_is_enquiries_first_with_no_booking_row(app):
+    """One journey in, and no booking row whether a Flow exists or not.
 
-    The form's id comes from Meta, so an install without a Flow built must not
-    advertise one — and the row has to appear as soon as it is configured.
-
-    The enquiry form is no longer a menu row: it is reached through "Enquiries",
-    which explains the service first, and falls back to the chat enquiry when no
-    Flow is built. The booking form is the one that has no chat equivalent worth
-    falling back to, so it is the one still gated on its id.
+    Booking is the desk's promise to hold a slot, so the customer enquires and
+    the front desk books them in. The rows removed here are "Get a quote",
+    "Book a service", "Book an appointment" and the enquiry-form row: all of them
+    asked overlapping questions and only differed in wording.
     """
     from app import create_app
     from config import TestConfig
+
+    gone = {"m_quote", "m_book", "m_form", "m_bform"}
 
     plain = create_app(TestConfig)
     with plain.app_context():
@@ -2155,10 +2155,14 @@ def test_the_booking_form_is_offered_only_when_one_is_configured(app):
         conversation = get_or_create_conversation("263774440001", "No Form")
         rows = intent_router.handle_inbound(conversation, text_body="hi")[0]
         ids = [r["id"] for s in rows["sections"] for r in s["rows"]]
-        assert "m_bform" not in ids, ids
-        # But the enquiry journey is always there, form or no form.
-        assert "m_enquiries" in ids, ids
+        assert not gone & set(ids), ids
+        # The one journey that is offered, and it is the first row.
+        assert ids[0] == "m_enquiries", ids
+        # WhatsApp trims a list at ten rows.
+        assert len(ids) <= 10, ids
 
+    # Configuring both Flow ids must not bring a booking row back: the menu no
+    # longer depends on them at all.
     configured = create_app(_WithForm.config())
     with configured.app_context():
         db.create_all()
@@ -2168,7 +2172,27 @@ def test_the_booking_form_is_offered_only_when_one_is_configured(app):
         conversation = get_or_create_conversation("263774440002", "Has Form")
         rows = intent_router.handle_inbound(conversation, text_body="hi")[0]
         ids = [r["id"] for s in rows["sections"] for r in s["rows"]]
-        assert "m_bform" in ids, ids
+        assert not gone & set(ids), ids
+        assert ids[0] == "m_enquiries", ids
+        assert len(ids) <= 10, ids
+
+
+def test_booking_is_still_reachable_by_typing_book(app):
+    """Removing the row must not remove the capability.
+
+    A customer who asks to book still gets the booking flow — they just have to
+    say so. The menu stops advertising it; the shop has not stopped accepting it.
+    """
+    with app.app_context():
+        conversation = get_or_create_conversation("263774440030", "Booker")
+        for phrase in ("book", "I want to book", "appointment", "can I book a slot"):
+            conversation.state = "MAIN_MENU"
+            db.session.commit()
+            replies = intent_router.handle_inbound(conversation, text_body=phrase)
+            assert replies, phrase
+            # The service list, carrying the booking flow's own ids.
+            assert replies[0]["type"] == "list", (phrase, replies)
+            assert replies[0]["sections"][0]["rows"][0]["id"].startswith("bsvc:"), replies
 
 
 def test_tapping_the_form_row_sends_the_flow(app):
@@ -2357,34 +2381,30 @@ def test_a_full_slot_is_not_confirmed_silently(app):
         assert Booking.query.filter_by(slot_time="10:00").count() == 3
 
 
-def test_the_booking_form_is_offered_only_when_one_is_configured(app):
-    """Same rule as the enquiry form: no row that opens nothing."""
-    from app import create_app
-    from config import TestConfig
+def test_the_menu_describes_every_row_it_offers(app):
+    """A row the customer cannot predict is a row they will not tap.
 
-    plain = create_app(TestConfig)
-    with plain.app_context():
-        db.create_all()
-        from app.seed import run_seed
-
-        run_seed(with_demo=False)
-        conversation = get_or_create_conversation("263774440006", "No Booking Form")
+    "Enquiries" is the first door and has to say what is behind it, because it is
+    now the only way in — the quote, booking and booking-form rows are gone.
+    """
+    with app.app_context():
+        conversation = get_or_create_conversation("263774440006", "Reader")
         rows = intent_router.handle_inbound(conversation, text_body="hi")[0]
-        ids = [r["id"] for s in rows["sections"] for r in s["rows"]]
-        assert "m_bform" not in ids, ids
+        section = rows["sections"][0]
 
-    configured = create_app(_WithForm.config())
-    with configured.app_context():
-        db.create_all()
-        from app.seed import run_seed
+        assert rows["type"] == "list", rows
+        assert rows["footer"], "the language hint lost its home"
+        for row in section["rows"]:
+            assert row.get("title"), row
+            # Every row but the two shorthand ones carries a description; those
+            # two name themselves, so an empty description is not a gap.
+            if row["id"] not in {"m_services", "m_lang", "m_info", "m_human"}:
+                assert row.get("description"), row
 
-        run_seed(with_demo=False)
-        conversation = get_or_create_conversation("263774440007", "Has Booking Form")
-        rows = intent_router.handle_inbound(conversation, text_body="hi")[0]
-        ids = [r["id"] for s in rows["sections"] for r in s["rows"]]
-        assert "m_bform" in ids, ids
-        # WhatsApp trims a list at ten rows, and both forms are now offered.
-        assert len(ids) <= 10, ids
+        enquiries = section["rows"][0]
+        assert enquiries["title"] == "Enquiries"
+        # It must read as an invitation, not as a synonym for "complaints".
+        assert "call back" in enquiries["description"].lower(), enquiries
 
 
 def test_tapping_the_booking_row_opens_the_booking_screen(app):
@@ -2841,20 +2861,26 @@ def test_move_it_collects_a_new_day_then_a_time(app):
     replies = _tap(app, "b_move")
 
     assert replies[0]["type"] == "text"
-    assert "Let's move" in replies[0]["body"], replies[0]["body"]
+    # It must not read as though the move has happened, or as though the customer
+    # can do it themselves: they are asking the desk for a time.
+    assert "is currently" in replies[0]["body"], replies[0]["body"]
+    assert "front desk" in replies[0]["body"], replies[0]["body"]
+    assert "Let's move" not in replies[0]["body"], replies[0]["body"]
     assert replies[1]["type"] == "list"
     with app.app_context():
         assert get_or_create_conversation(WA_NUMBER).state == "BOOK_DATE"
 
 
-def test_moving_an_appointment_moves_it_rather_than_adding_one(app):
-    """The whole point. A move must not leave the customer with two bookings.
+def test_asking_to_move_records_the_request_and_moves_nothing(app):
+    """The customer asks; the desk agrees. A tap moves nothing.
 
+    The workshop is the side that promises a slot, so *Move it* cannot take one.
     The day and time are collected by the ordinary booking flow, which raises a
-    *new* booking. Remembering which one is being moved is what stops the
-    customer ending up with a duplicate while the original still holds its slot.
+    *new* booking — so remembering which one is being asked about is also what
+    stops the customer ending up with a duplicate beside the original.
     """
     booking_id = _appointment(app, slot="09:00")
+    original_day = date.today() + timedelta(days=1)
     _tap(app, "b_move")
     new_day = date.today() + timedelta(days=3)
 
@@ -2867,28 +2893,37 @@ def test_moving_an_appointment_moves_it_rather_than_adding_one(app):
             conversation, interactive_id=f"bslot:{new_day.isoformat()}:14:00")
 
         db.session.expire_all()
-        assert Booking.query.count() == 1, "a move created a second appointment"
+        assert Booking.query.count() == 1, "asking to move created a second appointment"
         booking = db.session.get(Booking, booking_id)
-        assert booking.slot_date == new_day
-        assert booking.slot_time == "14:00"
-        assert booking.rescheduled_count == 1
-        # It frees the slot it was holding: nothing is still expected at 09:00.
-        held = Booking.query.filter(Booking.status.in_(BOOKING_EXPECTED_STATUSES),
-                                    Booking.slot_time == "09:00").count()
-        assert held == 0, "the old slot is still held after the move"
+        # Nothing moved: that is the desk's decision to make, not the bot's.
+        assert booking.slot_date == original_day
+        assert booking.slot_time == "09:00"
+        assert booking.rescheduled_count == 0
+        # But the ask is on the record, for somebody to answer.
+        assert booking.has_reschedule_request
+        assert booking.requested_slot_date == new_day
+        assert booking.requested_slot_time == "14:00"
+        assert booking.requested_slot_text == new_day.strftime("%a %d %b %Y") + " at 14:00"
+        # And it is on the desk's day book, or nobody would ever see it.
+        task = Task.query.filter(Task.title.like("Move %")).first()
+        assert task is not None, "no front-desk task was raised"
+        assert task.category == "Front desk" and task.status == "OPEN"
 
     spoken = "\n".join(r.get("body", "") for r in replies)
-    assert "Moved" in spoken, spoken
-    # Both what it was and what it now is, and no asking who they are again.
-    assert "It was" in spoken, spoken
+    assert "Asked for" in spoken, spoken
+    assert "Nothing has changed yet" in spoken, spoken
     assert "your *name*" not in spoken, spoken
 
 
-def test_the_customer_is_told_about_the_move(app):
-    """Moving silently would be worse than not moving at all."""
-    _appointment(app, slot="09:00")
-    _tap(app, "b_move")
+def test_the_desk_agreeing_is_what_moves_it_and_tells_the_customer(app):
+    """The notice follows the desk's decision, not the customer's ask.
+
+    Sending it on the tap would tell the customer a time nobody had agreed, which
+    is exactly what the old outright move did.
+    """
+    booking_id = _appointment(app, slot="09:00")
     new_day = date.today() + timedelta(days=3)
+    _tap(app, "b_move")
 
     with app.app_context():
         conversation = get_or_create_conversation(WA_NUMBER)
@@ -2897,9 +2932,77 @@ def test_the_customer_is_told_about_the_move(app):
         intent_router.handle_inbound(
             conversation, interactive_id=f"bslot:{new_day.isoformat()}:14:00")
 
-        logged = NotificationLog.query.filter_by(template="booking_rescheduled").all()
-        assert logged, "no reschedule notice was sent"
-        assert "Was:" in logged[-1].body and "Now:" in logged[-1].body
+        # Asking alone must not have promised anything.
+        assert NotificationLog.query.filter_by(
+            template="booking_rescheduled").count() == 0
+        booking = db.session.get(Booking, booking_id)
+        assert booking.slot_time == "09:00"
+
+        result = booking_ops.accept_reschedule_request(booking)
+        assert result["moved"] is True, result
+        assert result["notified"] is True, result
+        # Agreeing clears the ask, so the desk is not asked to answer it twice.
+        assert booking.has_reschedule_request is False
+        assert booking.slot_date == new_day and booking.slot_time == "14:00"
+        assert booking.rescheduled_count == 1
+
+    logged = NotificationLog.query.filter_by(template="booking_rescheduled").all()
+    assert logged, "no reschedule notice was sent"
+    assert "Was:" in logged[-1].body and "Now:" in logged[-1].body
+
+
+def test_declining_keeps_the_slot_and_still_answers_the_customer(app):
+    """Silently ignoring a request is worse than saying no."""
+    booking_id = _appointment(app, slot="09:00")
+    held = date.today() + timedelta(days=1)
+    new_day = date.today() + timedelta(days=3)
+    _tap(app, "b_move")
+
+    with app.app_context():
+        conversation = get_or_create_conversation(WA_NUMBER)
+        intent_router.handle_inbound(conversation,
+                                     interactive_id=f"day:{new_day.isoformat()}")
+        intent_router.handle_inbound(
+            conversation, interactive_id=f"bslot:{new_day.isoformat()}:14:00")
+
+        booking = db.session.get(Booking, booking_id)
+        result = booking_ops.decline_reschedule_request(
+            booking, reason="That morning is fully booked.")
+        assert result["declined"] is True and result["notified"] is True
+        assert booking.slot_date == held and booking.slot_time == "09:00"
+        assert booking.rescheduled_count == 0
+        assert booking.has_reschedule_request is False
+        # The reason is kept on the record, and given to the customer verbatim.
+        assert "That morning is fully booked." in (booking.notes or "")
+
+    logged = NotificationLog.query.filter_by(template="reschedule_declined").all()
+    assert logged, "the customer was never told"
+    assert "Still booked for:" in logged[-1].body
+    assert "That morning is fully booked." in logged[-1].body
+
+
+def test_accepting_with_no_request_or_the_same_slot_is_a_no_op(app):
+    """Two ways the answer can be "nothing to do", and neither may misfire."""
+    booking_id = _appointment(app, slot="09:00")
+    held = date.today() + timedelta(days=1)
+
+    with app.app_context():
+        booking = db.session.get(Booking, booking_id)
+
+        # Nothing was ever asked.
+        assert booking_ops.accept_reschedule_request(booking)["reason"] == "no_request"
+        assert booking_ops.decline_reschedule_request(booking)["declined"] is False
+
+        # Asked for the slot they are already on: the ask is cleared, but there
+        # is nothing to move and nothing worth waking the customer for.
+        booking_ops.request_reschedule(booking, slot_date=held, slot_time="09:00")
+        assert booking.has_reschedule_request
+        result = booking_ops.accept_reschedule_request(booking)
+
+        assert result["reason"] == "same_slot"
+        assert result["moved"] is False and result["notified"] is False
+        assert booking.slot_time == "09:00" and booking.rescheduled_count == 0
+        assert booking.has_reschedule_request is False
 
 
 def test_cancel_asks_before_cancelling(app):
@@ -3016,7 +3119,7 @@ def test_typing_reschedule_my_appointment_opens_the_day_picker(app):
         conversation = get_or_create_conversation(WA_NUMBER)
         replies = intent_router.handle_inbound(conversation,
                                                text_body="reschedule my appointment")
-        assert "Let's move" in replies[0]["body"], replies[0]["body"]
+        assert "is currently" in replies[0]["body"], replies[0]["body"]
         assert replies[1]["type"] == "list"
         assert conversation.state == "BOOK_DATE"
 

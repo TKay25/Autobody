@@ -69,11 +69,19 @@ CUSTOMER GETS
 ### Booking request — "I want to bring it in on a day"
 
 ```
-ENTRY (any of four)
-  a) Main menu row ... "Book a service"          -> m_book
-  b) Main menu row ... "Booking form"            -> m_bform  (the WhatsApp Flow)
-  c) Typed ........... "book", "appointment", "slot"
-  d) The reminder's "Move it" button             -> b_move   (MOVES an existing one)
+ENTRY (any of three)
+  a) Typed ........... "book", "appointment", "slot", "schedule"
+  b) Typed ........... "move my appointment", "reschedule", "move it"
+                       (a *request*, not a move — see below)
+  c) The reminder's "Move it" button             -> b_move
+
+There is deliberately **no booking row on the main menu.** Holding a slot is a
+promise the workshop makes, so the customer enquires and the front desk books them
+in. "Book a service" (`m_book`), "Book an appointment" (`m_bform`) and the
+enquiry-form row (`m_form`) were all removed — they led to the same desk and asked
+overlapping questions. The booking Flow is still built and still reachable by
+*booking form*'s own id; it just is not advertised. `m_bform` survives as a
+handler so a thread that cached the old row does not dead-end.
 
 CHAT PATH
   BOOK_SERVICE   the same 7 services, but under their own "bsvc:" ids so a tap
@@ -88,10 +96,24 @@ FORM PATH
   _booking_from_flow() checks the slot's capacity BEFORE writing the record,
   then calls _create_lead(). No plate needed; no photo request.
 
-REMINDER PATH  (the day before: booking_reminder template)
+REMINDER / ASK PATH  ("Move it", or a typed reschedule)
   "Move it"      -> _booking_move()   reminds the context WHICH booking is being
-                    moved, then reuses BOOK_DATE -> BOOK_TIME and lands the new
-                    slot on that same booking. It does not raise a second one.
+                    asked about, then reuses BOOK_DATE -> BOOK_TIME.
+
+                    It does **not** move the appointment. The customer is asking;
+                    the desk agrees. The ask is recorded on the booking
+                    (`requested_slot_date` / `requested_slot_time` / `requested_at`,
+                    plus the customer's own words in `requested_note` when they
+                    explained why) and a Front desk task is raised, or nobody would
+                    ever see it. Reply: "Currently X. You asked for Y. Nothing has
+                    changed yet."
+
+                    The desk answers on Enquiries & Bookings (or the enquiry bell)
+                    with **Do as asked** / **Keep as is**
+                    (`POST /api/bookings/<id>/reschedule/accept|decline`). Accepting
+                    calls the same bookings.reschedule() the desk's own dialog uses,
+                    so the two cannot disagree; declining sends the reason verbatim.
+                    Either way the customer is messaged — an ask is never ignored.
   "Cancel appointment" -> asks "Yes, cancel it / No, keep it" first.
 
 RAISED

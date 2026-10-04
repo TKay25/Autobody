@@ -275,6 +275,55 @@
       if (saved) load();
     }
 
+    /* The desk answering a customer's ask. Lives in app.js with the rest of the
+       booking actions, so the bell and this screen offer the same two answers. */
+    async function acceptRequest(booking) {
+      await T.bookingAcceptReschedule(booking);
+      load();
+    }
+
+    async function declineRequest(booking) {
+      const saved = await T.bookingDeclineReschedule(booking);
+      if (saved) load();
+    }
+
+    /* The requests, above the table. Nobody opens this screen looking for them,
+       and a customer waiting on a time is the most time-sensitive thing on it —
+       so they get a banner rather than a hidden row action. */
+    function requestBanner(rows) {
+      const waiting = rows.filter((r) => r.has_reschedule_request);
+      if (!waiting.length) return null;
+      return h('div.tc-request-banner', [
+        h('div.tc-request-banner-head', [
+          T.icon('calendar-week'),
+          h('span', `${waiting.length} appointment`
+            + `${waiting.length === 1 ? '' : 's'} to move`),
+          h('span.tc-request-banner-note',
+            'A customer asked — the appointment stays where it is until you agree.'),
+        ]),
+        h('div.tc-request-banner-rows', waiting.map((b) => h('div.tc-request-banner-row', [
+          h('div.flex-fill', [
+            h('div.fw-semibold', `${b.customer_name || '—'} · `
+              + `${b.display_reference || b.reference}`),
+            h('div.small', [
+              'Currently ', h('strong', `${dateShort(b.slot_date)}`
+                + (b.slot_time ? ` ${b.slot_time}` : '')),
+              ' · wants ', h('strong', b.requested_slot_text || 'another time'),
+            ]),
+            b.requested_note ? h('div.small.fst-italic', `"${b.requested_note}"`) : null,
+          ]),
+          h('div.d-flex.gap-1.align-items-start', [
+            h('button.btn.btn-sm.btn-brand', {
+              type: 'button', onclick: () => acceptRequest(b),
+            }, 'Do as asked'),
+            h('button.btn.btn-sm.btn-outline-secondary', {
+              type: 'button', onclick: () => declineRequest(b),
+            }, 'Keep as is'),
+          ]),
+        ]))),
+      ]);
+    }
+
     /* Enquiry photos. A customer sends them before any job card exists, so they
        hang off the enquiry — and this pill is the only place the desk sees them
        without opening the chat thread in the inbox. */
@@ -291,7 +340,9 @@
       const colour = { REQUESTED: 'warning', CONFIRMED: 'info', ATTENDED: 'success',
                        ARRIVED: 'primary', COMPLETED: 'success', NO_SHOW: 'secondary',
                        CANCELLED: 'danger' };
-      T.mount(host, T.dataTable({
+      T.mount(host, [
+        requestBanner(data.items),
+        T.dataTable({
         columns: [
           /* A new enquiry only has an enquiry reference. It earns the booking
              reference when it is confirmed, and both stay visible so the
@@ -308,7 +359,14 @@
               h('div.small.text-secondary', r.customer_phone || '')]) },
           { label: 'Service', render: (r) => h('span.small', r.service) },
           { label: 'Date', render: (r) => h('div', [h('div', dateShort(r.slot_date)),
-              h('div.small.text-secondary', r.slot_time || 'Any time')]) },
+              h('div.small.text-secondary', r.slot_time || 'Any time'),
+              /* Flagged on the row too, so a request is findable by scrolling
+                 and not only through the banner. */
+              r.has_reschedule_request ? h('div.small.tc-request-tag', [
+                T.icon('calendar-week'),
+                ` asked for ${r.requested_slot_text || 'another time'}`,
+              ]) : null,
+            ]) },
           { label: 'From', render: (r) => money(r.quoted_from) },
           { label: 'Status', render: (r) => h('div', [
               h(`span.badge.text-bg-${colour[r.status] || 'secondary'}`, statusLabel(r.status)),
@@ -337,7 +395,8 @@
         onRowClick: (r) => editBooking(r),
         empty: T.emptyState('No enquiries or bookings',
           'Phone, WhatsApp and walk-in requests land here.', 'calendar-check'),
-      }));
+        }),
+      ]);
     }
 
     async function editBooking(booking) {

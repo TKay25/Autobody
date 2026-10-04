@@ -610,7 +610,9 @@ def notify_booking_confirmed(booking) -> bool:
         f"Service: {booking.service}\n"
         f"Date: {_slot_text(booking)}"
         f"\n\n {current_app.config['COMPANY_ADDRESS']}"
-        "\n\nReply *menu* to change or cancel."
+        # Not "reply menu": the menu deliberately carries no booking row, so
+        # pointing at it sent the customer to a screen with no way to move.
+        "\n\nReply *move* if that time no longer works."
     )
     client = WhatsAppClient()
     conversation = get_or_create_conversation(customer.wa_number, customer.name)
@@ -640,7 +642,7 @@ def notify_booking_rescheduled(booking, previous_slot: str) -> bool:
         f"Was: {previous_slot}\n"
         f"Now: {_slot_text(booking)}"
         f"\n\n {current_app.config['COMPANY_ADDRESS']}"
-        "\n\nReply *menu* if that no longer works."
+        "\n\nReply *move* if that no longer works."
     )
     client = WhatsAppClient()
     conversation = get_or_create_conversation(customer.wa_number, customer.name)
@@ -651,6 +653,39 @@ def notify_booking_rescheduled(booking, previous_slot: str) -> bool:
         log.error("Booking reschedule notice failed: %s", exc)
         return False
     _log(None, customer.wa_number, "booking_rescheduled", body, "sent")
+    return True
+
+
+def notify_reschedule_declined(booking, held_slot: str,
+                               *, reason: str | None = None) -> bool:
+    """Say no, and tell the customer what still stands.
+
+    A refusal that names the reason is an answer; one that does not is a wall.
+    The original appointment is restated, because that is the only thing the
+    customer now has to work with.
+    """
+    customer = booking.customer
+    if not _dialable(customer):
+        return False
+    why = f"\n\n{reason.strip()}" if (reason or "").strip() else ""
+    body = (
+        f"*About your appointment*\n\n"
+        f"Reference: {booking.display_reference}\n"
+        f"Service: {booking.service}\n"
+        f"Still booked for: {held_slot}"
+        f"{why}"
+        "\n\nReply *move* if another day or time would suit better and we will "
+        "take a look."
+    )
+    client = WhatsAppClient()
+    conversation = get_or_create_conversation(customer.wa_number, customer.name)
+    try:
+        client.send_text(customer.wa_number, body, conversation=conversation,
+                         intent="reschedule_declined")
+    except Exception as exc:  # noqa: BLE001
+        log.error("Reschedule decline notice failed: %s", exc)
+        return False
+    _log(None, customer.wa_number, "reschedule_declined", body, "sent")
     return True
 
 

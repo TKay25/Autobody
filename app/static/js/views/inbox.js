@@ -1,17 +1,16 @@
-/* WhatsApp inbox — live threads plus a built-in bot simulator. */
+/* WhatsApp inbox — live threads with human takeover. */
 (function () {
   const T = window.TCA;
   const { h, api, dateTime, timeOnly } = T;
 
   /* ── sizing the chat column ────────────────────────────────────────────
      The message log has to scroll inside the chat panel, not grow the page.
-     `calc(100vh - 150px)` guessed at the chrome, and the guess went stale once
-     the Bot simulator was added below the chat: the wrap stayed 1200px tall
-     while its log grew to 6836px, so the thread spilled straight down the page
-     and through the simulator.
+     `calc(100vh - 150px)` was a guess at the chrome, and the guess went stale:
+     the wrap stayed 1200px tall while its log grew to 6836px, so the thread
+     spilled straight down the page.
 
-     The correct height depends on the top bar, the quick-action strip and the
-     simulator — none of which is a constant — so measure it instead of guessing.
+     The correct height depends on the top bar and the quick-action strip —
+     neither of which is a constant — so measure it instead of guessing.
      ────────────────────────────────────────────────────────────────────── */
   let chatFitBound = false;
 
@@ -19,13 +18,11 @@
     const view = document.querySelector('.tc-chat-view');
     if (!view) return;
     const wrap = view.querySelector('.chat-wrap');
-    const sim = view.querySelector('.tc-chat-sim');
     if (!wrap) return;
     /* Under 860px the columns stack, so a fixed height is wrong. */
     if (window.innerWidth <= 860) { wrap.style.height = ''; return; }
-    /* The simulator's own margin above it, plus .tc-content's bottom padding. */
-    const room = window.innerHeight - wrap.getBoundingClientRect().top
-      - (sim ? sim.getBoundingClientRect().height : 0) - 40;
+    /* .tc-content's bottom padding, so the wrap never kisses the page edge. */
+    const room = window.innerHeight - wrap.getBoundingClientRect().top - 40;
     wrap.style.height = `${Math.max(320, Math.round(room))}px`;
   }
 
@@ -184,7 +181,17 @@
     const listHost = h('div.chat-list');
     let activeId = selectedId || (conversations.items[0] || {}).id || null;
 
+    /* The header count is live: it is repainted from the same array the rail
+       renders from, so the two can never disagree after a refresh. */
+    const listSummary = h('div.small.text-secondary');
+    function paintSummary() {
+      T.mount(listSummary,
+        `${conversations.items.length} conversation(s) · `
+        + `${conversations.unread_total} unread message(s)`);
+    }
+
     function renderList() {
+      paintSummary();
       T.mount(listHost, conversations.items.length
         ? conversations.items.map((c) => {
             const el = h('div.chat-item', {
@@ -271,16 +278,14 @@
              assessor's PDF used to render as a broken <img>, so anything that is
              not an image becomes a link they can actually open. */
           m.media_url ? mediaNode(m.media_url) : null,
+          /* The choices the customer was offered, recorded as they saw them.
+             These used to be buttons posting to /api/whatsapp/simulate — i.e.
+             they fabricated an inbound tap. Live, that writes a customer action
+             into the thread that never happened, which is the worst kind of lie
+             to leave in a support log. The record is the useful part; the
+             pretending is not. */
           options.length
-            ? h('div.bubble-buttons', options.map((b) =>
-                h('button.btn.btn-outline-secondary.btn-sm', {
-                  title: 'Send this option again',
-                  onclick: async () => {
-                    await api.post('/api/whatsapp/simulate', { wa_id: c.wa_id, interactive_id: b.id });
-                    loadThread(c.id);
-                    refreshList();
-                  },
-                }, b.title)))
+            ? h('div.bubble-buttons', options.map((b) => h('span.bubble-option', b.title)))
             : null,
           h('div.bubble-foot', [
             m.is_bot ? h('span.bubble-bot', 'BOT') : null,
@@ -362,53 +367,9 @@
     async function refreshList() {
       const fresh = await api.get('/api/whatsapp/conversations');
       conversations.items = fresh.items;
+      conversations.unread_total = fresh.unread_total;
       renderList();
     }
-
-    /* ── simulator ──────────────────────────────────────────────────── */
-    const simNumber = h('input.form-control.form-control-sm', { value: '+263775550555', placeholder: 'Customer number' });
-    const simBody = h('input.form-control.form-control-sm', { placeholder: 'Type what the customer says…' });
-    const simOut = h('div.small.bg-body-tertiary.rounded.p-2.mt-2',
-      { style: 'white-space:pre-wrap', hidden: true });
-
-    async function simulate(interactiveId) {
-      const number = simNumber.value.trim();
-      const body = interactiveId ? '' : simBody.value.trim();
-      if (!body && !interactiveId) return;
-      simBody.value = '';
-      try {
-        const res = await api.post('/api/whatsapp/simulate', { wa_id: number, body, interactive_id: interactiveId });
-        simOut.hidden = false;
-        T.mount(simOut, [
-          h('div.text-secondary', `state: ${res.state} · ${res.replies_sent} repl${res.replies_sent === 1 ? 'y' : 'ies'}`),
-          h('hr.my-2'),
-          h('div', res.conversation.messages
-            .slice(-Math.max(res.replies_sent || 0, 1))
-            .map((m) => h('div.mb-1', m.body))),
-        ]);
-        await refreshList();
-        if (activeId) loadThread(activeId);
-      } catch (err) { T.toast(err.message, 'danger'); }
-    }
-
-    simBody.addEventListener('keydown', (e) => { if (e.key === 'Enter') simulate(); });
-
-    const simulator = T.section({
-      title: 'Bot simulator',
-      body: h('div', [
-        h('div.row.g-2', [
-          h('div.col-md-4', simNumber), h('div.col-md-6', simBody),
-          h('div.col-md-2', h('button.btn.btn-brand.btn-sm.w-100', { onclick: () => simulate() }, 'Send')),
-        ]),
-        h('div.d-flex.gap-1.flex-wrap.mt-2',
-          [['Main menu', 'm_menu'], ['Get a quote', 'm_quote'], ['Track repair', 'm_track'],
-           ['Book a service', 'm_book'], ['Talk to a person', 'm_human']]
-            .map(([label, id]) => h('button.btn.btn-sm.btn-outline-secondary', {
-              onclick: () => simulate(id),
-            }, label))),
-        simOut,
-      ]),
-    });
 
     /* The day book is not repeated here — it lives in the attention panel in
        the top bar, so it is available from every screen rather than only this
@@ -435,9 +396,7 @@
 
     const root = h('div.tc-chat-view', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
-        h('div.flex-fill', [h('h1.h4.mb-0', 'WhatsApp inbox'),
-          h('div.small.text-secondary',
-            `${conversations.items.length} conversation(s) · ${conversations.unread_total} unread message(s)`)]),
+        h('div.flex-fill', [h('h1.h4.mb-0', 'WhatsApp inbox'), listSummary]),
         h('button.btn.btn-outline-secondary.btn-sm', { onclick: refreshList }, T.icon('arrow-clockwise'), ' Refresh'),
       ]),
       waWarn,
@@ -445,7 +404,6 @@
         T.section({ body: listHost, flush: true }),
         panelHost,
       ]),
-      h('div.tc-chat-sim.mt-3', simulator),
     ]);
     /* Once now, and once after the first paint so the measured top is real. */
     fitChat();

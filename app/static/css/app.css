@@ -239,9 +239,9 @@
    These used to share one rule with their solid twin, which set `--bs-btn-bg`
    to the very colour held by `--bs-btn-color`. An outline button therefore
    drew its label in the colour it was filled with: on the WhatsApp screen
-   (Open in WhatsApp, Take over, the simulator's quick replies) that was green
-   on green — effectively invisible. An outline button keeps a transparent
-   background and only fills once hovered.
+   (Open in WhatsApp, Take over) that was green on green — effectively
+   invisible. An outline button keeps a transparent background and only fills
+   once hovered.
    ───────────────────────────────────────────────────────────────────── */
 .btn-outline-success {
   --bs-btn-color: var(--tc-green-600);
@@ -1001,8 +1001,8 @@ html.sidebar-rail { --tc-sidebar: 74px; }
 .chat-wrap { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; height: calc(100vh - 150px); }
 /* A grid or flex item refuses to shrink below its content unless `min-height` is
    reset — it defaults to `auto`. That is what let the message log grow to 6836px
-   inside a 1200px wrap and spill down the page, straight through the Bot
-   simulator sitting underneath it. With these resets the log scrolls in place. */
+   inside a 1200px wrap and spill down the page. With these resets the log scrolls
+   in place. */
 .chat-wrap > * { min-height: 0; min-width: 0; }
 .chat-wrap .card { display: flex; flex-direction: column; min-height: 0; }
 .chat-wrap .card-body { flex: 1 1 auto; min-height: 0; }
@@ -1102,20 +1102,19 @@ html.sidebar-rail { --tc-sidebar: 74px; }
 .msg-kv-v { font-weight: 600; color: var(--tc-navy-900); min-width: 0; }
 
 .bubble-buttons { display: flex; flex-direction: column; gap: .3rem; margin-top: .5rem; }
-/* The replies the customer was offered. Every other labelled button in the app is
-   a filled crimson slab, but these are choices *inside* a message rather than the
-   screen's primary action — seven of them filled turned one bubble into a wall of
-   red. Kept light here: crimson type and border, filling only on hover. */
-.bubble-buttons .btn,
-.bubble-buttons .btn-outline-secondary {
-  font-size: .78rem; font-weight: 600;
-  background: #fff; border: 1px solid var(--tc-crimson-400);
-  color: var(--tc-crimson-600); border-radius: .5rem;
+/* The replies the customer was offered, recorded as they saw them. Deliberately
+   NOT buttons: as buttons they fabricated the customer's tap, which in live mode
+   writes an action into the thread that never happened. Styled as a record rather
+   than a control — a non-clickable thing that still looks clickable is its own
+   kind of lie — so: muted tint, no border, no hover. The crimson treatment is
+   reserved for things that actually do something. */
+.bubble-option {
+  font-size: .78rem; width: fit-content; max-width: 100%;
+  padding: .26rem .6rem; border-radius: .45rem;
+  background: rgba(255, 255, 255, .72); box-shadow: inset 0 0 0 1px var(--tc-line);
+  color: var(--tc-ink-muted);
 }
-.bubble-buttons .btn:hover,
-.bubble-buttons .btn-outline-secondary:hover {
-  background: var(--tc-crimson-500); border-color: var(--tc-crimson-500); color: #fff;
-}
+.bubble.inbound .bubble-option { background: rgba(255, 255, 255, .8); }
 /* One footer row: who sent it, when, and whether it landed. */
 .bubble-foot {
   display: flex; align-items: center; justify-content: flex-end;
@@ -2562,6 +2561,34 @@ input[type="file"].form-control::file-selector-button:hover { background: #e5eaf
 .tc-bell-name { font-size: .82rem; }
 .tc-bell-meta { display: block; font-size: .74rem; color: var(--tc-ink-faint); }
 .tc-bell-row-actions { display: flex; gap: .3rem; flex: none; }
+/* A customer waiting on an answer about a time they hold. Tinted and edged, so
+   it separates from the new enquiries sitting under it in the same list. */
+.tc-bell-row.is-request {
+  background: #fffaf2; box-shadow: inset 3px 0 0 var(--tc-amber-400);
+}
+.tc-bell-row.is-request:hover { background: #fff6e8; }
+.tc-bell-meta.is-note { font-style: italic; color: var(--tc-ink-muted); }
+
+/* The same requests on the Enquiries & Bookings screen, above the table. */
+.tc-request-banner {
+  margin-bottom: 1rem; border: 1px solid rgba(232, 163, 23, .45);
+  border-radius: .6rem; background: #fffdf7; overflow: hidden;
+}
+.tc-request-banner-head {
+  display: flex; align-items: center; gap: .45rem; flex-wrap: wrap;
+  padding: .6rem .9rem; background: rgba(232, 163, 23, .12);
+  font-weight: 650; font-size: .84rem; color: #7a5606;
+}
+.tc-request-banner-note { font-weight: 400; font-size: .76rem; color: var(--tc-ink-muted); }
+.tc-request-banner-rows { display: grid; }
+.tc-request-banner-row {
+  display: flex; align-items: flex-start; gap: .75rem; flex-wrap: wrap;
+  padding: .65rem .9rem; border-top: 1px solid rgba(232, 163, 23, .22);
+}
+.tc-request-tag {
+  display: inline-flex; align-items: center; gap: .25rem;
+  margin-top: .15rem; font-size: .72rem; color: #7a5606;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .tc-bell.has-items { animation: none; }

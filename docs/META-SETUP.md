@@ -477,7 +477,7 @@ what Meta requires while you are building it. Once published, change
 | `doc_invoice` | invoice + payment buttons | Sends the invoice PDF |
 | `doc_receipt` | receipt buttons | Sends the receipt PDF |
 | `m_pay` | collection notice, invoice notice | Payment details, then waits for proof |
-| `b_move` | booking reminder | New day and time, then moves the appointment |
+| `b_move` | booking reminder | Asks for a new day and time. The desk confirms it; nothing moves on the tap |
 | `b_cancel` | booking reminder | Asks before cancelling |
 | `b_cancel_yes` | the confirm prompt | Booking → `CANCELLED` |
 | `b_cancel_keep` | the confirm prompt | Leaves it alone |

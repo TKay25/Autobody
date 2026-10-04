@@ -154,6 +154,10 @@ def _ensure_schema(app: Flask) -> None:
             "outcome": "VARCHAR(20)",
             "rescheduled_count": "INTEGER DEFAULT 0",
             "reminder_sent_at": "TIMESTAMP",
+            "requested_slot_date": "DATE",
+            "requested_slot_time": "VARCHAR(10)",
+            "requested_at": "TIMESTAMP",
+            "requested_note": "TEXT",
         })
 
         ensure_columns(db.engine, "job_cards", {

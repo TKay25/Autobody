@@ -27,7 +27,6 @@
     { id: 'export-jobs', label: 'Export job cards to CSV', hint: 'Download', icon: 'download', run: () => download('jobs') },
     { id: 'export-invoices', label: 'Export invoices to CSV', hint: 'Download', icon: 'download', run: () => download('invoices') },
     { id: 'export-parts', label: 'Export stock to CSV', hint: 'Download', icon: 'download', run: () => download('parts') },
-    { id: 'simulator', label: 'Test the WhatsApp bot', hint: 'Comms', icon: 'robot', run: () => T.navigate('/inbox?sim=1') },
   ];
 
   function download(dataset) {
