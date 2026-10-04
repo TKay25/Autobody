@@ -104,26 +104,59 @@ PRIORITY_COLOURS = {"LOW": "secondary", "NORMAL": "info", "HIGH": "warning", "UR
 # ── Service lines (mirrors topclass.co.zw) ───────────────────────────────────
 # ``short`` is the label for a WhatsApp list row, whose title is capped at 24
 # characters — "Panel Beating & Spray Painting" does not fit. ``icon`` is the
-# Bootstrap icon for the web console, not used by WhatsApp.
+# Bootstrap icon for the web console, not used by WhatsApp. ``blurb`` is what the
+# bot says when a customer taps the service: what the work actually involves, in
+# the workshop's own words, so the customer can tell whether it is what they need
+# before they fill anything in.
 SERVICES = [
     {"code": "AUTO_BODY", "name": "Auto Body", "short": "Auto Body",
-     "icon": "bi-car-front"},
+     "icon": "bi-car-front",
+     "blurb": "Structural and accident damage: the car goes on the jig, we pull "
+              "the shell straight, replace what is bent and paint it back to the "
+              "factory colour. We photograph everything, quote it, and only start "
+              "once you have approved the price."},
     {"code": "PANEL_SPRAY", "name": "Panel Beating & Spray Painting",
-     "short": "Panel & Paint", "icon": "bi-hammer"},
+     "short": "Panel & Paint", "icon": "bi-hammer",
+     "blurb": "Dents, scratches and scraped panels. We beat the panel back to "
+              "shape and respray it, blending the paint into the surrounding "
+              "panels so you cannot tell where the repair was."},
     {"code": "REBUILD", "name": "Rebuilds & Performance Upgrades",
-     "short": "Rebuilds & Upgrades", "icon": "bi-gear-wide-connected"},
+     "short": "Rebuilds & Upgrades", "icon": "bi-gear-wide-connected",
+     "blurb": "Full rebuilds, engine and suspension work, and performance "
+              "upgrades. These are longer jobs, so we agree them in stages and "
+              "show you the progress at each one."},
     {"code": "DETAIL", "name": "Car Detailing", "short": "Car Detailing",
-     "icon": "bi-stars"},
+     "icon": "bi-stars",
+     "blurb": "A full inside-and-out clean: seats, carpets, door shuts and engine "
+              "bay, then the paint decontaminated and polished. The quickest way "
+              "to make a car look new again, and what we recommend before selling."},
     {"code": "CERAMIC", "name": "Ceramic Coating", "short": "Ceramic Coating",
-     "icon": "bi-shield-shaded"},
+     "icon": "bi-shield-shaded",
+     "blurb": "A hard, water-repelling layer over your paint. Water beads off, "
+              "washing gets easier, and the gloss holds for years instead of "
+              "weeks. Best applied to paint that is already in good condition."},
     {"code": "PPF", "name": "Paint Protection Film", "short": "Paint Protection Film",
-     "icon": "bi-shield-check"},
+     "icon": "bi-shield-check",
+     "blurb": "A clear film over the panels that take the punishment — bonnet, "
+              "bumpers, mirrors and door edges. It takes the stone chips, and it "
+              "heals its own light scratches, so the paint underneath does not."},
     {"code": "WRAP", "name": "Car Vinyl Wrapping", "short": "Car Vinyl Wrapping",
-     "icon": "bi-palette"},
+     "icon": "bi-palette",
+     "blurb": "A colour change, or a tidy-up over tired paint, in gloss, matt or "
+              "satin. Reversible if you sell the car, and usually cheaper than a "
+              "full respray."},
 ]
 SERVICE_NAMES = [s["name"] for s in SERVICES]
 SERVICE_BY_NAME = {s["name"]: s for s in SERVICES}
 SERVICE_BY_CODE = {s["code"]: s for s in SERVICES}
+
+# Services where the customer is not reporting damage. "Please describe the
+# damage" is the right question for a bent bumper and the wrong one for a ceramic
+# coating — now that every service funnels through the same enquiry, the wording
+# has to follow the service or the bot sounds like it is not listening.
+APPEARANCE_SERVICES = {
+    "Car Detailing", "Ceramic Coating", "Paint Protection Film", "Car Vinyl Wrapping",
+}
 
 # Indicative retail prices for the "quick quote" lines (USD).
 SERVICE_FROM_PRICE = {

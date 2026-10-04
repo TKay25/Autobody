@@ -30,10 +30,97 @@ def test_greeting_returns_main_menu(app):
         assert replies
         assert replies[0]["type"] == "list"
         ids = [row["id"] for s in replies[0]["sections"] for row in s["rows"]]
-        assert "m_quote" in ids
-        # Booking used to be unreachable from the greeting: WhatsApp caps buttons
-        # at three, and the old menu spent all three on quote/track/claim.
-        assert "m_book" in ids
+        # "Get a quote" and "Book a service" were two rows leading to the same
+        # desk; they are one now, and the service choice is behind it.
+        assert "m_enquiries" in ids
+        assert "m_quote" not in ids
+        assert "m_book" not in ids
+
+
+def test_the_greeting_names_the_customer_in_bold(app):
+    """Once per session, and bolded — WhatsApp renders *name* as bold."""
+    from app.models import utcnow
+
+    with app.app_context():
+        conv = get_or_create_conversation("263771110002", "Tendai Moyo")
+        body = intent_router.handle_inbound(conv, text_body="Hi")[0]["body"]
+        assert body.startswith("Hi *Tendai*"), body
+
+        # Re-opening the menu inside the session must not greet again.
+        again = intent_router.handle_inbound(conv, interactive_id="m_menu")[0]["body"]
+        assert not again.startswith("Hi *Tendai*"), again
+
+    # A new session greets again: the clock, not the conversation row, decides.
+    with app.app_context():
+        conv = WaConversation.query.filter_by(wa_id="263771110002").first()
+        stale = (utcnow() - timedelta(hours=30)).isoformat()
+        conv.ctx_set(greeted_at=stale)
+        db.session.commit()
+        back = intent_router.handle_inbound(conv, text_body="Hello again")
+        menu = next(r for r in back if r.get("type") == "list")
+        assert menu["body"].startswith("Hi *Tendai*"), menu["body"]
+
+
+def test_a_number_with_no_name_is_not_greeted_as_whatsapp(app):
+    """`_wa_name()` falls back to "WhatsApp +263...", which is right for a record
+    and wrong in a greeting — "Hi *WhatsApp*" is what dropping it in produced."""
+    with app.app_context():
+        conv = get_or_create_conversation("263771110005", None)
+        body = intent_router.handle_inbound(conv, text_body="Hi")[0]["body"]
+        assert body.startswith("Hello,"), body
+        assert "WhatsApp" not in body.split("\n")[0], body
+        assert "*" not in body.split("\n")[0], body
+
+
+def test_an_enquiry_never_asks_for_a_registration_number(app):
+    """The form stopped asking for a plate, so the chat must not either.
+
+    Asking before anything else was also the wrong order: the customer has not yet
+    been told what we do, or what it costs.
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263771110003", "No Plate")
+        first = intent_router.handle_inbound(conv, interactive_id="m_enquiries")
+        assert first[0]["type"] == "list"
+        assert not any("registration number" in (r.get("body") or "") for r in first)
+        assert not any("ABC 1234" in (r.get("body") or "") for r in first)
+
+        # And the service choice leads straight to the brief, not to a plate.
+        replies = intent_router.handle_inbound(conv, interactive_id="enq:Car Detailing")
+        assert conv.state == "QUOTE_DESC", conv.state
+        assert not any("registration" in (r.get("body") or "").lower() for r in replies)
+
+
+def test_tapping_a_service_explains_it_before_asking_anything(app):
+    """The brief is the point of the row: what the work involves, and a price."""
+    with app.app_context():
+        conv = get_or_create_conversation("263771110004", "Curious")
+        intent_router.handle_inbound(conv, interactive_id="m_enquiries")
+        replies = intent_router.handle_inbound(conv, interactive_id="enq:Ceramic Coating")
+        brief = replies[0]["body"]
+        assert brief.startswith("*Ceramic Coating*"), brief
+        assert "water" in brief.lower(), brief
+        assert "USD 350" in brief, brief
+
+
+def test_the_follow_up_question_follows_the_service(app):
+    """"Please describe the damage" is the wrong question for a coating.
+
+    Now that every service funnels through the same enquiry, one wording for all
+    of them reads as though the bot did not hear which service was picked.
+    """
+    with app.app_context():
+        for index, (service, expected) in enumerate([
+            ("Ceramic Coating", "Tell us about the vehicle"),
+            ("Car Detailing", "Tell us about the vehicle"),
+            ("Car Vinyl Wrapping", "Tell us about the vehicle"),
+            ("Panel Beating & Spray Painting", "describe the damage"),
+            ("Auto Body", "describe the damage"),
+        ]):
+            conv = get_or_create_conversation(f"2637711100{index + 20}", "Ask Me")
+            body = intent_router.handle_inbound(
+                conv, interactive_id=f"enq:{service}")[0]["body"]
+            assert expected in body, f"{service}: {body}"
 
 
 def test_a_booking_completes_by_tapping_and_keeps_the_chosen_slot(app):
@@ -769,6 +856,22 @@ def test_intent_detection():
     assert intent_router.detect_intent("asdfgh") is None
 
 
+def test_a_greeting_with_anything_after_it_still_opens_the_menu():
+    """Requiring the *whole* message to be a greeting answered "hello again"
+    with "Sorry, I did not understand that".
+
+    A greeting carrying a real request must still be routed to the request, which
+    is why the greeting pattern is last in the list and matches only at the start.
+    """
+    for text in ("hello", "Hello", "hi", "Hi there", "hello again",
+                 "hey, good morning", "menu", "start"):
+        assert intent_router.detect_intent(text) == "menu", text
+
+    assert intent_router.detect_intent("hi, how much is a respray?") == "quote"
+    assert intent_router.detect_intent("hello, is my car ready?") == "track"
+    assert intent_router.detect_intent("hi, can I speak to a person") == "human"
+
+
 def test_service_matching_is_fuzzy():
     assert intent_router.match_service("I need my bumper resprayed") == "Panel Beating & Spray Painting"
     assert intent_router.match_service("ceramic") == "Ceramic Coating"
@@ -780,16 +883,16 @@ def test_quote_flow_creates_booking_and_customer(app):
     with app.app_context():
         conv = get_or_create_conversation("263771110002", "Quote Tester")
 
-        intent_router.handle_inbound(conv, interactive_id="m_quote")
-        assert conv.state == "QUOTE_REG"
-
-        replies = intent_router.handle_inbound(conv, text_body="ABC 1234")
-        assert conv.ctx_get("reg") == "ABC1234"
+        # Straight to the service: no registration number is asked for.
+        picker = intent_router.handle_inbound(conv, interactive_id="m_enquiries")
         assert conv.state == "QUOTE_SERVICE"
-        assert replies[0]["type"] == "list"
+        assert picker[0]["type"] == "list"
+        assert all(r["id"].startswith("enq:") for r in picker[0]["sections"][0]["rows"])
 
-        intent_router.handle_inbound(conv, interactive_id="svc:Car Detailing")
+        # The brief, then the damage question.
+        intent_router.handle_inbound(conv, interactive_id="enq:Car Detailing")
         assert conv.state == "QUOTE_DESC"
+        assert conv.ctx_get("service") == "Car Detailing"
 
         intent_router.handle_inbound(conv, text_body="Interior and exterior deep clean")
         assert conv.state == "QUOTE_CONTACT"
@@ -815,6 +918,9 @@ def test_quote_flow_creates_booking_and_customer(app):
         assert booking.source == "whatsapp"
         assert booking.service == "Car Detailing"
         assert booking.booking_reference is None
+        # No plate asked for, so no Vehicle — exactly as the form behaves. The
+        # plate is taken when the car actually arrives.
+        assert booking.vehicle_id is None
 
 
 def test_enquiry_keeps_the_photos_the_customer_sent(app):
@@ -1157,33 +1263,36 @@ def test_webhook_processes_inbound_message(app, client):
 def test_language_can_be_switched_while_a_flow_is_waiting_for_data(app):
     """Naming a language mid-flow must switch, not be eaten as bad input.
 
-    The registration prompt used to reject "Shona" as a dodgy plate number and
-    answer in English, so there was no way to change language part-way through.
+    This used to be tested on the registration prompt, which rejected "Shona" as
+    a dodgy plate number and answered in English — so there was no way to change
+    language part-way through. The prompt it guards has moved; the rule has not.
     """
     with app.app_context():
         conv = get_or_create_conversation("263771120001", "Midflow Tester")
-        intent_router.handle_inbound(conv, interactive_id="m_quote")
-        assert conv.state == "QUOTE_REG"
+        intent_router.handle_inbound(conv, interactive_id="m_enquiries")
+        assert conv.state == "QUOTE_SERVICE"
 
         replies = intent_router.handle_inbound(conv, text_body="Shona")
         assert conv.ctx_get("lang") == "sn"
         body = " ".join(r.get("body", "") for r in replies)
-        assert "Nderipi" in body, f"should re-ask for the plate in Shona: {body}"
-        assert conv.state == "QUOTE_REG", "the flow should continue, not reset"
+        assert "sevhisi" in body.lower(), f"should re-ask in Shona: {body}"
+        assert conv.state == "QUOTE_SERVICE", "the flow should continue, not reset"
 
 
 def test_switching_language_mid_flow_keeps_earlier_answers(app):
     """Changing language must not silently discard what was already given."""
     with app.app_context():
         conv = get_or_create_conversation("263771120002", "Keep Answers")
-        intent_router.handle_inbound(conv, interactive_id="m_quote")
-        intent_router.handle_inbound(conv, text_body="ABC 1234")
-        assert conv.ctx_get("reg") == "ABC1234"
+        intent_router.handle_inbound(conv, interactive_id="enq:Car Detailing")
+        intent_router.handle_inbound(conv, text_body="Deep clean inside and out")
+        assert conv.ctx_get("service") == "Car Detailing"
+        assert conv.state == "QUOTE_CONTACT"
 
         intent_router.handle_inbound(conv, text_body="ndebele")
         assert conv.ctx_get("lang") == "nd"
-        assert conv.ctx_get("reg") == "ABC1234", "the registration was thrown away"
-        assert conv.state == "QUOTE_SERVICE"
+        assert conv.ctx_get("service") == "Car Detailing", "the service was thrown away"
+        assert conv.ctx_get("damage") == "Deep clean inside and out"
+        assert conv.state == "QUOTE_CONTACT", "the flow should continue, not reset"
 
 
 def test_language_names_phrases_and_codes_all_switch(app):
@@ -1799,13 +1908,14 @@ def test_a_flow_response_is_not_eaten_by_a_waiting_state(app):
     """A form can be submitted while the bot is mid-question.
 
     The answers must be read as a form, not matched against the pending step —
-    otherwise "abc123" submitted during the registration prompt becomes a plate
-    and the rest of the form is silently dropped.
+    otherwise a service name typed while the bot was waiting for a damage
+    description would be recorded as the description, and the rest of the form
+    would be silently dropped.
     """
     with app.app_context():
         conv = get_or_create_conversation("263773330008", "Mid Flow")
-        intent_router.handle_inbound(conv, interactive_id="m_quote")
-        assert conv.state == "QUOTE_REG"
+        intent_router.handle_inbound(conv, interactive_id="enq:Car Detailing")
+        assert conv.state == "QUOTE_DESC"
 
         intent_router.handle_inbound(conv, flow_response={
             "flow_token": "enquiry",
@@ -1814,6 +1924,7 @@ def test_a_flow_response_is_not_eaten_by_a_waiting_state(app):
         })
         booking = Booking.query.first()
         assert booking is not None, "the form was swallowed by the waiting state"
+        assert booking.service == "Car Detailing"
         assert booking.vehicle.reg_no == "XYZ999"
         assert conv.state == "MAIN_MENU"
 
@@ -2021,11 +2132,16 @@ class _WithForm:
         return WithForm
 
 
-def test_the_enquiry_form_is_offered_only_when_one_is_configured(app):
+def test_the_booking_form_is_offered_only_when_one_is_configured(app):
     """A menu row that opens nothing is worse than no row at all.
 
     The form's id comes from Meta, so an install without a Flow built must not
     advertise one — and the row has to appear as soon as it is configured.
+
+    The enquiry form is no longer a menu row: it is reached through "Enquiries",
+    which explains the service first, and falls back to the chat enquiry when no
+    Flow is built. The booking form is the one that has no chat equivalent worth
+    falling back to, so it is the one still gated on its id.
     """
     from app import create_app
     from config import TestConfig
@@ -2039,7 +2155,9 @@ def test_the_enquiry_form_is_offered_only_when_one_is_configured(app):
         conversation = get_or_create_conversation("263774440001", "No Form")
         rows = intent_router.handle_inbound(conversation, text_body="hi")[0]
         ids = [r["id"] for s in rows["sections"] for r in s["rows"]]
-        assert "m_form" not in ids, ids
+        assert "m_bform" not in ids, ids
+        # But the enquiry journey is always there, form or no form.
+        assert "m_enquiries" in ids, ids
 
     configured = create_app(_WithForm.config())
     with configured.app_context():
@@ -2050,7 +2168,7 @@ def test_the_enquiry_form_is_offered_only_when_one_is_configured(app):
         conversation = get_or_create_conversation("263774440002", "Has Form")
         rows = intent_router.handle_inbound(conversation, text_body="hi")[0]
         ids = [r["id"] for s in rows["sections"] for r in s["rows"]]
-        assert "m_form" in ids, ids
+        assert "m_bform" in ids, ids
 
 
 def test_tapping_the_form_row_sends_the_flow(app):
@@ -2129,16 +2247,23 @@ def test_the_webhook_writes_the_flow_it_was_handed(app, client, monkeypatch):
     assert booking["flow_token"] == "booking"
 
 
-def test_no_flow_is_configured_falls_back_to_the_chat_quote_flow(app):
-    """Tapping a stale form row on an install without a Flow must still help."""
+def test_no_flow_is_configured_falls_back_to_the_chat_enquiry(app):
+    """Tapping a stale form row on an install without a Flow must still help.
+
+    It used to fall back to the chat *quote* flow, which opened by asking for a
+    registration number. Now it opens the enquiry journey, which asks which
+    service — the same question the form would have asked first.
+    """
     with app.app_context():
         conversation = get_or_create_conversation("263774440005", "No Form Tap")
         replies = intent_router.handle_inbound(conversation, interactive_id="m_form")
 
         assert replies, "tapping the form row produced no reply at all"
         assert all(r["type"] != "flow" for r in replies), replies
-        # The chat quote flow starts by asking for the registration.
-        assert conversation.state == "QUOTE_REG"
+        assert conversation.state == "QUOTE_SERVICE"
+        assert replies[0]["type"] == "list"
+        rows = [r["id"] for s in replies[0]["sections"] for r in s["rows"]]
+        assert all(r.startswith("enq:") for r in rows), rows
 
 
 # ── the booking form (a second Flow) ─────────────────────────────────────────

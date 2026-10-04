@@ -13,17 +13,19 @@ conversation survives restarts and can be inspected in the web inbox.
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from flask import current_app
 
 from ..constants import (
+    APPEARANCE_SERVICES,
     BOOKING_EXPECTED_STATUSES,
     BOOKING_SLOT_CAPACITY,
     BOOKING_SLOTS,
     SERVICES,
     SERVICE_BY_CODE,
+    SERVICE_BY_NAME,
     SERVICE_NAMES,
     STAGE_CUSTOMER_TEXT,
     STAGE_LABELS,
@@ -76,12 +78,45 @@ LANGUAGE_MARKERS = {
 # cannot swallow the registration number or the damage description the customer
 # just typed; an explicit request ("Shona") still works from any of them.
 DATA_ENTRY_STATES = {
-    "QUOTE_REG", "QUOTE_SERVICE", "QUOTE_DESC", "QUOTE_CONTACT", "QUOTE_EMAIL",
+    "QUOTE_SERVICE", "QUOTE_DESC", "QUOTE_CONTACT", "QUOTE_EMAIL",
     "TRACK_REF", "BOOK_SERVICE", "BOOK_DATE", "BOOK_TIME", "BOOK_CONTACT",
     "PAYMENT_PROOF", "WARRANTY_CLAIM",
 }
 
 T = {
+    # Said once, when we first speak to somebody in a session. Greeting a customer
+    # by name is the difference between a workshop and a vending machine, so the
+    # name is bolded — WhatsApp renders *name* as bold. Plain text otherwise:
+    # there is a test in the suite that no message carrying an emoji ever leaves
+    # this service, and it is house style rather than an accident.
+    #
+    # The opening address is its own string because a number we hold no name for
+    # has none to use — "Hi *WhatsApp*" is worse than no name at all.
+    "greeting": {
+        "en": "{hi}\n\n"
+              "Welcome to *{company}*. We do panel beating, spray painting, "
+              "detailing, ceramic coating, paint protection film and vinyl "
+              "wrapping.\n\n"
+              "Tell us what you need and the front desk will call you back.",
+        "sn": "{hi}\n\n"
+              "Takugamuchirai ku*{company}*. Tinoita panel beating, kupenda, "
+              "kuchenesa, ceramic coating, PPF nevinyl wrapping.\n\n"
+              "Tiudzei zvamunoda, vekumberi vachakufonerei.",
+        "nd": "{hi}\n\n"
+              "Siyakwamukela ku*{company}*. Senza panel beating, ukupenda, "
+              "ukuhlanza, ceramic coating, PPF kanye ne-vinyl wrapping.\n\n"
+              "Sitshele okudingayo, abangaphambili bazokufonela.",
+    },
+    "greeting_named": {
+        "en": "Hi *{name}*,",
+        "sn": "Mhoro *{name}*,",
+        "nd": "Sawubona *{name}*,",
+    },
+    "greeting_anon": {
+        "en": "Hello,",
+        "sn": "Mhoro,",
+        "nd": "Sawubona,",
+    },
     "welcome": {
         "en": "Hello {name}, welcome to {company}.\n\n"
               "Panel beating, spray painting, detailing, ceramic coating, "
@@ -99,11 +134,6 @@ T = {
         "sn": "Sarudzai chimwe chezvinotevera.",
         "nd": "Khetha okunye kwalokhu okulandelayo.",
     },
-    "ask_reg": {
-        "en": "Sure. What is the vehicle registration number? (e.g. ABC 1234)",
-        "sn": "Zvakanaka. Nderipi nhamba yemota? (semuenzaniso ABC 1234)",
-        "nd": "Kulungile. Yini inombolo yemota? (isb. ABC 1234)",
-    },
     "ask_service": {
         "en": "Which service do you need?",
         "sn": "Ndeipi sevhisi yamunoda?",
@@ -116,6 +146,17 @@ T = {
               "yearhenti yamunayo.",
         "nd": "Chaza umonakalo. Thumela izithombe, kanye ne-PDF yohlelo "
               "lwenhlolovo onalo.",
+    },
+    # Nobody is reporting damage when they ask for a coating or a valet, and
+    # "describe the damage" reads as though the bot has not heard which service
+    # they picked. Same question, worded for the work.
+    "ask_desc_appearance": {
+        "en": "Tell us about the vehicle — make, model, and what you have in "
+              "mind. A photo or two helps us give you a firm price.",
+        "sn": "Tiudzei nezvemota — rudzi, mucherechedzo, nezvamunoda. Mifananidzo "
+              "inotibatsira kupa mutengo wakasimba.",
+        "nd": "Sitshele ngemoto — uhlobo, imodeli, lalokho onakho engqondweni. "
+              "Izithombe zisiza ukunikeza intengo eqinile.",
     },
     "ask_ref": {
         "en": "Please send your job number (e.g. TC-2026-0007) or vehicle registration.",
@@ -203,7 +244,14 @@ INTENT_PATTERNS = [
     ("human", r"\b(human|agent|person|talk to|speak to|manager|call me|phone)\b"),
     ("services", r"\b(services|what do you do|offerings|menu of)\b"),
     ("warranty", r"\b(warranty|guarantee|guarantee period)\b"),
-    ("menu", r"^(menu|main menu|start|hello|hi|hey|hie|mhoro|sawubona|good (morning|afternoon|day))[\s!.,]*$"),
+    # A greeting must match at the start with anything after it. Requiring the
+    # *whole* message meant "hello again" and "hi there" matched nothing and fell
+    # through to "Sorry, I did not understand that" — a rotten answer to somebody
+    # who had just said hello. Anything carrying a real request is caught by an
+    # earlier pattern (this list is scanned in order), so only greetings reach it.
+    ("menu", r"^(menu|main menu|start)\b"
+             r"|^\s*(hi+|hey+|hello+|hie|hiya|mhoro|sawubona|"
+             r"good\s+(morning|afternoon|evening|day))\b"),
     ("stop", r"\b(stop|unsubscribe|opt out)\b"),
 ]
 
@@ -386,15 +434,23 @@ def main_menu_reply(company: str, lang: str, prefix: str = "") -> dict:
     A list rather than buttons. WhatsApp caps buttons at three, and that cap is
     exactly what kept "Book a service" off the greeting — the flow existed, but
     customers could only find it by typing *book*. A list shows everything.
+
+    **"Get a quote" and "Book a service" used to be separate rows.** They are one
+    journey — tell us what you need and the desk calls you back — so they are one
+    row now, and the service choice that used to be hidden behind them is on the
+    screen the customer lands on. Two rows that lead to the same desk, ask
+    overlapping questions and differ only in wording is how a menu stops being
+    readable.
+
+    The ``menu: "main"`` marker is how :meth:`IntentRouter.handle` finds this
+    reply to hang the greeting on, rather than guessing at its button label.
     """
     body = t("menu_prompt", lang)
     if prefix:
         body = prefix + "\n\n" + body
     rows = [
-        {"id": "m_quote", "title": "Get a quote",
-         "description": "Send photos, get a price"},
-        {"id": "m_book", "title": "Book a service",
-         "description": "Pick a day and a time"},
+        {"id": "m_enquiries", "title": "Enquiries",
+         "description": "What we do, and a call back"},
         {"id": "m_track", "title": "Track my repair",
          "description": "Job number or registration"},
         {"id": "m_pay", "title": "I have paid",
@@ -407,22 +463,18 @@ def main_menu_reply(company: str, lang: str, prefix: str = "") -> dict:
     # Only offered once a Flow has actually been built and its id configured.
     # Tapping a row that opens nothing is worse than the row not being there.
     try:
-        form_id = (current_app.config or {}).get("WA_FLOW_ENQUIRY_ID") or ""
         booking_form_id = (current_app.config or {}).get("WA_FLOW_BOOKING_ID") or ""
     except RuntimeError:      # no app context, e.g. a text-only unit test
-        form_id = booking_form_id = ""
-    if form_id:
-        rows.insert(1, {"id": "m_form", "title": "Enquiry form",
-                        "description": "Fill it in, we call you back"})
+        booking_form_id = ""
     if booking_form_id:
-        # Directly under "Book a service": both are the same journey, and the
-        # form is the tidier way through it. The list is now at WhatsApp's
-        # ten-row ceiling, so anything else added here has to displace something.
-        rows.insert(2, {"id": "m_bform", "title": "Booking form",
+        # Directly under "Enquiries": the same journey, but the customer picks the
+        # day rather than waiting for a call.
+        rows.insert(1, {"id": "m_bform", "title": "Book an appointment",
                         "description": "Pick a day and time on a form"})
 
     return {
         "type": "list",
+        "menu": "main",
         "body": body,
         # A list footer rather than a body line: the hint is an aside, and the
         # body is what the customer has to read to choose.
@@ -478,9 +530,8 @@ def more_menu_reply(lang: str = "en") -> dict:
         "footer": t("lang_hint", lang),
         "button": "Options",
         "sections": [{"title": "What next?", "rows": [
-            {"id": "m_quote", "title": "Get a quote"},
+            {"id": "m_enquiries", "title": "Make an enquiry"},
             {"id": "m_track", "title": "Track my repair"},
-            {"id": "m_book", "title": "Book a service"},
             {"id": "m_pay", "title": "I have paid"},
             {"id": "m_services", "title": "Our services"},
             {"id": "m_warranty", "title": "Warranty"},
@@ -545,10 +596,81 @@ class IntentRouter:
         # The catch-all menu comes from a module-level helper used at a dozen call
         # sites, so its prompt is filled in here rather than threading the current
         # language through every one of them.
-        return [
+        replies = [
             more_menu_reply(self.lang) if r.get("menu") == "more" else r
             for r in replies
         ]
+
+        return self._with_greeting(replies)
+
+    def _with_greeting(self, replies: list[dict]) -> list[dict]:
+        """Say hello, once, on the first menu of a session.
+
+        The greeting rides *inside* the main menu's body rather than being a
+        message of its own. Two reasons: it can never arrive on its own because
+        the menu failed to render, and every caller that shows the menu gets the
+        greeting for free without threading a name through a dozen call sites.
+
+        Only the main menu qualifies. Greeting somebody again every time they tap
+        "back" would be the opposite of friendly.
+        """
+        greeting = self._greeting()
+        if not greeting:
+            return replies
+        for reply in replies:
+            if reply.get("menu") == "main":
+                reply["body"] = f"{greeting}\n\n{reply['body']}"
+                return replies
+        return replies
+
+    def _greeting(self) -> str:
+        """The greeting line, or "" when we have already said hello recently.
+
+        A customer who comes back after a fortnight is starting a new
+        conversation, not continuing the last one, so the clock is the session
+        window. Inside it, they are mid-conversation and a second "welcome to
+        Topclass" reads as though the bot reset itself.
+        """
+        now = utcnow()
+        last = self.conv.ctx_get("greeted_at")
+        if last:
+            try:
+                since = now - datetime.fromisoformat(last)
+            except (TypeError, ValueError):
+                since = None
+            if since is not None and since < timedelta(hours=self.session_window_hours):
+                return ""
+        first = self._greeting_name()
+        # "Hi *WhatsApp*" is what dropping the fallback straight into the greeting
+        # produced for a number we hold no name for. Say hello plainly instead.
+        hi = (t("greeting_named", self.lang, name=first) if first
+              else t("greeting_anon", self.lang))
+        self.conv.ctx_set(greeted_at=now.isoformat())
+        db.session.commit()
+        return t("greeting", self.lang, hi=hi, company=self.company)
+
+    def _greeting_name(self) -> str:
+        """The first name to greet somebody by, or "" when we hold none.
+
+        ``_wa_name()`` falls back to the number so a *record* is never written
+        with a blank name. That fallback is right for a record and wrong here.
+        """
+        name = (self.conv.profile_name
+                or (self.conv.customer.name if self.conv.customer else "")
+                or "").strip()
+        if not name:
+            customer = self._customer_by_wa()
+            name = (customer.name if customer else "").strip()
+        if not name or name.startswith("WhatsApp +"):
+            return ""
+        return name.split()[0]
+
+    @property
+    def session_window_hours(self) -> int:
+        try:
+            return int(self.cfg.get("WA_SESSION_WINDOW_HOURS") or 24)
+        except (TypeError, ValueError):
+            return 24
 
     # ── media (photos, PDFs and any other attachment) ────────────────────
     @staticmethod
@@ -656,39 +778,22 @@ class IntentRouter:
 
     # ── WhatsApp Flows (a form the customer filled in) ───────────────────
     def _menu_form(self) -> list[dict]:
-        """Offer the enquiry Flow.
+        """Offer the enquiry Flow on its own.
 
-        A Flow gathers the structured answers a free-text chat cannot — the
-        service, the make and model, and photographs of the damage — as one tidy
-        payload instead of five messages the desk has to piece together.
-
-        A Flow **can** carry a file: Meta ships Photo Picker and Document Picker,
-        and the media ids come back inside ``response_json``. They are downloaded
-        in the webhook and attached by :meth:`_handle_flow`, so the desk sees one
-        kind of attachment whether it arrived in chat or through the form.
+        Kept for a menu row cached on a customer's phone from before the enquiry
+        journey replaced it — tapping it should still open the form rather than
+        nothing. New conversations reach the same form through "Enquiries", which
+        explains the service first.
         """
         flow_id = self.cfg.get("WA_FLOW_ENQUIRY_ID") or ""
         if not flow_id:
-            # No form configured on this install. Fall back to the chat quote flow
+            # No form configured on this install. Fall back to the chat enquiry
             # rather than opening nothing.
             return self._menu_quote()
 
         self.conv.state = "MAIN_MENU"
         db.session.commit()
-        return [{
-            "type": "flow",
-            "body": "Fill this in and our front desk will call you back with a firm "
-                    "quotation. It takes about a minute.",
-            "flow_id": flow_id,
-            "flow_token": "enquiry",
-            # The Flow's own first screen, by its API name. Configurable because
-            # Meta's builder names it (`QUESTION_ONE` by default) and rejects a
-            # screen the Flow does not define — so this is the one string that
-            # has to agree with the builder exactly.
-            "screen": self.cfg.get("WA_FLOW_ENQUIRY_SCREEN") or "QUESTION_ONE",
-            "header": "Enquiry form",
-            "footer": self.company,
-        }]
+        return [self._enquiry_flow_reply(flow_id)]
 
     def _menu_book_form(self) -> list[dict]:
         """Offer the booking Flow.
@@ -955,7 +1060,11 @@ class IntentRouter:
     # ── interactive replies (buttons / list rows) ────────────────────────
     def _handle_choice(self, choice: str) -> list[dict]:
         if choice.startswith("svc:"):
-            return self._start_quote_with_service(choice.split(":", 1)[1])
+            # An old menu row, cached on a customer's phone before the enquiry
+            # journey replaced the quote one. Same destination either way.
+            return self._menu_enquiry_service(choice.split(":", 1)[1])
+        if choice.startswith("enq:"):
+            return self._menu_enquiry_service(choice.split(":", 1)[1])
         if choice.startswith("bsvc:"):
             return self._input_book_service(choice.split(":", 1)[1])
         if choice.startswith("day:"):
@@ -985,6 +1094,7 @@ class IntentRouter:
             return self._document_reply(choice)
 
         handlers = {
+            "m_enquiries": self._menu_quote,
             "m_quote": self._menu_quote,
             "m_track": self._menu_track,
             "m_book": self._menu_book,
@@ -1037,7 +1147,6 @@ class IntentRouter:
 
         # A state that is waiting for data consumes the message first.
         state_handler = {
-            "QUOTE_REG": self._input_quote_reg,
             "QUOTE_SERVICE": self._input_quote_service,
             "QUOTE_DESC": self._input_quote_desc,
             "QUOTE_CONTACT": self._input_quote_contact,
@@ -1153,7 +1262,7 @@ class IntentRouter:
         service *name* still works, through the unstructured fallback in
         ``_handle_text``.
         """
-        return [service_list_reply(self.lang), main_menu_reply(self.company, self.lang)]
+        return [service_list_reply(self.lang, "enq"), main_menu_reply(self.company, self.lang)]
 
     def _menu_lang(self) -> list[dict]:
         # Remember where we were, so choosing a language resumes that step rather
@@ -1267,12 +1376,11 @@ class IntentRouter:
 
     def _resume_in_language(self, previous: str) -> list[dict]:
         """Re-ask the question the customer was answering, now translated."""
-        if previous == "QUOTE_REG":
-            return [text(t("ask_reg", self.lang))]
         if previous == "QUOTE_SERVICE":
-            return [service_list_reply(self.lang)]
+            return [service_list_reply(self.lang, "enq")]
         if previous == "QUOTE_DESC":
-            return [text(t("ask_desc", self.lang))]
+            return [text(t(self._desc_prompt_key(self.conv.ctx_get("service") or ""),
+                          self.lang))]
         if previous == "QUOTE_CONTACT":
             return [text(t("ask_name", self.lang))]
         if previous == "QUOTE_EMAIL":
@@ -1517,38 +1625,84 @@ class IntentRouter:
 
     # ── quote flow ───────────────────────────────────────────────────────
     def _menu_quote(self) -> list[dict]:
-        self.conv.state = "QUOTE_REG"
-        db.session.commit()
-        return [text(t("ask_reg", self.lang))]
+        """Start an enquiry: which service first.
 
-    def _start_quote_with_service(self, service: str) -> list[dict]:
+        This used to ask for the registration number before anything else, and it
+        was the first thing a customer saw after tapping "Get a quote". The
+        enquiry *form* never asked for a plate — the make and model stands in and
+        the plate is taken when the car actually arrives — so the chat was asking
+        for information the form had already been told it did not need, and asking
+        it before the customer even knew whether we were the right shop.
+        """
+        self.conv.state = "QUOTE_SERVICE"
+        db.session.commit()
+        return [service_list_reply(self.lang, "enq")]
+
+    def _menu_enquiry_service(self, service: str) -> list[dict]:
+        """What the service involves, then the way to actually enquire.
+
+        The brief is the point of the row above it: a customer who has just been
+        told what a ceramic coating is knows whether they want one, and can say so
+        on the form instead of describing it to the desk over the phone.
+        """
         if service not in SERVICE_NAMES:
             return self._fallback()
         self.conv.ctx_set(service=service)
-        # We may already know the vehicle (e.g. arriving from the service list
-        # after the registration step). Only ask for what we still need.
-        if self.conv.ctx_get("reg"):
-            self.conv.state = "QUOTE_DESC"
-            db.session.commit()
-            return [text(f"{service} — noted.\n\n" + t("ask_desc", self.lang))]
-        self.conv.state = "QUOTE_REG"
-        db.session.commit()
-        return [text(f"{service} — noted.\n\n" + t("ask_reg", self.lang))]
+        brief = self._service_brief(service)
 
-    def _input_quote_reg(self, raw: str) -> list[dict]:
-        match = REG_PATTERN.search(raw.upper())
-        reg = match.group(1).replace(" ", "").upper() if match else raw.strip().upper()[:12]
-        if len(reg) < 3:
-            return [text("That does not look like a registration number. Try again, e.g. ABC 1234.")]
-        self.conv.ctx_set(reg=reg)
-        service = self.conv.ctx_get("service")
-        if service:
-            self.conv.state = "QUOTE_DESC"
+        flow_id = self.cfg.get("WA_FLOW_ENQUIRY_ID") or ""
+        if flow_id:
+            self.conv.state = "MAIN_MENU"
             db.session.commit()
-            return [text(t("ask_desc", self.lang))]
-        self.conv.state = "QUOTE_SERVICE"
+            return [text(brief), self._enquiry_flow_reply(flow_id)]
+
+        # No Flow built on this install. Carry on in the chat with the service
+        # already chosen, so the customer is still asked for only the rest.
+        self.conv.state = "QUOTE_DESC"
         db.session.commit()
-        return [service_list_reply(self.lang)]
+        return [text(brief + "\n\n" + t(self._desc_prompt_key(service), self.lang))]
+
+    @staticmethod
+    def _desc_prompt_key(service: str) -> str:
+        """Which follow-up question fits the service just chosen."""
+        return ("ask_desc_appearance" if service in APPEARANCE_SERVICES
+                else "ask_desc")
+
+    def _service_brief(self, service: str) -> str:
+        """One service, described in the workshop's own words."""
+        info = SERVICE_BY_NAME.get(service) or {}
+        parts = [f"*{info.get('short') or service}*"]
+        if info.get("blurb"):
+            parts.append(info["blurb"])
+        quote = quick_quote(service)
+        if quote:
+            parts.append(f"From *USD {quote['from_price']:.0f}* — the firm price "
+                         "depends on what we find when we see the vehicle.")
+        else:
+            # Panel and paint is priced off the damage, and guessing at a number
+            # before seeing the car is how a workshop loses a customer at the
+            # counter. Say so rather than inventing a figure.
+            parts.append("Priced off the damage, so we quote once we have seen "
+                         "the vehicle — send photos and we will be close.")
+        return "\n\n".join(parts)
+
+    def _enquiry_flow_reply(self, flow_id: str) -> dict:
+        """The enquiry Flow, as the webhook sends it."""
+        return {
+            "type": "flow",
+            "body": "Fill this in and our front desk will call you back with a firm "
+                    "quotation. It takes about a minute.",
+            "flow_id": flow_id,
+            "flow_token": "enquiry",
+            "screen": self.cfg.get("WA_FLOW_ENQUIRY_SCREEN") or "QUESTION_ONE",
+            "header": "Enquiry form",
+            "footer": self.company,
+        }
+
+    def _start_quote_with_service(self, service: str) -> list[dict]:
+        # Kept as the name the state handlers and the unstructured fallback call;
+        # the journey itself is the brief-then-form one.
+        return self._menu_enquiry_service(service)
 
     def _input_quote_service(self, raw: str) -> list[dict]:
         service = match_service(raw)
@@ -1560,8 +1714,8 @@ class IntentRouter:
             except ValueError:
                 service = None
         if not service:
-            return [service_list_reply(self.lang)]
-        return self._start_quote_with_service(service)
+            return [service_list_reply(self.lang, "enq")]
+        return self._menu_enquiry_service(service)
 
     def _input_quote_desc(self, raw: str) -> list[dict]:
         self.conv.ctx_set(damage=raw.strip()[:600])
