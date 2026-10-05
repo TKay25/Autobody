@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from app.extensions import db
-from app.models import JobCard, User, Vehicle
+from app.models import Customer, JobCard, User, Vehicle
 from app.services import job_flow
 
 
@@ -472,3 +472,106 @@ def test_overdue_detection(auth_client, app):
     job_id = res.get_json()["job"]["id"]
     body = auth_client.get(f"/api/jobs/{job_id}").get_json()
     assert body["job"]["is_overdue"] is True
+
+
+def test_intake_can_correct_an_existing_customers_number(auth_client, app):
+    """The Phone / WhatsApp box shows the number we hold, so an edit must stick.
+
+    It used to be dropped on the floor: only the "new customer" branch read
+    customer_phone, so a customer whose number was wrong — or missing — could not
+    be fixed from intake at all, and the bot had nothing to dial.
+    """
+    created = auth_client.post("/api/jobs", json={
+        "customer_name": "Correction", "customer_phone": "0771111111",
+        "reg_no": "COR111",
+    }).get_json()
+    customer_id = created["job"]["customer_id"]
+
+    with app.app_context():
+        customer = db.session.get(Customer, customer_id)
+        assert customer.phone == "+263771111111"
+        assert customer.whatsapp == "+263771111111"
+
+    res = auth_client.post("/api/jobs", json={
+        "customer_id": customer_id, "customer_phone": "0772222222",
+        "reg_no": "COR222",
+    })
+    assert res.status_code == 201, res.get_json()
+
+    with app.app_context():
+        customer = db.session.get(Customer, customer_id)
+        assert customer.phone == "+263772222222"
+        # The bot dials whatsapp, so a correction that missed it would be silent.
+        assert customer.whatsapp == "+263772222222"
+
+
+def test_an_empty_phone_box_does_not_erase_a_number(auth_client, app):
+    """The box is prefilled from the record, so untouched has to mean unchanged.
+
+    Reading an empty box as "delete this number" would let a job card created
+    before the field was filled silently unregister a customer.
+    """
+    created = auth_client.post("/api/jobs", json={
+        "customer_name": "Untouched", "customer_phone": "0773333333",
+        "reg_no": "UNT111",
+    }).get_json()
+    customer_id = created["job"]["customer_id"]
+
+    auth_client.post("/api/jobs", json={"customer_id": customer_id, "reg_no": "UNT222"})
+
+    with app.app_context():
+        customer = db.session.get(Customer, customer_id)
+        assert customer.phone == "+263773333333"
+        assert customer.whatsapp == "+263773333333"
+
+
+def test_a_number_can_be_added_to_a_customer_who_has_none(auth_client, app):
+    """The case the gap really cost: a customer the bot could not reach."""
+    created = auth_client.post("/api/jobs", json={
+        "customer_name": "No Number", "reg_no": "NON111",
+    }).get_json()
+    customer_id = created["job"]["customer_id"]
+
+    with app.app_context():
+        assert db.session.get(Customer, customer_id).phone is None
+
+    auth_client.post("/api/jobs", json={
+        "customer_id": customer_id, "customer_phone": "0776666666",
+        "reg_no": "NON222",
+    })
+
+    with app.app_context():
+        customer = db.session.get(Customer, customer_id)
+        assert customer.phone == "+263776666666"
+        assert customer.whatsapp == "+263776666666"
+
+
+def test_intake_leaves_a_separate_whatsapp_number_alone(auth_client, app):
+    """Phone and WhatsApp are two fields in the registry, deliberately.
+
+    Correcting the phone from intake must not quietly collapse a WhatsApp number
+    somebody set separately.
+    """
+    created = auth_client.post("/api/jobs", json={
+        "customer_name": "Two Numbers", "customer_phone": "0774444444",
+        "reg_no": "TWO111",
+    }).get_json()
+    customer_id = created["job"]["customer_id"]
+
+    # Deliberately NOT wrapped in another `app.app_context()`: the fixture has
+    # already pushed one, and a nested context gets its own session — a write
+    # there is invisible to the session the next request reuses, so this test
+    # would be asserting against a stale identity map rather than the database.
+    customer = db.session.get(Customer, customer_id)
+    customer.whatsapp = "+263779999999"
+    db.session.commit()
+
+    auth_client.post("/api/jobs", json={
+        "customer_id": customer_id, "customer_phone": "0775555555",
+        "reg_no": "TWO222",
+    })
+
+    db.session.expire_all()
+    customer = db.session.get(Customer, customer_id)
+    assert customer.phone == "+263775555555"
+    assert customer.whatsapp == "+263779999999"

@@ -1261,6 +1261,13 @@
         const national = number.value.replace(/\D/g, '').replace(/^0+/, '');
         return national ? `+${select.value}${national}` : '';
       },
+      /* Fill from a stored number, splitting it back across the two controls so
+         that `read()` returns exactly what went in. */
+      set(value) {
+        const stored = splitPhoneNumber(value, countries, fallback);
+        select.value = stored.country_code;
+        number.value = stored.national;
+      },
     };
   }
 

@@ -465,6 +465,12 @@ def create_job():
             company=want(data, "customer_company"),
             id_number=want(data, "customer_id_number"),
         )
+    else:
+        # Intake shows the number we already hold for this customer, so whatever
+        # comes back is a correction rather than a restatement. It used to be
+        # dropped on the floor: the box filled with the customer's number looked
+        # editable, and typing a new one changed nothing.
+        job_flow.apply_customer_phone(customer, want(data, "customer_phone"))
 
     reg = want(data, "reg_no")
     if not reg:

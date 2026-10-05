@@ -303,11 +303,19 @@
         : null;
       if (picked) {
         fleetCheck.checked = !!picked.is_fleet;
+        /* Show the number we would ring. The dropdown already printed it beside
+           the name, so leaving the box blank beside it read as though the number
+           had been lost — and it was the one place the desk could not record a
+           missing one either. */
+        phoneField.set(picked.phone || picked.whatsapp || '');
         T.mount(customerTypeHost, h('div.form-control.form-control-sm.d-flex.align-items-center.gap-2', [
           T.icon(picked.is_fleet ? 'building' : 'person'),
           h('span.text-truncate', picked.is_fleet ? 'Fleet / corporate' : 'Retail customer'),
         ]));
       } else {
+        /* Whatever was there belonged to the customer just unpicked, so it goes
+           with them rather than becoming the new customer's number. */
+        phoneField.set('');
         T.mount(customerTypeHost, fleetChoice);
       }
       /* "New customer name" is only a question for someone who is not on file.

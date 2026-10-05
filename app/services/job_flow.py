@@ -141,6 +141,25 @@ def find_or_create_customer(
     return customer
 
 
+def apply_customer_phone(customer: Customer, phone: str | None) -> bool:
+    """Record a number the desk corrected during intake.
+
+    Only a real change is written: an empty box is never read as "delete the
+    number", because the operator may simply not have touched it. The corrected
+    number becomes the WhatsApp number too — it is the one we would ring — but
+    only when the customer has no separate WhatsApp number of their own on file,
+    which the registry lets them keep.
+    """
+    corrected = phone_numbers.format_msisdn(phone) or None
+    if not corrected or corrected == customer.phone:
+        return False
+    previous = customer.phone
+    customer.phone = corrected
+    if not customer.whatsapp or customer.whatsapp == previous:
+        customer.whatsapp = corrected
+    return True
+
+
 def find_or_create_vehicle(
     customer: Customer, *, reg_no: str, **fields
 ) -> Vehicle:
