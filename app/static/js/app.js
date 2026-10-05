@@ -610,10 +610,13 @@
     /* Tabular figures and a 10s tick: the rail is at the edge of a workshop PC
        that nobody wants to touch just to check the time. */
     const clock = h('span.tc-side-foot-clock');
+    /* The workshop's clock, not the PC's. A machine left on another timezone
+       must still show the time the front desk is working to. */
+    const clockFmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: T.TZ_NAME || 'Africa/Harare', hour: '2-digit', minute: '2-digit', hour12: false,
+    });
     function paintClock() {
-      const now = new Date();
-      clock.textContent =
-        `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      clock.textContent = clockFmt.format(new Date());
     }
     paintClock();
     setInterval(paintClock, 10000);

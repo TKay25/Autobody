@@ -7,9 +7,10 @@ two different stories about the same day.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from .. import tz
 from ..constants import (
     BOOKING_OUTCOMES,
     BOOKING_STATUS_LABELS,
@@ -31,9 +32,13 @@ def _money(value) -> float:
 
 
 def _day_window(day: date) -> tuple[datetime, datetime]:
-    """Half-open [start, end) window covering one local calendar day."""
-    start = datetime.combine(day, time.min)
-    return start, start + timedelta(days=1)
+    """Half-open [start, end) window covering one Harare calendar day.
+
+    Not ``datetime.combine(day, time.min)``: a workshop day opens at Harare
+    midnight, which is 22:00 UTC the evening before, so the first two hours of
+    trading would otherwise land on the previous day's sheet.
+    """
+    return tz.start_of_day_utc(day), tz.end_of_day_utc(day)
 
 
 def _in_window(value, start: datetime, end: datetime) -> bool:
@@ -108,7 +113,7 @@ def _task_row(task: Task) -> dict:
 
 def end_of_day(day: date | None = None) -> dict:
     """Everything that happened on ``day``, plus what is still open."""
-    day = day or date.today()
+    day = day or tz.today()
     start, end = _day_window(day)
 
     jobs = JobCard.query.all()

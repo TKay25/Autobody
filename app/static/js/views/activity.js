@@ -15,13 +15,13 @@
   ];
 
   function dayLabel(iso) {
-    const d = new Date(iso);
-    const today = new Date();
-    const yesterday = new Date(Date.now() - 86400000);
-    const same = (a, b) => a.toDateString() === b.toDateString();
-    if (same(d, today)) return 'Today';
-    if (same(d, yesterday)) return 'Yesterday';
-    return d.toLocaleDateString('en-GB', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+    const d = T.parseStamp(iso);
+    if (!d) return '';
+    const key = T.dateKey(iso);
+    if (key === T.today()) return 'Today';
+    if (key === T.dateKey(new Date(Date.now() - 86400000))) return 'Yesterday';
+    return d.toLocaleDateString('en-GB', { timeZone: T.TZ_NAME, weekday: 'long',
+                                           day: '2-digit', month: 'long', year: 'numeric' });
   }
 
   T.route('/activity', async (ctx) => {
@@ -37,8 +37,8 @@
       T.listState('activity', params);
       const data = await api.get(`/api/activity?${params}`);
 
-      const today = new Date().toDateString();
-      const todayCount = data.items.filter((a) => new Date(a.created_at).toDateString() === today).length;
+      const todayKey = T.today();
+      const todayCount = data.items.filter((a) => T.dateKey(a.created_at) === todayKey).length;
       const actors = new Set(data.items.map((a) => a.actor_name)).size;
 
       T.mount(summary, [

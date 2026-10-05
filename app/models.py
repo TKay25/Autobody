@@ -19,6 +19,7 @@ from .constants import (
     STAGE_LABELS,
     STAGE_PROGRESS,
 )
+from . import tz
 from .extensions import db
 # Imported as a module, not a name: `services.phone` imports nothing from here, so
 # this stays a one-way dependency and `Customer.wa_number` has exactly one
@@ -432,7 +433,7 @@ class JobCard(TimestampMixin, db.Model):
         return bool(
             self.promised_date
             and self.is_open
-            and self.promised_date < date.today()
+            and self.promised_date < tz.today()
         )
 
     @property
@@ -614,11 +615,14 @@ class Estimate(TimestampMixin, db.Model):
 
     @property
     def expires_on(self) -> date:
-        return (self.created_at or _now()).date() + timedelta(days=self.valid_days or 14)
+        # The Harare day the estimate was written, so a 14-day validity means
+        # fourteen workshop days rather than fourteen UTC ones.
+        raised = tz.to_local(self.created_at or _now())
+        return raised.date() + timedelta(days=self.valid_days or 14)
 
     @property
     def is_expired(self) -> bool:
-        return date.today() > self.expires_on and self.status != "APPROVED"
+        return tz.today() > self.expires_on and self.status != "APPROVED"
 
     def recalculate(self, vat_rate: Decimal) -> None:
         self.labour_total = _money(sum((i.line_total for i in self.items if i.kind == "LABOUR"), Decimal("0")))
@@ -894,7 +898,7 @@ class Invoice(TimestampMixin, db.Model):
         return bool(
             self.due_date
             and self.status not in {"PAID", "CANCELLED"}
-            and self.due_date < date.today()
+            and self.due_date < tz.today()
         )
 
     def to_dict(self, deep: bool = False) -> dict:
@@ -1235,7 +1239,7 @@ class Task(TimestampMixin, db.Model):
 
     @property
     def is_overdue(self) -> bool:
-        return bool(self.due_date and self.is_open and self.due_date < date.today())
+        return bool(self.due_date and self.is_open and self.due_date < tz.today())
 
     @property
     def status_label(self) -> str:

@@ -907,9 +907,13 @@ html.nav-chord .tc-nav-chordhint { display: flex; }
   flex: none; width: .9rem; opacity: 0; cursor: grab;
   display: grid; place-items: center;
   color: #8d9ab0; font-size: .82rem; line-height: 1;
+  /* Hidden until the row is hovered, AND inert until then. An invisible element
+     still eats taps, and on a touch screen — where `:hover` never fires — that
+     would be a dead 14px strip down the right-hand edge of every nav row. */
+  pointer-events: none;
   transition: opacity var(--tc-fast), color var(--tc-fast);
 }
-.tc-nav-item:hover .tc-nav-grip { opacity: .75; }
+.tc-nav-item:hover .tc-nav-grip { opacity: .75; pointer-events: auto; }
 .tc-nav-grip:hover { color: var(--tc-crimson-600); }
 .tc-sidebar.rail .tc-nav-grip,
 html.nav-chord .tc-nav-grip { display: none; }

@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
+from .. import tz
 from ..extensions import db
 from ..models import Booking, utcnow
 
@@ -162,7 +163,7 @@ def _request_task(booking: Booking, asked_for: str | None) -> bool:
             category="Front desk",
             priority="MEDIUM",
             status="OPEN",
-            due_date=date.today(),
+            due_date=tz.today(),
         )
         db.session.add(task)
         db.session.commit()

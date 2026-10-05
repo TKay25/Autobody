@@ -18,6 +18,7 @@ from decimal import Decimal
 
 from flask import current_app
 
+from .. import tz
 from ..constants import (
     APPEARANCE_SERVICES,
     BOOKING_EXPECTED_STATUSES,
@@ -1621,7 +1622,7 @@ class IntentRouter:
             category="Front desk",
             priority="HIGH",
             status="OPEN",
-            due_date=date.today(),
+            due_date=tz.today(),
             custodian_id=self._front_desk_user_id(),
         )
         db.session.add(task)
@@ -1781,7 +1782,7 @@ class IntentRouter:
             parsed = date.fromisoformat(match.group(0))
         except ValueError:
             return None
-        return parsed if parsed >= date.today() else None
+        return parsed if parsed >= tz.today() else None
 
     def _wa_name(self) -> str:
         """The best name we already hold for this customer.
@@ -1856,7 +1857,7 @@ class IntentRouter:
             customer_id=customer.id,
             vehicle_id=vehicle.id if vehicle else None,
             service=service,
-            slot_date=booked_for or (date.today() + timedelta(days=1)),
+            slot_date=booked_for or (tz.today() + timedelta(days=1)),
             slot_time=booked_at,
             status="REQUESTED",
             source="whatsapp",
@@ -1990,7 +1991,7 @@ class IntentRouter:
     def _day_list(self, service: str) -> dict:
         """The next six days. Saturday is called out honestly — the shop runs a
         skeleton crew, so "Limited" is information, not a warning."""
-        today = date.today()
+        today = tz.today()
         rows = []
         for offset in range(1, 7):
             day = today + timedelta(days=offset)
@@ -2131,7 +2132,7 @@ class IntentRouter:
         return (Booking.query
                 .filter(Booking.customer_id == customer.id,
                         Booking.status.in_(BOOKING_EXPECTED_STATUSES),
-                        Booking.slot_date >= date.today())
+                        Booking.slot_date >= tz.today())
                 .order_by(Booking.slot_date.asc(), Booking.slot_time.asc())
                 .first())
 
@@ -2360,7 +2361,7 @@ class IntentRouter:
             category="Front desk",
             priority="HIGH",
             status="OPEN",
-            due_date=date.today(),
+            due_date=tz.today(),
             custodian_id=self._front_desk_user_id(),
         ))
 
@@ -2426,7 +2427,7 @@ class IntentRouter:
                 category="Workshop",
                 priority="HIGH",
                 status="OPEN",
-                due_date=date.today(),
+                due_date=tz.today(),
                 job_id=job.id if job else None,
                 custodian_id=self._front_desk_user_id(),
             )
@@ -2502,7 +2503,7 @@ class IntentRouter:
                     "Call them before they tell everyone else.",
                 ])),
                 category="Front desk", priority="HIGH", status="OPEN",
-                due_date=date.today(), job_id=job.id,
+                due_date=tz.today(), job_id=job.id,
                 custodian_id=self._front_desk_user_id(),
             ))
             job.feedback_text = "Rated Poor via WhatsApp"

@@ -12,11 +12,11 @@ enumerable. Tokens are per-document and can be rotated by regenerating them.
 """
 from __future__ import annotations
 
-from datetime import date
 from decimal import Decimal
 
 from flask import Blueprint, abort, current_app, render_template, send_file
 
+from .. import tz
 from ..constants import STAGE_LABELS
 from ..extensions import db
 from ..models import Estimate, Invoice, Payment
@@ -54,7 +54,7 @@ def _lookup(kind: str, token: str):
 def view(kind: str, token: str):
     """Printable HTML version — the customer can preview or save as PDF."""
     spec, record = _lookup(kind, token)
-    context = {"kind": kind, "label": spec["label"], "today": date.today(),
+    context = {"kind": kind, "label": spec["label"], "today": tz.today(),
                "company": _company(), "currency": "USD", "token": token}
 
     if kind == "quote":

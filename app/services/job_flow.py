@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from sqlalchemy import func
 
+from .. import tz
 from ..constants import (
     CLOSED_STAGES,
     QC_CHECKLIST,
@@ -38,7 +39,7 @@ class JobFlowError(Exception):
 # Numbering
 # ─────────────────────────────────────────────────────────────────────────────
 def next_job_no(year: int | None = None) -> str:
-    year = year or date.today().year
+    year = year or tz.today().year
     prefix = f"TC-{year}-"
     count = (
         db.session.query(func.count(JobCard.id))
@@ -50,7 +51,7 @@ def next_job_no(year: int | None = None) -> str:
 
 
 def next_invoice_no() -> str:
-    year = date.today().year
+    year = tz.today().year
     prefix = f"INV-{year}-"
     count = (
         db.session.query(func.count(Invoice.id))
@@ -65,7 +66,7 @@ def next_receipt_no() -> str:
     """Sequential, human-quotable receipt number, e.g. RCT-2026-0007."""
     from ..models import Payment
 
-    year = date.today().year
+    year = tz.today().year
     prefix = f"RCT-{year}-"
     count = (
         db.session.query(func.count(Payment.id))
@@ -183,7 +184,7 @@ def open_job_card(
         description=description,
         damage_summary=damage_summary,
         priority=priority,
-        promised_date=promised_date or (date.today() + timedelta(days=7)),
+        promised_date=promised_date or (tz.today() + timedelta(days=7)),
         bay=bay,
         technician_id=technician_id,
         estimator_id=user_id,
@@ -428,7 +429,7 @@ def ensure_invoice(job: JobCard, *, user_id: int | None = None) -> Invoice | Non
         vat=_dec(estimate.vat),
         total=_dec(estimate.total),
         status="DRAFT",
-        due_date=date.today() + timedelta(days=14),
+        due_date=tz.today() + timedelta(days=14),
     )
     db.session.add(invoice)
     db.session.flush()
@@ -459,7 +460,7 @@ def record_payment(invoice: Invoice, amount: Decimal, *, method: str = "CASH",
 # Metrics
 # ─────────────────────────────────────────────────────────────────────────────
 def workshop_metrics() -> dict:
-    today = date.today()
+    today = tz.today()
     jobs = JobCard.query.all()
     open_jobs = [j for j in jobs if j.is_open]
     ready = [j for j in jobs if j.stage == "READY"]

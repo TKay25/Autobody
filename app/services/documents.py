@@ -15,11 +15,11 @@ Each raises :class:`DocumentError` if the record is not printable.
 from __future__ import annotations
 
 import io
-from datetime import date
 from decimal import Decimal
 
 from flask import current_app
 
+from .. import tz
 from ..constants import STAGE_LABELS, WARRANTY_TEXT
 from ..models import Estimate, Invoice, Payment
 
@@ -621,7 +621,8 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
 
     meta = [
         ("Quotation", estimate.reference),
-        ("Date", (estimate.created_at or date.today()).strftime("%d %b %Y")),
+        ("Date", tz.format_local(estimate.created_at) if estimate.created_at
+         else tz.today().strftime("%d %b %Y")),
         ("Valid until", estimate.expires_on.strftime("%d %b %Y")),
         ("Job card", job.job_no if job else "—"),
     ]
@@ -723,7 +724,9 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
 
     meta = [
         ("Invoice", invoice.invoice_no),
-        ("Issued", (invoice.issued_at or invoice.created_at or date.today()).strftime("%d %b %Y")),
+        ("Issued", tz.format_local(invoice.issued_at or invoice.created_at)
+         if (invoice.issued_at or invoice.created_at)
+         else tz.today().strftime("%d %b %Y")),
         ("Due", invoice.due_date.strftime("%d %b %Y") if invoice.due_date else "On collection"),
         ("Job card", job.job_no if job else "—"),
     ]
@@ -820,7 +823,7 @@ def build_invoice_pdf(invoice: Invoice) -> bytes:
         for payment in sorted(invoice.payments, key=lambda p: p.id):
             rows.append([
                 Paragraph(payment.receipt_no or "—", cell),
-                Paragraph(payment.created_at.strftime("%d %b %Y"), cell),
+                Paragraph(tz.format_local(payment.created_at), cell),
                 Paragraph((payment.method or "").replace("_", " ").title(), cell),
                 Paragraph(payment.reference or "—", cell),
                 Paragraph(_money(payment.amount), money),
@@ -879,7 +882,7 @@ def build_receipt_pdf(payment: Payment) -> bytes:
 
     meta = [
         ("Official receipt", payment.receipt_no or f"#{payment.id}"),
-        ("Date", payment.created_at.strftime("%d %b %Y")),
+        ("Date", tz.format_local(payment.created_at)),
         ("Invoice", invoice.invoice_no if invoice else "—"),
         ("Received by", payment.user.full_name if payment.user else "Front desk"),
     ]

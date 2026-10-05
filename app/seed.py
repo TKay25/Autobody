@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 import random
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from flask import current_app
 
+from . import tz
 from .constants import SUPPLIERS
 from .extensions import db
 from .models import (
@@ -347,7 +348,7 @@ def _seed_demo_work() -> None:
                 customer_id=vehicle.customer_id,
                 vehicle_id=vehicle.id,
                 service=service,
-                slot_date=date.today() + timedelta(days=rng.randint(1, 10)),
+                slot_date=tz.today() + timedelta(days=rng.randint(1, 10)),
                 slot_time=rng.choice(["08:00", "09:00", "10:00", "11:00", "14:00"]),
                 status=rng.choice(["REQUESTED", "CONFIRMED"]),
                 source=rng.choice(["web", "whatsapp", "phone"]),

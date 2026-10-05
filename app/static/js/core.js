@@ -673,26 +673,58 @@
     const s = n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return currency ? `${currency} ${s}` : s;
   }
+  /* ── the workshop clock ──────────────────────────────────────────────
+     Timestamps are stored in UTC and cross the API without a suffix, which a
+     browser reads as *its own* local time — so a job checked in at 14:05 showed
+     as 12:05. `parseStamp` marks a bare stamp as UTC, and every formatter then
+     renders it in Harare, so the reading is right even on a laptop set to
+     another timezone. Harare is the clock the paperwork, the end-of-day sheet
+     and the customer's own message all agree on. */
+  const TZ_NAME = 'Africa/Harare';
+
+  function parseStamp(value) {
+    if (!value) return null;
+    if (value instanceof Date) return isNaN(value) ? null : value;
+    const s = String(value);
+    const bare = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) && !/(Z|[+-]\d{2}:?\d{2})$/.test(s);
+    const d = new Date(bare ? `${s}Z` : s);
+    return isNaN(d) ? null : d;
+  }
+
+  /** The Harare calendar day of a stamp, as YYYY-MM-DD, for grouping and matching. */
+  function dateKey(value) {
+    const d = parseStamp(value);
+    if (!d) return '';
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: TZ_NAME, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(d);
+    const get = (type) => (parts.find((p) => p.type === type) || {}).value || '';
+    return `${get('year')}-${get('month')}-${get('day')}`;
+  }
+
   function dateShort(value) {
     if (!value) return '—';
-    const d = new Date(value);
-    if (isNaN(d)) return String(value);
-    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const d = parseStamp(value);
+    if (!d) return String(value);
+    return d.toLocaleDateString('en-GB',
+      { timeZone: TZ_NAME, day: '2-digit', month: 'short', year: 'numeric' });
   }
   function dateTime(value) {
     if (!value) return '—';
-    const d = new Date(value);
-    if (isNaN(d)) return String(value);
-    return d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+    const d = parseStamp(value);
+    if (!d) return String(value);
+    return d.toLocaleString('en-GB',
+      { timeZone: TZ_NAME, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
   }
   function timeOnly(value) {
-    if (!value) return '';
-    const d = new Date(value);
-    return isNaN(d) ? '' : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    const d = parseStamp(value);
+    return d ? d.toLocaleTimeString('en-GB',
+      { timeZone: TZ_NAME, hour: '2-digit', minute: '2-digit' }) : '';
   }
   function relTime(value) {
-    if (!value) return '';
-    const diff = (Date.now() - new Date(value).getTime()) / 1000;
+    const d = parseStamp(value);
+    if (!d) return '';
+    const diff = (Date.now() - d.getTime()) / 1000;
     if (isNaN(diff)) return '';
     if (diff < 60) return 'just now';
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
@@ -700,7 +732,8 @@
     if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
     return dateShort(value);
   }
-  function today() { return new Date().toISOString().slice(0, 10); }
+  /** Today's Harare date as YYYY-MM-DD, for date filters and booking keys. */
+  function today() { return dateKey(new Date()); }
   function src(obj, path) { return path.split('.').reduce((acc, k) => (acc == null ? acc : acc[k]), obj); }
   function debounce(fn, ms) {
     let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms || 300); };
@@ -1947,6 +1980,11 @@
   TCA.timeOnly = timeOnly;
   TCA.relTime = relTime;
   TCA.today = today;
+  /* The workshop's timezone, exposed so view modules format and group on the
+     same clock rather than their own. */
+  TCA.TZ_NAME = TZ_NAME;
+  TCA.parseStamp = parseStamp;
+  TCA.dateKey = dateKey;
   TCA.src = src;
   TCA.debounce = debounce;
   TCA.setConnectionState = setConnectionState;

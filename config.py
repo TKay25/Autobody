@@ -35,7 +35,9 @@ def _database_uri() -> str:
     return raw
 
 
-class Config:
+class Config:    # Lets the factory tell a real deployment from a local run without guessing
+    # from hostnames or env vars. See `_assert_production_ready`.
+    IS_PRODUCTION = False
     # ── Flask ────────────────────────────────────────────────────────────
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
     JSON_SORT_KEYS = False
@@ -186,6 +188,7 @@ class TestConfig(Config):
 
 
 class ProductionConfig(Config):
+    IS_PRODUCTION = True
     SESSION_COOKIE_SECURE = True
     SESSION_COOKIE_HTTPONLY = True
     # Anyone can reach the sign-in page, so don't advertise demo credentials

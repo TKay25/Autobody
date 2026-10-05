@@ -15,7 +15,7 @@ from flask_login import current_user, login_required
 from sqlalchemy import func, or_
 from werkzeug.utils import secure_filename
 
-from .. import reference_meta
+from .. import reference_meta, tz
 from ..constants import (
     BOOKING_OUTCOMES,
     BOOKING_REF_PREFIX,
@@ -201,7 +201,7 @@ def save_preferences():
 @login_required
 def badges():
     """Live counters for the navigation rail. Cheap enough to poll."""
-    today = date.today()
+    today = tz.today()
     open_jobs = JobCard.query.filter(JobCard.stage != "COLLECTED")
     unpaid = Invoice.query.filter(Invoice.status.notin_(["PAID", "CANCELLED"]))
 
@@ -1330,7 +1330,7 @@ def create_booking():
     if service not in SERVICE_NAMES:
         return bad("Unknown service.")
     if not slot_date:
-        slot_date = date.today() + timedelta(days=1)
+        slot_date = tz.today() + timedelta(days=1)
 
     customer = job_flow.find_or_create_customer(name=name, phone=phone, whatsapp=phone,
                                                 email=want(data, "email"),
@@ -1570,7 +1570,7 @@ def _task_horizon(window: str) -> date | None:
     Returns None for "all". A day or week view deliberately only surfaces dated
     work — undated tasks would otherwise sit in "today" for ever.
     """
-    today = date.today()
+    today = tz.today()
     if window == "day":
         return today
     if window == "week":
@@ -1602,7 +1602,7 @@ def list_tasks():
         Task.status == "DONE", Task.due_date.is_(None), Task.due_date.asc(), Task.id.asc()
     ).all()
 
-    today = date.today()
+    today = tz.today()
     return jsonify({
         "items": [t.to_dict() for t in tasks],
         "count": len(tasks),
@@ -1610,7 +1610,7 @@ def list_tasks():
         "overdue": len([t for t in tasks if t.is_overdue]),
         "done_today": len([t for t in tasks
                            if t.status == "DONE" and t.completed_at
-                           and t.completed_at.date() == today]),
+                           and tz.to_local(t.completed_at).date() == today]),
         "undated": Task.query.filter(Task.due_date.is_(None),
                                      Task.status.in_(TASK_OPEN_STATUSES)).count(),
     })
@@ -1823,7 +1823,15 @@ def wa_status():
 @bp.post("/whatsapp/simulate")
 @login_required
 def wa_simulate():
-    """Test the bot from the UI without a Meta account (simulator mode)."""
+    """Drive the bot by hand, for the tests and for a simulator install.
+
+    Manager-only on purpose: with WA_MODE=live this sends from the workshop's own
+    WhatsApp number to whatever number it is handed, so a front-desk login must
+    not be able to put messages on the business's account — Meta bans numbers for
+    that. The console no longer offers this either way.
+    """
+    if not current_user.is_manager:
+        return manager_only()
     data = payload()
     number = normalise_msisdn(want(data, "wa_id") or "+263775550555")
     body = want(data, "body")
@@ -1923,14 +1931,14 @@ def update_user(user_id: int):
 @login_required
 def end_of_day_report():
     """The closing sheet — job card statuses, enquiries/bookings and money."""
-    day = as_date(request.args.get("date")) or date.today()
+    day = as_date(request.args.get("date")) or tz.today()
     return jsonify(reporting.end_of_day(day))
 
 
 @bp.get("/reports/end-of-day/pdf")
 @login_required
 def end_of_day_report_pdf():
-    day = as_date(request.args.get("date")) or date.today()
+    day = as_date(request.args.get("date")) or tz.today()
     sheet = documents.build_end_of_day_pdf(reporting.end_of_day(day))
     return _pdf_response(sheet, f"End-of-day-{day.isoformat()}.pdf")
 
@@ -1946,15 +1954,17 @@ def reports_overview():
         by_service[job.service] = by_service.get(job.service, 0) + 1
 
     # 14-day intake trend
-    today = date.today()
+    today = tz.today()
     trend = []
     for offset in range(13, -1, -1):
         day = today - timedelta(days=offset)
         trend.append({
             "date": day.isoformat(),
             "label": day.strftime("%d %b"),
-            "intake": len([j for j in jobs if j.checked_in_at and j.checked_in_at.date() == day]),
-            "collected": len([j for j in jobs if j.collected_at and j.collected_at.date() == day]),
+            "intake": len([j for j in jobs if j.checked_in_at
+                           and tz.to_local(j.checked_in_at).date() == day]),
+            "collected": len([j for j in jobs if j.collected_at
+                              and tz.to_local(j.collected_at).date() == day]),
         })
 
     technicians = User.query.filter(User.role.in_(["technician", "manager", "owner"])).all()
@@ -2075,7 +2085,7 @@ def list_payments():
         bucket["count"] += 1
         bucket["total"] += amount
 
-    today = date.today()
+    today = tz.today()
     def _sum_from(moment) -> float:
         return float(db.session.query(
             db.func.coalesce(db.func.sum(Payment.amount), 0)
@@ -2312,7 +2322,7 @@ def export_csv(dataset: str):
             est = job.latest_estimate
             writer.writerow([
                 job.job_no,
-                job.checked_in_at.strftime("%Y-%m-%d") if job.checked_in_at else "",
+                tz.to_local(job.checked_in_at).strftime("%Y-%m-%d") if job.checked_in_at else "",
                 job.vehicle.reg_no if job.vehicle else "",
                 job.vehicle.title if job.vehicle else "",
                 job.customer.name if job.customer else "",
@@ -2334,8 +2344,8 @@ def export_csv(dataset: str):
                 f"{inv.subtotal:.2f}", f"{inv.vat:.2f}", f"{inv.total:.2f}",
                 f"{inv.amount_paid:.2f}", f"{inv.balance:.2f}", inv.status,
                 inv.due_date.isoformat() if inv.due_date else "",
-                inv.issued_at.strftime("%Y-%m-%d") if inv.issued_at else "",
-                inv.paid_at.strftime("%Y-%m-%d") if inv.paid_at else "",
+                tz.to_local(inv.issued_at).strftime("%Y-%m-%d") if inv.issued_at else "",
+                tz.to_local(inv.paid_at).strftime("%Y-%m-%d") if inv.paid_at else "",
             ])
     elif dataset == "parts":
         writer.writerow(["SKU", "Name", "Category", "Supplier", "On hand", "Reorder level",
@@ -2350,7 +2360,7 @@ def export_csv(dataset: str):
     else:
         return bad("Unknown export. Use jobs, invoices or parts.", 404)
 
-    filename = f"topclass-{dataset}-{date.today().isoformat()}.csv"
+    filename = f"topclass-{dataset}-{tz.today().isoformat()}.csv"
     return Response(
         buffer.getvalue(),
         mimetype="text/csv",

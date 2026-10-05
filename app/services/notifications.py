@@ -6,13 +6,14 @@ what the customer was told, and so failed sends can be retried.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from flask import current_app, has_request_context, request
 
 from ..constants import (BOOKING_EXPECTED_STATUSES, STAGE_CUSTOMER_TEXT, STAGE_LABELS,
                          WARRANTY_TEXT)
+from .. import tz
 from ..extensions import db
 from ..models import JobCard, NotificationLog, utcnow
 from .bookings import slot_text
@@ -699,12 +700,13 @@ def send_due_feedback_requests(day: date | None = None) -> dict:
     """
     from ..models import JobCard
 
-    day = day or (date.today() - timedelta(days=1))
+    day = day or (tz.today() - timedelta(days=1))
     # A half-open range rather than ``date(collected_at) = day``: function-wrapping
-    # the column is not portable to Postgres and cannot use an index. The day is
-    # read on the server's clock, the same clock that wrote ``collected_at``.
-    start = datetime.combine(day, time.min)
-    end = start + timedelta(days=1)
+    # the column is not portable to Postgres and cannot use an index. The bounds
+    # are the Harare day the workshop actually worked, converted back to the UTC
+    # instants ``collected_at`` was written in -- so a car handed back at 23:30
+    # counts towards that day, not the next one.
+    start, end = tz.start_of_day_utc(day), tz.end_of_day_utc(day)
     pending = JobCard.query.filter(
         JobCard.stage == "COLLECTED",
         JobCard.feedback_requested_at.is_(None),
@@ -867,7 +869,7 @@ def send_due_booking_reminders(day: date | None = None) -> dict:
     """
     from ..models import Booking
 
-    day = day or (date.today() + timedelta(days=1))
+    day = day or (tz.today() + timedelta(days=1))
     pending = Booking.query.filter(
         Booking.slot_date == day,
         Booking.status.in_(BOOKING_EXPECTED_STATUSES),

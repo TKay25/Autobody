@@ -50,12 +50,12 @@ def test_the_demo_credentials_can_be_read_off_the_page(client):
         assert "@topclass.co.zw" in email, email
 
 
-def test_demo_shortcuts_are_hidden_in_production():
+def test_demo_shortcuts_are_hidden_in_production(production_config):
     """A public sign-in page must not list working credentials."""
     assert Config.SHOW_DEMO_ACCOUNTS is True
     assert ProductionConfig.SHOW_DEMO_ACCOUNTS is False
 
-    application = create_app(ProductionConfig)
+    application = create_app(production_config)
     with application.app_context():
         # The routes need tables; production uses whatever DATABASE_URL points at.
         from app.extensions import db

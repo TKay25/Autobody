@@ -1,11 +1,12 @@
 """Page blueprints: the SPA shell, login and the public portal."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 
 from flask import Blueprint, abort, current_app, render_template, request, send_from_directory
 from flask_login import current_user, login_required
 
+from .. import tz
 from ..constants import STAGE_LABELS
 from ..extensions import db
 from ..models import Booking, Customer, Invoice, JobCard, Vehicle
@@ -85,7 +86,7 @@ def portal(token: str):
     )
     bookings = (
         Booking.query.filter_by(customer_id=customer.id)
-        .filter(Booking.slot_date >= date.today() - timedelta(days=30))
+        .filter(Booking.slot_date >= tz.today() - timedelta(days=30))
         .order_by(Booking.slot_date.desc())
         .all()
     )
@@ -96,7 +97,7 @@ def portal(token: str):
         invoices=invoices,
         bookings=bookings,
         stage_labels=STAGE_LABELS,
-        today=date.today(),
+        today=tz.today(),
     )
 
 

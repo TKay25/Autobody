@@ -35,20 +35,21 @@
   /* ── chat rendering helpers ───────────────────────────────────────── */
   const DAY_MS = 24 * 60 * 60 * 1000;
 
-  const dayKey = (iso) => {
-    const d = new Date(iso);
-    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-  };
+  const dayKey = (iso) => T.dateKey(iso) || 'unknown';
 
   function dayLabel(iso) {
-    const d = new Date(iso);
-    const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-    const days = Math.round((midnight(new Date()) - midnight(d)) / DAY_MS);
+    const key = dayKey(iso);
+    const d = T.parseStamp(iso);
+    if (!d || key === 'unknown') return '';
+    // Counted off two YYYY-MM-DD keys rather than timestamps, so the difference
+    // is whole Harare days and an evening message never lands on "tomorrow".
+    const days = Math.round((Date.parse(`${T.today()}T00:00:00Z`)
+                             - Date.parse(`${key}T00:00:00Z`)) / DAY_MS);
     if (days === 0) return 'Today';
     if (days === 1) return 'Yesterday';
-    if (days < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
-    return d.toLocaleDateString(undefined,
-      { day: 'numeric', month: 'short', year: 'numeric' });
+    if (days < 7) return d.toLocaleDateString('en-GB', { timeZone: T.TZ_NAME, weekday: 'long' });
+    return d.toLocaleDateString('en-GB',
+      { timeZone: T.TZ_NAME, day: 'numeric', month: 'short', year: 'numeric' });
   }
 
   /* Historic taps were logged as the raw payload ("[button:a_approve:1]"), which

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from flask import Flask, jsonify, render_template, request
 
 from config import Config, get_config
 
+from . import tz
 from .constants import (
     BOOKING_OUTCOMES,
     BOOKING_SLOTS,
@@ -50,6 +52,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     app.config.from_object(config_object or get_config())
 
     _configure_logging(app)
+    _assert_production_ready(app)
     _init_extensions(app)
     _register_blueprints(app)
     _register_jinja(app)
@@ -67,6 +70,77 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def _assert_production_ready(app: Flask) -> None:
+    """Refuse to start a production deploy that is configured to be broken.
+
+    Every check here is a failure that would otherwise be silent: the app boots,
+    renders, and is quietly wide open or quietly unreachable. They raise rather
+    than warn because a warning in a host's log viewer is a warning nobody reads,
+    and none of these are survivable in front of real customers.
+
+    Deliberately no override switch. The fix for each one is to set a variable,
+    which is a two-minute job; a bypass would get used.
+    """
+    if not app.config.get("IS_PRODUCTION"):
+        return
+
+    problems = []
+
+    if app.config.get("SECRET_KEY") in (None, "", "dev-secret-change-me"):
+        problems.append(
+            "SECRET_KEY is unset or still the value published in this repository. "
+            "Anyone who can read the source can forge a session cookie and sign in "
+            "as the owner. Set SECRET_KEY to a long random string - on the host, not "
+            "in .env - for example: python -c \"import secrets; "
+            "print(secrets.token_urlsafe(48))\""
+        )
+
+    if (app.config.get("AUTO_SEED_STAFF")
+            and app.config.get("SEED_PASSWORD") == "topclass123"):
+        problems.append(
+            "AUTO_SEED_STAFF is on and SEED_PASSWORD is still the published default, "
+            "so an empty database gets seeded with accounts whose passwords are in "
+            "the repository (owner@topclass.co.zw / topclass123). Set SEED_PASSWORD, "
+            "or set OWNER_EMAIL + OWNER_PASSWORD and AUTO_SEED_STAFF=false."
+        )
+
+    if app.config.get("WA_MODE") == "live":
+        if not app.config.get("WA_APP_SECRET"):
+            problems.append(
+                "WA_MODE=live with no WA_APP_SECRET: the webhook is public and "
+                "accepts unsigned POSTs, so anyone who learns the URL can create "
+                "customers, enquiries and job cards. Copy the app secret from "
+                "Meta -> Settings -> Basic."
+            )
+        base = app.config.get("PUBLIC_BASE_URL") or ""
+        if "127.0.0.1" in base or "localhost" in base:
+            problems.append(
+                f"WA_MODE=live with PUBLIC_BASE_URL={base!r}: quotations, invoices "
+                "and receipts go to customers as links to that address, and Meta "
+                "fetches them from the public internet. Set the real HTTPS URL."
+            )
+
+    if problems:
+        raise RuntimeError(
+            "Refusing to start: this production configuration is unsafe.\n"
+            + "\n".join(f"  - {problem}" for problem in problems)
+        )
+
+    # Survivable, but not something anyone should discover later.
+    uri = app.config.get("SQLALCHEMY_DATABASE_URI") or ""
+    if uri.startswith("sqlite"):
+        app.logger.warning(
+            "Production is on SQLite (%s). On a host with an ephemeral filesystem "
+            "every deploy, restart and scale-to-zero wipes the workshop's records. "
+            "Attach a persistent disk, or point DATABASE_URL at Postgres.", uri,
+        )
+    if app.config.get("WA_VERIFY_TOKEN") == "topclass-verify-token":
+        app.logger.warning(
+            "WA_VERIFY_TOKEN is still the published default. It only guards the "
+            "verification handshake, but set it to something private anyway."
+        )
+
+
 def _log_whatsapp_mode(app: Flask) -> None:
     """Say once, at boot, whether this process can actually send WhatsApp.
 
@@ -382,6 +456,10 @@ def _register_jinja(app: Flask) -> None:
     def nice_date(value) -> str:
         if not value:
             return "—"
+        # A stored timestamp is UTC and would print two hours early; a calendar
+        # date (a promised date, a due date) carries no time and needs none.
+        if isinstance(value, datetime):
+            value = tz.to_local(value)
         try:
             return value.strftime("%d %b %Y")
         except AttributeError:
