@@ -224,6 +224,9 @@
         h('button.btn.btn-brand.btn-sm', { onclick: addTask },
           T.icon('plus-lg'), ' Add task'),
       ]),
+      /* A task ticked off offline would otherwise vanish on the next render and
+         get ticked again. */
+      T.pendingStrip({ match: (url) => /\/tasks/.test(url), label: 'to-do change' }),
       summaryHost,
       h('div.tc-toolbar.mt-3', [windowTabs, h('div.tc-toolbar-spacer')]),
       T.section({ body: listHost, flush: true }),

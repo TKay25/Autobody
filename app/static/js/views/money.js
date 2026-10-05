@@ -32,6 +32,9 @@
 
     async function load() {
       T.mount(host, T.skeletonTable(7, 6));
+      // Keep the address bar honest about the date range and method in view, so
+      // opening a receipt and coming back does not reset the filter.
+      T.listState('payments', params());
       const data = await api.get(`/api/payments?${params()}`);
 
       T.mount(summary, [
@@ -133,6 +136,10 @@
         h('a.btn.btn-brand.btn-sm', { href: '#/invoices?record=1' },
           T.icon('cash-coin'), ' Record payment'),
       ]),
+      /* The one that matters most. A payment recorded offline is absent from the
+         register below, and somebody who cannot see it will take it again. */
+      T.pendingStrip({ match: (url) => /\/(payments|invoices)/.test(url),
+                       label: 'money change' }),
       summary,
       h('div.d-flex.align-items-end.gap-3.flex-wrap.mb-3', [
         h('div', [h('div.tc-label', 'Method'), methodFilter]),
@@ -178,6 +185,11 @@
 
     async function load() {
       T.mount(host, T.skeletonTable(8, 6));
+      const params = new URLSearchParams();
+      if (state.status) params.set('status', state.status);
+      // Same reason as the payments register: the filter belongs in the URL so
+      // it survives going into an invoice and coming back out.
+      T.listState('invoices', params);
       const data = await api.get(`/api/invoices${state.status ? `?status=${state.status}` : ''}`);
 
       T.mount(summary, [
@@ -575,6 +587,8 @@
           title: 'Raise an invoice without a job card',
         }, T.icon('plus-lg'), ' New invoice'),
       ]),
+      T.pendingStrip({ match: (url) => /\/(payments|invoices)/.test(url),
+                       label: 'money change' }),
       summary,
       T.section({ body: host, flush: true }),
     ]);

@@ -302,8 +302,13 @@
   --bs-btn-active-color: #fff;
 }
 
+/* Two very faint blooms anchored to the left edge of the page. They sit behind
+what glass there is at the rail's edge and stop the main column reading as a
+flat sheet at 1920px wide. Nothing else on the page picks them up. */
 body.app-body {
-  background: #eef1f7;
+  background:
+    radial-gradient(78% 46% at 0% 0%, rgba(194, 16, 46, .14), transparent 68%),
+    #eef1f7;
   overflow-x: hidden;
   color: #1c2739;
 }
@@ -587,42 +592,46 @@ body.auth-body { background: #eef1f7; }
 }
 
 /* ── Sidebar ───────────────────────────────────────────────────────── */
-/* Layered entirely in CSS — no images, no extra requests. */
-/* Crimson is a bloom on the chrome, never a wash over it. Two layers stack here
-   (this one plus `.tc-sidebar::before`), and at 13% + 15% the pair measured
-   rgb(34,30,64) at the top of the rail — a blue/red ratio of 1.9, which is
-   purple, not the navy the brand runs on. Both came down, and the base gradient
-   cooled, so every point of the rail now measures above 2.2. */
+/* Very light frosted glass, layered entirely in CSS — no images, no requests.
+   Barely there on purpose: a bright shop app is already a lot of surface, and the
+   rail is somewhere to rest the eye, not another thing to read. The panel is only
+   54–72% opaque, so the page's warm bloom comes through the top and the edge
+   hairline does the separating — no heavy shadow, no dark slab. */
 .tc-sidebar {
   position: fixed; top: 0; left: 0; bottom: 0; width: var(--tc-sidebar);
   display: flex; flex-direction: column; z-index: 1040;
-  color: #93a4bd;
+  color: #4b5a73;
   overflow: hidden;
+  /* Glass, without a blur pass.
+     `backdrop-filter: blur()` is the real thing, and it is a per-frame GPU
+     composite of everything behind the element — paid even when nothing is
+     moving. On a workshop PC that is a lot of cost for chrome nobody looks at
+     directly. Layered translucency plus inset highlights give the same read for
+     the price of a paint, and nothing here loads over the network. */
   background:
-    radial-gradient(130% 55% at 0% 0%, rgba(194, 16, 46, .06), transparent 58%),
-    radial-gradient(115% 45% at 10% 100%, rgba(42, 84, 151, .30), transparent 72%),
-    linear-gradient(158deg, rgba(255, 255, 255, .05) 0%, transparent 40%),
-    repeating-linear-gradient(45deg,
-      rgba(255, 255, 255, .012) 0 2px, transparent 2px 4px),
-    linear-gradient(180deg, #0a1a3a 0%, #08142c 48%, #050c20 100%);
-  border-right: 1px solid rgba(255, 255, 255, .06);
-  box-shadow: 1px 0 0 rgba(255, 255, 255, .03), 8px 0 30px rgba(4, 9, 26, .16);
+    linear-gradient(180deg, rgba(255, 255, 255, .40), rgba(255, 255, 255, 0) 22%),
+    linear-gradient(168deg, rgba(255, 255, 255, .72) 0%,
+                            rgba(255, 255, 255, .62) 58%,
+                            rgba(255, 255, 255, .54) 100%);
+  border-right: 1px solid rgba(16, 38, 76, .07);
+  box-shadow: 1px 0 0 rgba(255, 255, 255, .85), 10px 0 32px rgba(16, 38, 76, .06),
+    inset 0 1px 0 rgba(255, 255, 255, .90);
   transition: width var(--tc-med), transform var(--tc-med);
 }
 
-/* Soft crimson bloom anchored to the lower half of the rail. */
+/* Soft crimson bloom, just enough to warm the top of the glass. */
 .tc-sidebar::before {
   content: ""; position: absolute; left: -45%; bottom: -16%;
   width: 190%; aspect-ratio: 1 / 1;
-  background: radial-gradient(circle, rgba(150, 12, 36, .08), transparent 62%);
+  background: radial-gradient(circle, rgba(194, 16, 46, .10), transparent 62%);
   pointer-events: none;
 }
 
 /* Brand-coloured hairline running down the leading edge. */
 .tc-sidebar::after {
   content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 1px;
-  background: linear-gradient(180deg, transparent, rgba(194, 16, 46, .55) 10%,
-    rgba(194, 16, 46, .10) 52%, transparent);
+  background: linear-gradient(180deg, transparent, rgba(194, 16, 46, .34) 10%,
+    rgba(194, 16, 46, .07) 52%, transparent);
   pointer-events: none;
 }
 
@@ -633,27 +642,27 @@ body.auth-body { background: #eef1f7; }
 .tc-brand {
   display: flex; align-items: center; gap: .7rem;
   padding: 1rem .9rem; min-height: 66px;
-  border-bottom: 1px solid rgba(255, 255, 255, .07);
-  background: linear-gradient(180deg, rgba(255, 255, 255, .05), transparent);
+  border-bottom: 1px solid rgba(16, 38, 76, .08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .45), transparent);
 }
 .tc-brand .brand-mark {
   width: 38px; height: 38px; font-size: 1.1rem; border-radius: 11px;
-  box-shadow: 0 8px 20px -8px rgba(194, 16, 46, .85),
+  box-shadow: 0 8px 20px -8px rgba(194, 16, 46, .55),
     inset 0 1px 0 rgba(255, 255, 255, .28);
 }
 .tc-brand-text { min-width: 0; flex: 1; }
 .tc-brand-name {
-  color: #fff; font-weight: 700; font-size: .9rem; line-height: 1.15;
+  color: #16233c; font-weight: 700; font-size: .9rem; line-height: 1.15;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tc-brand-sub {
-  font-size: .64rem; color: #6f83a3; text-transform: uppercase;
+  font-size: .64rem; color: #5c6a82; text-transform: uppercase;
   letter-spacing: .1em; font-weight: 600;
 }
 .tc-rail-toggle {
   flex: none; width: 26px; height: 26px; place-items: center;
-  border: 1px solid rgba(255, 255, 255, .12); border-radius: 7px;
-  background: rgba(255, 255, 255, .04); color: #93a4bd;
+  border: 1px solid rgba(16, 38, 76, .12); border-radius: 7px;
+  background: rgba(255, 255, 255, .70); color: #4b5a73;
   transition: background var(--tc-fast), color var(--tc-fast), border-color var(--tc-fast);
 }
 .tc-rail-toggle:hover {
@@ -661,76 +670,224 @@ body.auth-body { background: #eef1f7; }
 }
 
 /* Nav */
-.tc-nav { flex: 1; overflow-y: auto; padding: .55rem .55rem 1.1rem; }
-.tc-nav-section {
-  display: flex; align-items: center; gap: .55rem;
-  padding: .95rem .7rem .35rem;
-}
-.tc-nav-section-label {
-  font-size: .63rem; font-weight: 700; letter-spacing: .12em;
-  text-transform: uppercase; color: #5b6f93;
+.tc-nav {
+  flex: 1; overflow-y: auto; padding: .55rem .55rem 1.1rem; position: relative;
+  /* The rail fades its first and last rows instead of guillotining them at the
+     scroll edge. That is the "there is more below" cue, so the pane can stay
+     free of a scrollbar that would otherwise read as a seam down the glass. */
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 14px,
+    #000 calc(100% - 30px), transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 14px,
+    #000 calc(100% - 30px), transparent 100%);
 }
 
-/* Hairline that trails off to the right of each section heading. */
+/* One pane per section, so the eye finds a block instead of scanning sixteen
+   rows. On a near-white panel the pane has to go slightly DARKER than the glass
+   rather than lighter — a white-on-white pane is not a pane. */
+.tc-nav-group {
+  border-radius: .8rem;
+  background: linear-gradient(180deg, rgba(16, 38, 76, .035),
+                                      rgba(16, 38, 76, .012));
+  box-shadow: inset 0 0 0 1px rgba(16, 38, 76, .05);
+  padding: .1rem .3rem .35rem;
+  margin-bottom: .5rem;
+  transition: background var(--tc-med), box-shadow var(--tc-med);
+}
+/* Arriving on a screen lifts its whole block, not just the heading — a whisper
+   of brand in the pane, so the answer to "where am I" is a block, not a row. */
+.tc-nav-group.has-active {
+  background: linear-gradient(180deg, rgba(194, 16, 46, .055),
+                                      rgba(194, 16, 46, .018));
+  box-shadow: inset 0 0 0 1px rgba(194, 16, 46, .10),
+    0 8px 20px -16px rgba(16, 38, 76, .40);
+}
+.tc-nav-group:last-child { margin-bottom: 0; }
+.tc-nav-group-body { display: flex; flex-direction: column; }
+/* A folded block keeps its heading, so the rail still reads as four groups. */
+.tc-nav-group.is-collapsed .tc-nav-group-body { display: none; }
+
+.tc-nav-section {
+  position: relative; z-index: 1;
+  display: flex; align-items: center; gap: .5rem; width: 100%;
+  padding: .6rem .4rem .35rem;
+  background: none; border: 0; text-align: left; cursor: pointer; font: inherit;
+}
+.tc-nav-chevron {
+  order: 2; font-size: .56rem; opacity: .45; flex: none;
+  transition: transform var(--tc-med), opacity var(--tc-fast);
+}
+.tc-nav-section:hover .tc-nav-chevron { opacity: .95; }
+.tc-nav-group.is-collapsed .tc-nav-chevron { transform: rotate(-90deg); }
+/* These clear 4.5:1 on the lightest and the darkest point of the glass. */
+.tc-nav-section-label {
+  font-size: .63rem; font-weight: 700; letter-spacing: .12em;
+  text-transform: uppercase; color: #5c6a82;
+  transition: color var(--tc-fast);
+}
+/* The heading of the block you are standing in is the one that is lit. */
+.tc-nav-group.has-active .tc-nav-section-label { color: #16233c; }
+
+/* Hairline that trails off to the right of each section heading. `order` keeps
+   it between the label and the chevron even though a pseudo-element is painted
+   last in the DOM. */
 .tc-nav-section::after {
-  content: ""; flex: 1; height: 1px;
-  background: linear-gradient(90deg, rgba(255, 255, 255, .10), transparent);
+  content: ""; order: 1; flex: 1; height: 1px;
+  background: linear-gradient(90deg, rgba(16, 38, 76, .13), transparent);
 }
 .tc-nav-item {
-  position: relative; display: flex; align-items: center; gap: .6rem;
-  padding: .42rem .55rem; margin-bottom: .12rem; border-radius: .62rem;
-  color: #9aabc5; text-decoration: none; font-size: .865rem; font-weight: 500;
-  transition: background var(--tc-fast), color var(--tc-fast), transform var(--tc-fast);
+  position: relative; z-index: 1; display: flex; align-items: center; gap: .6rem;
+  padding: .42rem .5rem; margin-bottom: .14rem; border-radius: .62rem;
+  color: #4b5a73; text-decoration: none; font-size: .865rem; font-weight: 500;
+  background: transparent;
+  transition: color var(--tc-fast);
 }
-.tc-nav-item::before {
-  content: ""; position: absolute; left: -.55rem; top: 50%;
-  width: 3px; height: 0; border-radius: 0 3px 3px 0;
-  background: var(--tc-crimson-400);
-  transform: translateY(-50%);
-  transition: height var(--tc-med);
-}
-.tc-nav-item:hover {
-  background: rgba(255, 255, 255, .065); color: #fff; transform: translateX(2px);
+/* Hover is drawn by the travelling hover pill, not by the row, so the two can
+   never both be lit. The row itself only changes its ink — and it does NOT
+   translate, or the label would slide out of the pill that just slid onto it. */
+.tc-nav-item:hover { color: #16233c; }
+/* With the row backgrounds gone, focus needs its own visible ring. */
+.tc-nav-item:focus-visible,
+.tc-nav-section:focus-visible {
+  outline: 2px solid var(--tc-crimson-500);
+  outline-offset: 2px;
 }
 .tc-nav-item:hover .tc-nav-icon {
-  background: rgba(194, 16, 46, .18);
-  border-color: rgba(194, 16, 46, .40);
-  color: #ff9aab;
-  transform: scale(1.05);
+  background: linear-gradient(180deg, rgba(194, 16, 46, .14),
+                                      rgba(194, 16, 46, .06));
+  box-shadow: inset 0 0 0 1px rgba(194, 16, 46, .22);
+  color: var(--tc-crimson-600);
+  transform: scale(1.06);
 }
-.tc-nav-item.active {
-  background: linear-gradient(100deg, var(--tc-crimson-600), var(--tc-crimson-500) 58%, #d4193a);
+/* The active row carries no fill of its own — the crimson glider behind it is
+   the fill. Two sources of truth for "which row am I on" is exactly how the
+   pill and the highlight end up disagreeing after a fast navigation. */
+.tc-nav-item.active,
+.tc-nav-item.active:hover {
   color: #fff; font-weight: 650;
-  box-shadow: 0 8px 20px -8px rgba(194, 16, 46, .8),
-    inset 0 1px 0 rgba(255, 255, 255, .18);
+  background: none; box-shadow: none;
 }
-.tc-nav-item.active::before { height: 62%; background: #fff; }
 
 /* Each nav glyph sits in its own soft tile so rows read as buttons. */
 .tc-nav-icon {
   width: 1.85rem; height: 1.85rem; border-radius: .5rem; flex: none;
   display: grid; place-items: center; font-size: .95rem;
-  background: rgba(255, 255, 255, .05);
-  border: 1px solid rgba(255, 255, 255, .07);
-  transition: background var(--tc-fast), border-color var(--tc-fast),
+  background: linear-gradient(180deg, #fff, rgba(255, 255, 255, .70));
+  box-shadow: inset 0 0 0 1px rgba(16, 38, 76, .07), inset 0 1px 0 #fff;
+  transition: background var(--tc-fast), box-shadow var(--tc-fast),
     color var(--tc-fast), transform var(--tc-fast);
 }
 .tc-nav-item.active .tc-nav-icon {
-  background: rgba(255, 255, 255, .22);
-  border-color: rgba(255, 255, 255, .30);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .34),
+                                      rgba(255, 255, 255, .16));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .36),
+    inset 0 1px 0 rgba(255, 255, 255, .50);
   color: #fff;
 }
 .tc-nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tc-nav-pill {
   flex: none; min-width: 1.4rem; text-align: center;
-  background: rgba(255, 255, 255, .12); color: #dbe4ee;
-  border: 1px solid rgba(255, 255, 255, .08);
+  background: rgba(16, 38, 76, .07); color: #3b4a63;
+  border: 1px solid rgba(16, 38, 76, .09);
   border-radius: 999px; padding: .07rem .45rem;
   font-size: .68rem; font-weight: 700; font-variant-numeric: tabular-nums;
 }
-.tc-nav-item.active .tc-nav-pill { background: rgba(255, 255, 255, .26); color: #fff; }
+.tc-nav-item.active .tc-nav-pill {
+  background: rgba(255, 255, 255, .30); color: #fff; border-color: rgba(255, 255, 255, .24);
+}
 .tc-nav-pill.is-success { background: var(--tc-green-500); color: #fff; }
 .tc-nav-pill.is-alert { background: rgba(232, 163, 23, .9); color: #241a08; }
+
+/* ── The travelling pill ─────────────────────────────────────────────
+   One element behind the rows carries the active state, and it *moves* to the
+   new row when the route changes. It animates `transform` and `width` and
+   nothing else, so the whole thing stays on the compositor: no layout, no paint,
+   roughly 300ms, once per navigation. It is positioned from script (the rail is
+   `position: relative`) and scrolls with the list because it lives inside it. */
+.tc-nav-glider {
+  position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 0;
+  border-radius: .62rem; pointer-events: none; opacity: 0;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .24), rgba(255, 255, 255, .03) 62%),
+    linear-gradient(100deg, var(--tc-crimson-600), rgba(212, 25, 58, .92));
+  box-shadow: 0 12px 26px -14px rgba(194, 16, 46, .95),
+    inset 0 0 0 1px rgba(255, 255, 255, .26),
+    inset 0 1px 0 rgba(255, 255, 255, .42);
+  transition: transform .42s cubic-bezier(.34, 1.28, .48, 1),
+    width .3s cubic-bezier(.22, .9, .28, 1), height .22s ease, opacity .18s linear;
+}
+.tc-nav-glider.is-set { opacity: 1; }
+/* The first placement snaps; every one after it glides. */
+.tc-nav-glider.no-anim { transition: opacity .18s linear; }
+
+/* ── The hover pill ──────────────────────────────────────────────────
+   The same travelling trick, for the row under the cursor. A second element
+   rather than a `:hover` background, because a background cannot move: a pill
+   that slides between rows tells you where the next click lands, and it makes
+   the rail feel connected to the pointer instead of lighting up in place.
+   It is deliberately NOT crimson — crimson means "you are here", so the hover
+   surface is a lift of light and the two never read as the same thing. */
+.tc-nav-hover {
+  position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: 0;
+  border-radius: .62rem; pointer-events: none; opacity: 0;
+  background: linear-gradient(180deg, #fff, rgba(255, 255, 255, .78));
+  box-shadow: inset 0 0 0 1px rgba(16, 38, 76, .07),
+    inset 0 1px 0 #fff, 0 6px 16px -10px rgba(16, 38, 76, .40);
+  transition: transform .24s cubic-bezier(.34, 1.14, .5, 1),
+    width .22s cubic-bezier(.22, .9, .28, 1), height .2s ease, opacity .14s linear;
+}
+.tc-nav-hover.is-set { opacity: 1; }
+.tc-nav-hover.no-anim { transition: opacity .14s linear; }
+
+/* ── The `g` key map ─────────────────────────────────────────────────
+   Idle the chips do not render at all, so the rail is exactly as it was for
+   anyone who never presses `g`. They are absolute so the row geometry — and
+   therefore both pills — is untouched while the map is open. */
+.tc-nav-key {
+  display: none; position: absolute; right: .45rem; top: 50%;
+  transform: translateY(-50%); min-width: 1.15rem; padding: .06rem .3rem;
+  border-radius: .38rem; text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .68rem; font-weight: 700; line-height: 1.4;
+  color: #3b4a63; background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(16, 38, 76, .16), 0 1px 2px rgba(16, 38, 76, .10);
+}
+html.nav-chord .tc-nav-key { display: inline-grid; place-items: center; }
+/* Reserve the chip's corner rather than letting it sit on the label. */
+html.nav-chord .tc-nav-label { padding-right: 1.8rem; }
+/* A count and a shortcut competing for the same corner — the map wins while it
+   is open, and the count is back the moment it closes. */
+html.nav-chord .tc-nav-pill { display: none; }
+
+/* The HUD is a child of the sidebar, not of the scrollable nav, so it stays put
+   and sits outside the nav's mask. */
+.tc-nav-chordhint {
+  position: absolute; left: .55rem; right: .55rem; bottom: .6rem; z-index: 2;
+  display: none; align-items: center; gap: .45rem;
+  padding: .45rem .6rem; border-radius: .6rem;
+  background: rgba(22, 35, 60, .93); color: #fff;
+  font-size: .74rem; font-weight: 600; pointer-events: none;
+  box-shadow: 0 16px 34px -16px rgba(16, 38, 76, .75);
+}
+html.nav-chord .tc-nav-chordhint { display: flex; }
+.tc-nav-chordhint kbd {
+  margin-left: auto; padding: .06rem .38rem; border-radius: .35rem;
+  background: rgba(255, 255, 255, .16); color: #fff;
+  font-size: .64rem; font-weight: 700;
+}
+
+/* Icon-only rail: the label is gone, so the row has no name. A fixed-position
+   flyout is the only way to show one — `.tc-sidebar` is `overflow: hidden`, so
+   anything drawn inside it would be clipped at the rail's edge. */
+.tc-rail-tip {
+  position: fixed; z-index: 1085; pointer-events: none;
+  padding: .32rem .6rem; border-radius: .5rem; white-space: nowrap;
+  background: #fff; color: #16233c; font-size: .78rem; font-weight: 600;
+  box-shadow: 0 12px 30px -12px rgba(16, 38, 76, .45),
+    0 0 0 1px rgba(16, 38, 76, .07);
+  transform: translateY(-50%); opacity: 0;
+  transition: opacity var(--tc-fast);
+}
+.tc-rail-tip.is-open { opacity: 1; }
 
 /* Identity — lives at the right-hand end of the top bar */
 .tc-user { position: relative; flex: none; }
@@ -796,8 +953,13 @@ body.auth-body { background: #eef1f7; }
 .tc-side-foot {
   display: flex; align-items: center; justify-content: center; gap: .4rem;
   flex: none; padding: .7rem .75rem .8rem;
-  border-top: 1px solid rgba(255, 255, 255, .07);
-  font-size: .66rem; color: #5f7295;
+  border-top: 1px solid rgba(16, 38, 76, .08);
+  font-size: .66rem; color: #5c6a82;
+}
+/* A live clock, because the front desk reads this rail all day and the top bar
+   has no room for one. Tabular figures so it cannot jitter as the minute rolls. */
+.tc-side-foot-clock {
+  font-variant-numeric: tabular-nums; font-weight: 600; color: #16233c;
 }
 .tc-side-foot-sep { opacity: .5; }
 .tc-status-dot {
@@ -819,12 +981,27 @@ html.sidebar-rail { --tc-sidebar: 74px; }
   padding: .55rem 0; display: flex; justify-content: center;
 }
 .tc-sidebar.rail .tc-nav-section-label {
-  display: block; width: 18px; height: 1px; background: rgba(255, 255, 255, .14);
+  display: block; width: 18px; height: 1px; background: rgba(20, 35, 60, .18);
   overflow: hidden; text-indent: -999px;
 }
 .tc-sidebar.rail .tc-nav-section::after { display: none; }
+.tc-sidebar.rail .tc-nav-chevron { display: none; }
 .tc-sidebar.rail .tc-nav-item:hover { transform: none; }
-.tc-sidebar.rail .tc-nav-item::before { left: 0; }
+/* The chip is absolute everywhere, but at 74px it has to shrink to a corner
+   badge or it would run off the glyph. */
+.tc-sidebar.rail .tc-nav-key {
+  right: .25rem; min-width: 0; padding: 0 .2rem;
+  font-size: .58rem; border-radius: .3rem;
+}
+/* The rail is 74px and the glyphs are centred in it, so the pane padding that
+   reads as generous at 272px would push them off-centre here. */
+.tc-sidebar.rail .tc-nav-group { padding: .1rem .1rem .3rem; background: none; box-shadow: none; }
+/* Centre the icons on the rail, not on `.tc-nav`'s content box. A 15px
+   scrollbar inside a 74px rail drags every glyph 8px off centre and parks a red
+   bar down the middle of the strip, so the rail drops the bar and leans on the
+   clipped row at the bottom edge as the cue that more sits below. */
+.tc-sidebar.rail .tc-nav { scrollbar-width: none; }
+.tc-sidebar.rail .tc-nav::-webkit-scrollbar { width: 0; height: 0; }
 
 /* ── Mobile scrim ──────────────────────────────────────────────────── */
 .sidebar-scrim {
@@ -1714,6 +1891,39 @@ body.app-body .toast-host { top: calc(var(--tc-topbar-h) + .7rem); }
      foot of the screen already says the same thing. */
   .tc-stale-chip { display: none; }
 }
+
+/* ── "not saved yet" ─────────────────────────────────────────────────
+   Work done while the connection was down, shown on the screen it belongs to.
+   A queued change that is invisible is worse than one that was refused: the
+   operator cannot tell "saved" from "lost", so they do it again — and a second
+   payment attempt is a new action that nothing server-side will stop.
+   Blue-grey while it is merely waiting, amber once the server has refused it. */
+.tc-pending-strip {
+  display: flex; align-items: flex-start; gap: .7rem; flex-wrap: wrap;
+  margin-bottom: .85rem; padding: .6rem .8rem;
+  border: 1px solid rgba(93, 106, 128, .35); border-radius: .55rem;
+  background: #f6f8fc; color: var(--tc-navy-900);
+}
+.tc-pending-strip.is-refused {
+  border-color: rgba(232, 163, 23, .55); background: #fffaf2;
+}
+.tc-pending-icon { font-size: 1rem; color: var(--tc-ink-muted); line-height: 1.4; }
+.tc-pending-strip.is-refused .tc-pending-icon { color: #7a5606; }
+.tc-pending-text { flex: 1 1 16rem; min-width: 0; }
+.tc-pending-title { font-size: .82rem; font-weight: 650; }
+.tc-pending-list { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .25rem; }
+.tc-pending-item {
+  font-size: .72rem; padding: .12rem .45rem; border-radius: .35rem;
+  background: #fff; box-shadow: inset 0 0 0 1px var(--tc-line);
+  color: var(--tc-ink-muted);
+}
+/* A board card whose column is not the one the shop floor knows about yet. */
+.job-card.is-unsaved { border-style: dashed; border-color: rgba(93, 106, 128, .5); }
+.job-card-unsaved {
+  display: inline-flex; align-items: center; gap: .25rem;
+  margin-top: .3rem; font-size: .66rem; font-weight: 700;
+  color: var(--tc-ink-muted); text-transform: uppercase; letter-spacing: .04em;
+}
 /* ── Placeholders ──────────────────────────────────────────────────── */
 .skeleton {
   background: linear-gradient(90deg, #eef1f7 25%, #dfe5f0 37%, #eef1f7 63%);
@@ -1776,14 +1986,13 @@ a:hover { color: var(--tc-crimson-500); }
   background-clip: padding-box;
 }
 
-/* The navy chrome swallows a 60% crimson, so the sidebar carries a denser thumb
-   that still reads as red against #08142c. */
-.tc-sidebar, .tc-topbar, .tc-sidebar .tc-nav {
+/* The translucent chrome swallows a 60% crimson, so the top bar carries a denser
+   thumb that still reads as red against the pale surface. The sidebar used to be
+   in this list when it was navy; it is glass now, so it takes the standard one. */
+.tc-topbar {
   scrollbar-color: var(--tc-scroll-thumb-on-dark) transparent;
 }
-.tc-sidebar::-webkit-scrollbar-thumb,
-.tc-topbar::-webkit-scrollbar-thumb,
-.tc-sidebar .tc-nav::-webkit-scrollbar-thumb {
+.tc-topbar::-webkit-scrollbar-thumb {
   background: var(--tc-scroll-thumb-on-dark);
   background-clip: padding-box;
 }

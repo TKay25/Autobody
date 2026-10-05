@@ -84,10 +84,16 @@
         el.value = value;
       } else if (key === 'checked' || key === 'disabled' || key === 'selected' || key === 'readonly') {
         el[key] = !!value;
-      } else if (key.startsWith('data-') || key === 'role' || key === 'aria-label'
+      } else if (key.startsWith('data-') || key.startsWith('aria-') || key === 'role'
                  || key === 'type' || key === 'href' || key === 'target'
                  || key === 'colspan' || key === 'rowspan' || key === 'placeholder'
                  || key === 'title' || key === 'name' || key === 'for') {
+        /* `aria-*` must go through setAttribute. Only `aria-label` used to be
+           listed here, so every other ARIA attribute — aria-expanded,
+           aria-haspopup, aria-modal, aria-selected, aria-required — fell through
+           to `el[key] = value`, which creates a JS property on a dashed name and
+           no attribute at all. Silently: no exception, no attribute, no state for
+           a screen reader anywhere in the app. */
         el.setAttribute(key, value);
       } else {
         try { el[key] = value; } catch (e) { el.setAttribute(key, value); }
@@ -200,7 +206,9 @@
 
   async function outboxRemove(id) {
     await outbox.remove(id).catch(() => {});
-    TCA.emitOutbox && TCA.emitOutbox();
+    // Everything that displays the queue reads the same cache, so this is the
+    // single place a removal has to be announced from.
+    announceOutbox();
   }
 
   async function outboxRetryNow() {
@@ -214,13 +222,195 @@
   TCA.outboxDrop = outboxDrop;
 
   let replaying = false;
-  let lastOutboxCount = 0;
+
+  /* ── pending changes, as something a screen can read ───────────────────
+     A queued write is invisible to every list on the app: the server has not
+     been told yet, so a re-fetch returns the old data and the operator watches
+     their own change disappear. That is not only confusing — it is dangerous.
+     Somebody who cannot see that they already recorded a payment will record it
+     again, and a second attempt is a new action with a new key, so nothing
+     server-side will stop it.
+
+     So the queue is exposed reactively: screens read it, render what is waiting,
+     and re-render when it changes.
+     ──────────────────────────────────────────────────────────────────── */
+  let pendingCache = [];
+  const pendingListeners = [];
+
+  async function refreshPending() {
+    let items = [];
+    try { items = await outboxPending(); } catch (e) { items = []; }
+    pendingCache = items;
+    pendingListeners.forEach((fn) => { try { fn(items); } catch (e) { /* ignore */ } });
+    return items;
+  }
+
+  /** Everything queued, oldest first. Synchronous — a screen can read it while
+      rendering rather than awaiting in the middle of building a table. */
+  TCA.pending = () => pendingCache;
+
+  /** Items still waiting or already refused, filtered by URL. */
+  TCA.pendingFor = (test) => pendingCache.filter((i) => test(String(i.url || ''), i));
+
+  TCA.onPending = (fn) => {
+    pendingListeners.push(fn);
+    try { fn(pendingCache); } catch (e) { /* ignore */ }
+    return () => {
+      const i = pendingListeners.indexOf(fn);
+      if (i >= 0) pendingListeners.splice(i, 1);
+    };
+  };
+
+  /** Turn "POST /api/invoices/4/payment" into something a foreman would say.
+   *
+   * Lives here rather than in the top bar because every screen that shows a
+   * queued change has to name it the same way, or the same action reads as two
+   * different things depending on where you look. */
+  TCA.describeChange = function describeChange(item) {
+    const path = String((item && item.url) || '');
+    const verb = item && item.method === 'DELETE' ? 'Remove'
+      : item && item.method === 'PATCH' ? 'Update' : 'Add';
+    const known = [
+      [/\/invoices\/\d+\/payment/, 'Record a payment'],
+      [/\/invoices\/\d+\/issue/, 'Issue an invoice'],
+      [/\/invoices$/, 'Raise an invoice'],
+      [/\/jobs\/\d+\/stage/, 'Move a job card'],
+      [/\/jobs\/\d+\/advance/, 'Advance a job card'],
+      [/\/jobs\/\d+\/qc/, 'Record a quality check'],
+      [/\/jobs\/\d+\/estimate/, 'Save an estimate'],
+      [/\/jobs\/\d+\/parts/, 'Fit a part'],
+      [/\/jobs\/\d+\/photos/, 'Add a job photo'],
+      [/\/jobs\/\d+\/documents/, 'Add a job document'],
+      [/\/jobs\/\d+/, 'Update a job card'],
+      [/\/jobs$/, 'Open a job card'],
+      [/\/part[s]?\/\d+\/movement/, 'Record a stock movement'],
+      [/\/parts\/\d+/, 'Update a stock item'],
+      [/\/parts$/, 'Add a stock item'],
+      [/\/tasks\/\d+$/, `${verb} a to-do`],
+      [/\/tasks$/, 'Add a to-do'],
+      [/\/customers/, 'Update a customer'],
+      [/\/vehicles/, 'Update a vehicle'],
+      [/\/bookings\/\d+\/reschedule/, 'Reschedule an appointment'],
+      [/\/bookings/, 'Update an enquiry'],
+      [/\/estimates/, 'Update an estimate'],
+    ];
+    for (const [re, label] of known) if (re.test(path)) return label;
+    return `${verb} — ${path.replace('/api/', '').replace(/\/\d+/g, '')}`;
+  };
+
+  /** The job id a queued change is about, or null. */
+  TCA.pendingJobId = (item) => {
+    const m = String((item && item.url) || '').match(/\/jobs\/(\d+)/);
+    return m ? Number(m[1]) : null;
+  };
+
+  /**
+   * "2 changes on this screen are not saved yet", with a Try now button.
+   *
+   * One component for every screen, so the same queued action is described the
+   * same way wherever it is seen, and a screen cannot quietly forget to mention
+   * it. Returns a host element that fills itself in — and empties itself out —
+   * as the queue changes, because a change made *while you are looking at the
+   * screen* is exactly the case where somebody would otherwise repeat it.
+   *
+   * `match` decides what belongs here — a screen must only claim changes it
+   * actually shows, or the operator learns to ignore the strip.
+   */
+  TCA.pendingStrip = function pendingStrip({ match, label = 'change' } = {}) {
+    const test = match || (() => false);
+    const host = h('div.tc-pending-host');
+    let wasConnected = false;
+    let stop = null;
+
+    function paint(items) {
+      // Once the route that owned this has gone, so has the reason to listen.
+      if (wasConnected && !document.contains(host)) {
+        if (stop) stop();
+        stop = null;
+        return;
+      }
+      if (document.contains(host)) wasConnected = true;
+
+      const relevant = (items || []).filter((i) => test(String(i.url || ''), i));
+      if (!relevant.length) {
+        TCA.mount(host, []);
+        host.hidden = true;
+        return;
+      }
+      const refused = relevant.filter((i) => i.state === 'failed');
+      TCA.mount(host, h('div.tc-pending-strip' + (refused.length ? '.is-refused' : ''), [
+        h('span.tc-pending-icon',
+          icon(refused.length ? 'exclamation-octagon' : 'cloud-arrow-up')),
+        h('div.tc-pending-text', [
+          h('div.tc-pending-title', relevant.length === 1
+            ? `1 ${label} on this screen has not been saved yet`
+            : `${relevant.length} ${label}s on this screen have not been saved yet`),
+          h('div.tc-pending-list', relevant.map((i) => h('span.tc-pending-item',
+            (i.state === 'failed' ? 'Could not save: ' : 'Waiting: ')
+            + TCA.describeChange(i)))),
+        ]),
+        h('button.btn.btn-sm.btn-outline-secondary', {
+          type: 'button',
+          onclick: async (e) => {
+            e.target.disabled = true;
+            await TCA.replayOutbox({ announce: true });
+            e.target.disabled = false;
+          },
+        }, 'Try now'),
+      ]));
+      host.hidden = false;
+    }
+
+    stop = TCA.onPending(paint);
+    return host;
+  };
+
+  /* ── where you came from ────────────────────────────────────────────────
+     Opening a job card from a filtered list and coming back used to land you on
+     a cold, unfiltered list — the back link was a hardcoded `#/jobs`. So the
+     search you had just done had to be done again, every time.
+
+     Two halves fix it:
+
+     * a list screen writes its filters into the address bar as they change, so
+       the URL always describes what is on screen and the browser's own Back
+       works without any help from us;
+     * it also leaves that URL behind for its detail screens, so an in-app Back
+       button can return to *that* list rather than the default one.
+
+     Kept in sessionStorage, not localStorage: coming back to yesterday's filter
+     would be stranger than coming back to nothing.
+     ─────────────────────────────────────────────────────────────────────── */
+  const ORIGIN_KEY = 'topclass.origin.';
+
+  /** Record what a list screen is currently showing.
+   *
+   * `params` is a URLSearchParams. Rewrites the hash with replaceState, which
+   * deliberately does NOT fire `hashchange` — the router must not re-run while
+   * somebody is typing in a filter box. */
+  TCA.listState = function listState(section, params) {
+    const query = params ? params.toString() : '';
+    const url = `#/${section}${query ? `?${query}` : ''}`;
+    try {
+      window.history.replaceState(null, '', url);
+      sessionStorage.setItem(ORIGIN_KEY + section, url);
+    } catch (e) { /* private mode, or no history — the filter still works */ }
+    return url;
+  };
+
+  /** Where a detail screen's Back should go. Falls back to the plain list. */
+  TCA.listOrigin = function listOrigin(section, fallback) {
+    const plain = fallback || `#/${section}`;
+    try { return sessionStorage.getItem(ORIGIN_KEY + section) || plain; }
+    catch (e) { return plain; }
+  };
 
   function announceOutbox() {
     const badge = document.getElementById('outboxCount');
-    TCA.outboxPending().then((items) => {
+    // refreshPending() is what keeps the badge and every screen's pending strip
+    // in step — they read the same cache, so they cannot disagree.
+    return refreshPending().then((items) => {
       const failed = items.filter((i) => i.state === 'failed').length;
-      lastOutboxCount = items.length;
       // The panel is optional — the console works with no top bar in tests.
       if (badge) {
         badge.textContent = String(items.length);
@@ -235,9 +425,8 @@
             + (failed ? ` — ${failed} could not be saved` : '')
           : 'Nothing waiting to sync';
       }
-      TCA.emitOutbox && TCA.emitOutbox(items);
+      return items.length;
     });
-    return lastOutboxCount;
   }
   TCA.announceOutbox = announceOutbox;
 
@@ -1654,6 +1843,9 @@
       const base = a.dataset.route;
       a.classList.toggle('active', path === base || (base !== '/dashboard' && path.startsWith(base)));
     });
+    /* The sidebar's active pill is positioned from script now, so it has to be
+       told the classes moved — otherwise it stays on the previous row. */
+    document.dispatchEvent(new CustomEvent('topclass:nav'));
     const context = {
       params, query, path,
       onCleanup: (fn) => { currentCleanup = fn; },
@@ -1671,8 +1863,13 @@
       mount(outlet, h('div.alert.alert-danger', [h('strong', 'Could not load this view. '), err.message]));
     }
   }
-  function startRouter() {
+  async function startRouter() {
     window.addEventListener('hashchange', renderRoute);
+    /* Warm the queue before the first screen renders. It is read synchronously
+       while building the tree, so a screen would otherwise draw without its
+       "not saved yet" strip and only grow one on the next navigation — which is
+       exactly when the operator has stopped looking. */
+    try { await refreshPending(); } catch (e) { /* no store, no queue */ }
     if (!window.location.hash) window.location.hash = '/dashboard';
     else renderRoute();
   }

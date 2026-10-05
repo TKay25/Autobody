@@ -92,18 +92,56 @@ precache fetch therefore has a deadline and failures are per-asset.
 
 ---
 
+## 4. You have to be able to see it
+
+A queued change is invisible to every list in the app — the server has not been
+told yet, so a re-fetch returns the old data and the operator watches their own
+change disappear.
+
+That is not merely confusing. **Somebody who cannot see that they already recorded
+a payment will record it again**, and a second attempt is a *new* action with a
+*new* key, so nothing server-side stops it. The idempotency work in section 1
+protects against a *replay*; it does not protect against a repeat.
+
+So the queue is exposed as a reactive value and every screen that can queue
+something says so:
+
+- `T.pending()` — synchronous read, for use while building a tree
+- `T.pendingFor(test)` / `T.pendingJobId(item)` — filter by URL or record
+- `T.describeChange(item)` — one vocabulary for naming a queued action, so the
+  same change reads the same wherever it is seen
+- `T.pendingStrip({match, label})` — **"N changes on this screen have not been
+  saved yet"**, with *Try now*. A self-updating host, not a static node: it has to
+  be able to appear *after* the screen rendered, because that is exactly the
+  moment the operator would otherwise repeat the work.
+
+| Screen | What it claims |
+|---|---|
+| Dashboard | anything at all |
+| WIP board | stage moves — the card is drawn in the column it is *going* to, so a queued move cannot snap back and get dragged twice |
+| Job cards / a job card | changes to job cards, or to that job card |
+| To-do | task changes |
+| Parts & stock | stock movements — a fitted part that still shows as in stock gets fitted twice |
+| Payments & invoices | the money, most of all |
+| Enquiries & Bookings | enquiry changes |
+
+A screen must only claim changes it actually shows. Over-claiming teaches the
+operator to ignore the strip, which is worse than not having one.
+
+---
+
 ## What is **not** covered
 
 - **The WhatsApp bot goes dark.** Meta cannot reach the webhook and replies cannot
   go out. Meta retries its side, so inbound messages tend to arrive late rather
-  than vanish. A bot reply that fails to send is logged and **not** retried —
-  an outbound retry queue is still outstanding.
+  than vanish. A reply that fails to send is now **queued and re-sent** — see
+  `docs/WHATSAPP.md` §5 — so nothing is lost, only delayed.
 - **Two operators editing the same record offline.** The queue is applied in
   order and the server is the last word; there is no conflict resolution, and
   none is pretended.
-- **Screens do not yet show queued work optimistically.** A job card created
-  offline is saved, but the list will not show it until the replay lands. The
-  write is safe; the display catches up.
+- **A queued *creation* is not shown as a row.** The strip says "1 job card change
+  has not been saved yet"; it does not invent a row for a job card that has no
+  number yet. Inventing one would produce a record with no reference and no links.
 
 ---
 

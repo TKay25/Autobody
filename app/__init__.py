@@ -173,6 +173,14 @@ def _ensure_schema(app: Flask) -> None:
             "id_number": "VARCHAR(60)",
         })
 
+        # A column added to a table that already existed. `create_all()` makes a
+        # missing *table* but never ALTERs one, so on any database provisioned
+        # before this column existed every query touching it fails — locally and
+        # on Render. Registering it here is the whole reason this guard exists.
+        ensure_columns(db.engine, "outbound_queue", {
+            "message_id": "INTEGER",
+        })
+
         # Insurance claims are no longer part of the product: every job is
         # priced and paid as retail, so the claim record and the insurer
         # columns it hung off have been retired.

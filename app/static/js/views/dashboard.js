@@ -119,6 +119,10 @@
     });
 
     return h('div', [
+      /* Everything queued, because the dashboard is the shop's front page: if
+         anything on it is not saved, the figures under it are not the figures
+         the shop believes in. */
+      T.pendingStrip({ match: () => true, label: 'change' }),
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
         h('div.flex-fill', [
           h('h1.h4.mb-0', `Good day, ${(T.store.get('user').full_name || '').split(' ')[0]} 👋`),

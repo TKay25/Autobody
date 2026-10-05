@@ -150,6 +150,10 @@
         h('button.btn.btn-brand.btn-sm', { onclick: newPart },
           T.icon('plus-lg'), ' New stock item'),
       ]),
+      /* Stock movements matter more than most: the shelf is the truth, and a
+         fitted part that still shows as in stock gets fitted twice. */
+      T.pendingStrip({ match: (url) => /\/parts|\/job-parts/.test(url),
+                       label: 'stock change' }),
       summary,
       T.section({ body: host, flush: true }),
     ]);

@@ -476,6 +476,7 @@
           },
         }, T.icon('plus-lg'), ' New booking'),
       ]),
+      T.pendingStrip({ match: (url) => /\/bookings/.test(url), label: 'enquiry change' }),
       T.section({ body: host, flush: true }),
     ]);
   });

@@ -34,6 +34,7 @@
       T.mount(host, T.skeletonTable(10, 2));
       const params = new URLSearchParams({ limit: String(state.limit) });
       if (state.entity_type) params.set('entity_type', state.entity_type);
+      T.listState('activity', params);
       const data = await api.get(`/api/activity?${params}`);
 
       const today = new Date().toDateString();

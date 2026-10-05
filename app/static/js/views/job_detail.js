@@ -292,11 +292,22 @@
 
       return h('div', [
         h('div.d-flex.align-items-center.mb-2.gap-2', [
-          h('a.btn.btn-sm.btn-outline-secondary', { href: '#/jobs' }, T.icon('arrow-left'), ' All job cards'),
+          /* Back to the list *as you left it* — same search, same filters. The
+             href used to be a hardcoded `#/jobs`, so a foreman who had narrowed
+             the list to one bay lost that the moment they opened a card. */
+          h('a.btn.btn-sm.btn-outline-secondary', { href: T.listOrigin('jobs') },
+            T.icon('arrow-left'), ' All job cards'),
           h('span.small.text-secondary', `Job card ${j.job_no}`),
           h('div.ms-auto.d-flex.gap-2',
             j.is_open ? h('span.chip', T.icon('hourglass-split'), `${j.days_in_shop} days in shop`) : h('span.chip.text-bg-success', 'Collected')),
         ]),
+        /* Only changes to *this* job card. A stage move, a QC tick or a fitted
+           part recorded offline is otherwise invisible here, and the card shows
+           the state the shop has already moved on from. */
+        T.pendingStrip({
+          match: (url) => url === `/api/jobs/${j.id}` || url.startsWith(`/api/jobs/${j.id}/`),
+          label: 'change to this job card',
+        }),
         header,
         actions,
         tabBar,

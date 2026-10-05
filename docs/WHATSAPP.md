@@ -353,31 +353,57 @@ Tapping Approve twice says "already approved" rather than replaying the thank-yo
 
 ## 5. The scheduler
 
-Two nudges need a clock. Both live in `app/services/notifications.py`, are
-**idempotent** (a stamp column stops a second send), and have a CLI command and an
-HTTP endpoint so either kind of cron can drive them.
+Three jobs need a clock. The first two are nudges in `app/services/notifications.py`
+and are **idempotent** (a stamp column stops a second send). The third is the repair
+queue for messages the workshop owed a customer and could not send.
 
 ```bash
 flask booking-reminders        # tomorrow's appointments  (--date YYYY-MM-DD to override)
 flask feedback-requests        # yesterday's collections  (--date YYYY-MM-DD to override)
+flask outbound-retry           # re-send what the outage swallowed
 ```
 
 ```http
 POST /api/bookings/reminders?date=2026-10-05     # manager only
 POST /api/jobs/feedback-requests?date=2026-10-04 # manager only
+POST /api/whatsapp/outbox/retry                  # manager only
+GET  /api/whatsapp/outbox                        # what is waiting / given up
 ```
 
-On Render, create a **Cron Job** per command (once a day each is plenty):
+On Render, create a **Cron Job** per command (once a day each is plenty for the
+nudges; **every few minutes** for the retry — a customer waiting on a reply is
+not a once-a-day problem):
 
 ```bash
 flask --app wsgi booking-reminders
 flask --app wsgi feedback-requests
+flask --app wsgi outbound-retry
 ```
 
 Guards:
 
 - `bookings.reminder_sent_at` and `job_cards.feedback_requested_at` are stamped
   **only on a successful send**, so a failed send is retried next run.
+- The outbound queue carries its own next-attempt time, so running it too often
+  finds nothing due rather than sending anything twice.
+
+### Messages that could not be sent
+
+When the link is down the bot cannot reply, and before `OutboundQueue` existed
+those replies were logged as failed and **thrown away** — the customer asked a
+question, never heard back, and nobody knew.
+
+- Only **transient** failures are queued (no response from Meta, 429, 5xx). A 400
+  means the message itself is wrong and will be wrong every time — that includes a
+  free-form reply that sat in the queue long enough to fall outside the 24-hour
+  window, which is why the retry path gives up on it rather than looping.
+- The whole Meta envelope is stored, so a reply, a button prompt, a document and
+  an approved template all replay through the same path.
+- A delivered retry **updates** the failed entry in the thread rather than adding
+  a second one, or the inbox reads as though the customer was answered twice.
+- After 5 attempts it is marked `failed` and surfaced. The desk should phone that
+  customer — an automatic system that silently gives up is worse than one that
+  never tried.
 - Cancelled, no-show and completed bookings are never reminded.
 - Only jobs that actually reached `COLLECTED` are asked for feedback.
 

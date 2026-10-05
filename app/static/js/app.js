@@ -3,29 +3,36 @@
   const T = window.TCA;
   const { h, api, dateShort } = T;
 
-  /* Navigation model. `badge` keys map to GET /api/badges. */
+  /* Navigation model. `badge` keys map to GET /api/badges. `key` is the letter
+     you press after `g` to jump straight there — deliberately avoiding b, i and
+     n, which are already single-key shortcuts, so no letter ever means two
+     different things. */
   const NAV = [
     { section: 'Workshop' },
-    { route: '/dashboard', label: 'Dashboard', icon: 'speedometer2', hint: 'Overview of today' },
-    { route: '/board', label: 'WIP board', icon: 'kanban', hint: 'Drag job cards through the shop' },
-    { route: '/jobs', label: 'Job cards', icon: 'clipboard-check', badge: 'jobs', hint: 'Every vehicle in the shop' },
-    { route: '/todo', label: 'To-do', icon: 'list-check', badge: 'tasks',
+    { route: '/dashboard', label: 'Dashboard', icon: 'grid-1x2-fill', key: 'd', hint: 'Overview of today' },
+    { route: '/board', label: 'WIP board', icon: 'kanban', key: 'k', hint: 'Drag job cards through the shop' },
+    { route: '/jobs', label: 'Job cards', icon: 'clipboard-check', badge: 'jobs', key: 'j',
+      hint: 'Every vehicle in the shop' },
+    { route: '/todo', label: 'To-do', icon: 'list-check', badge: 'tasks', key: 't',
       hint: 'What has to happen today and this week' },
-    { route: '/bookings', label: 'Enquiries & Bookings', icon: 'calendar-check', badge: 'bookings',
+    { route: '/bookings', label: 'Enquiries & Bookings', icon: 'calendar-check', badge: 'bookings', key: 'e',
       hint: 'Enquiries, bookings and confirmations' },
     { section: 'Customers' },
-    { route: '/customers', label: 'Customers', icon: 'people', hint: 'CRM and contact details' },
-    { route: '/vehicles', label: 'Vehicles', icon: 'car-front', hint: 'Registration register' },
-    { route: '/inbox', label: 'WhatsApp', icon: 'whatsapp', badge: 'whatsapp', hint: 'Chat with customers' },
+    { route: '/customers', label: 'Customers', icon: 'people', key: 'c', hint: 'CRM and contact details' },
+    { route: '/vehicles', label: 'Vehicles', icon: 'car-front', key: 'v', hint: 'Registration register' },
+    { route: '/inbox', label: 'WhatsApp', icon: 'whatsapp', badge: 'whatsapp', key: 'w',
+      hint: 'Chat with customers' },
     { section: 'Money' },
-    { route: '/payments', label: 'Payments', icon: 'cash-coin',
+    { route: '/payments', label: 'Payments', icon: 'cash-coin', key: 'p',
       hint: 'Receipts, methods and takings' },
-    { route: '/invoices', label: 'Invoices', icon: 'receipt', badge: 'invoices', hint: 'Billing and payments' },
-    { route: '/reports', label: 'Reports', icon: 'graph-up-arrow', hint: 'Performance and margins' },
+    { route: '/invoices', label: 'Invoices', icon: 'receipt', badge: 'invoices', key: 'f',
+      hint: 'Billing and payments' },
+    { route: '/reports', label: 'Reports', icon: 'graph-up-arrow', key: 'r', hint: 'Performance and margins' },
     { section: 'Resources' },
-    { route: '/parts', label: 'Parts & stock', icon: 'box-seam', badge: 'parts', hint: 'Stock levels and suppliers' },
-    { route: '/activity', label: 'Activity log', icon: 'clock-history', hint: 'Who changed what' },
-    { route: '/staff', label: 'Staff & settings', icon: 'gear', hint: 'Accounts and bot setup' },
+    { route: '/parts', label: 'Parts & stock', icon: 'box-seam', badge: 'parts', key: 's',
+      hint: 'Stock levels and suppliers' },
+    { route: '/activity', label: 'Activity log', icon: 'clock-history', key: 'a', hint: 'Who changed what' },
+    { route: '/staff', label: 'Staff & settings', icon: 'gear', key: 'g', hint: 'Accounts and bot setup' },
   ];
 
   /* Quick actions — the handful of jobs people start most often. Each renders
@@ -50,6 +57,29 @@
     try { return localStorage.getItem(RAIL_KEY) === '1'; } catch (e) { return false; }
   }
 
+  /* Folded nav sections. Remembered per browser, like the rail and the row
+     density: a storeman who never opens Money should not be re-opening it
+     every morning. */
+  const COLLAPSE_KEY = 'topclass.nav.collapsed';
+
+  function collapsedSections() {
+    try {
+      const raw = localStorage.getItem(COLLAPSE_KEY);
+      return new Set(raw ? JSON.parse(raw) : []);
+    } catch (e) { return new Set(); }
+  }
+
+  function saveCollapsed(set) {
+    try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...set])); }
+    catch (e) { /* ignore */ }
+  }
+
+  /* Kept at module scope so it cannot be collected while it is still observing. */
+  let navObserver = null;
+  /* Set by `layout` so the rail toggle can re-measure the pill without reaching
+     into the sidebar's closure. */
+  let syncNavGlider = null;
+
   /* ── layout ──────────────────────────────────────────────────────── */
   function layout(payload) {
     const user = payload.user;
@@ -71,38 +101,248 @@
 
     /* Navigation ----------------------------------------------------- */
     const pills = {};
+
+    /* Grouped, not a flat list: each of Workshop / Customers / Money / Resources
+       is drawn as its own pane, so the eye can find a block instead of scanning
+       sixteen rows. The model stays flat — the grouping is derived, so adding a
+       nav item is still one line. */
+    const navGroups = [];
+    NAV.forEach((item) => {
+      if (item.section) navGroups.push({ label: item.section, items: [] });
+      else {
+        // Defensive: an item before any section heading still gets rendered
+        // rather than silently dropped.
+        if (!navGroups.length) navGroups.push({ label: '', items: [] });
+        navGroups[navGroups.length - 1].items.push(item);
+      }
+    });
+
+    function navItem(item) {
+      const pill = item.badge ? h('span.tc-nav-pill', { hidden: true }) : null;
+      if (pill) pills[item.badge] = pill;
+
+      return h('a.tc-nav-item', {
+        href: `#${item.route}`,
+        'data-route': item.route,
+        title: item.hint || item.label,
+        'aria-label': item.label,
+        onclick: () => closeSidebar(),
+      }, [
+        h('span.tc-nav-icon', T.icon(item.icon)),
+        h('span.tc-nav-label', item.label),
+        pill,
+        h('kbd.tc-nav-key', item.key),
+      ]);
+    }
+
+    /* Two travelling pills, both built with the rail so neither can be missing
+       when a route renders: `glider` is the crimson "you are here", `hoverPill`
+       is the light "the click would land here". The glider is second in the DOM
+       so that crimson wins if they ever overlap mid-slide. */
+    const hoverPill = h('div.tc-nav-hover', { 'aria-hidden': 'true' });
+    const glider = h('div.tc-nav-glider', { 'aria-hidden': 'true' });
+    glider.classList.add('no-anim');
+    hoverPill.classList.add('no-anim');
+    let hoverRow = null;
+
+    const collapsed = collapsedSections();
+
+    function chevron() {
+      const glyph = T.icon('chevron-down');
+      glyph.classList.add('tc-nav-chevron');
+      glyph.setAttribute('aria-hidden', 'true');
+      return glyph;
+    }
+
+    function foldGroup(groupEl, heading, key, shut) {
+      groupEl.classList.toggle('is-collapsed', shut);
+      heading.setAttribute('aria-expanded', String(!shut));
+      heading.title = `${shut ? 'Unfold' : 'Fold'} ${heading.getAttribute('aria-label')}`;
+      if (shut) collapsed.add(key); else collapsed.delete(key);
+      saveCollapsed(collapsed);
+      syncGlider();
+    }
+
+    /* Move `el` onto `target`, or hide it when there is nothing to sit on.
+       Reads only — both pills animate themselves, so nothing here runs per frame. */
+    function place(el, target) {
+      if (!target) { el.classList.remove('is-set'); return; }
+      const host = nav.getBoundingClientRect();
+      const box = target.getBoundingClientRect();
+      /* Zero width means the row is inside a folded section. */
+      if (!box.width) { el.classList.remove('is-set'); return; }
+      el.style.width = `${box.width}px`;
+      el.style.height = `${box.height}px`;
+      el.style.transform =
+        `translate3d(${box.left - host.left}px, ${box.top - host.top + nav.scrollTop}px, 0)`;
+      el.classList.add('is-set');
+    }
+
+    /* The crimson pill tracks the route, the light one tracks the cursor — and
+       the hover pill never sits on the active row, because that row is already
+       spoken for. Both are placed from here so they can never disagree about
+       where the rows are. */
+    function syncGlider() {
+      const active = nav.querySelector('.tc-nav-item.active');
+      nav.querySelectorAll('.tc-nav-group').forEach((g) => {
+        g.classList.toggle('has-active', !!active && g.contains(active));
+      });
+      if (!nav.isConnected) {
+        glider.classList.remove('is-set');
+        hoverPill.classList.remove('is-set');
+        return;
+      }
+      place(glider, active);
+      place(hoverPill, hoverRow && hoverRow !== active ? hoverRow : null);
+    }
+
     const nav = h('nav.tc-nav', { 'aria-label': 'Main navigation' },
-      NAV.map((item) => {
-        if (item.section) {
-          return h('div.tc-nav-section', [
-            h('span.tc-nav-section-label', item.section),
-          ]);
-        }
-        const pill = item.badge ? h('span.tc-nav-pill', { hidden: true }) : null;
-        if (pill) pills[item.badge] = pill;
-
-        return h('a.tc-nav-item', {
-          href: `#${item.route}`,
-          'data-route': item.route,
-          title: item.hint || item.label,
-          'aria-label': item.label,
-          onclick: () => closeSidebar(),
-        }, [
-          h('span.tc-nav-icon', T.icon(item.icon)),
-          h('span.tc-nav-label', item.label),
-          pill,
+      [hoverPill, glider].concat(navGroups.map((group) => {
+        const key = group.label.toLowerCase();
+        const shut = collapsed.has(key);
+        const heading = h('button.tc-nav-section', {
+          type: 'button',
+          'aria-label': group.label,
+          'aria-expanded': String(!shut),
+          title: `${shut ? 'Unfold' : 'Fold'} ${group.label}`,
+        }, [h('span.tc-nav-section-label', group.label), chevron()]);
+        const groupEl = h(`div.tc-nav-group${shut ? '.is-collapsed' : ''}`, [
+          heading,
+          h('div.tc-nav-group-body', group.items.map(navItem)),
         ]);
-      }));
+        heading.onclick = () =>
+          foldGroup(groupEl, heading, key, !groupEl.classList.contains('is-collapsed'));
+        return groupEl;
+      })));
 
-    /* Foot: build stamp ---------------------------------------------- */
+    /* ── `g` chords ──────────────────────────────────────────────────
+       Fourteen rows is past the point where reaching for the mouse beats typing,
+       and a chord is how you get fourteen shortcuts without eating the alphabet.
+       Press `g` and every row shows its letter; idle, the chips take up no space
+       at all, so nothing changes for anyone who never presses it. */
+    const jumpTo = {};
+    NAV.forEach((item) => { if (item.key) jumpTo[item.key] = item.route; });
+
+    const chordHint = h('div.tc-nav-chordhint', { 'aria-hidden': 'true' }, [
+      T.icon('compass'),
+      h('span', 'Jump to…'),
+      h('kbd', 'Esc'),
+    ]);
+    let chordTimer = null;
+
+    function isChord() {
+      return document.documentElement.classList.contains('nav-chord');
+    }
+
+    function setChord(on) {
+      document.documentElement.classList.toggle('nav-chord', on);
+      if (chordTimer) { clearTimeout(chordTimer); chordTimer = null; }
+      /* The map times out on its own — an armed keyboard that waits for ever is a
+         keyboard that ambushes you later. */
+      if (on) chordTimer = setTimeout(() => setChord(false), 4500);
+    }
+
+    /* `g` chords run ahead of the single-key shortcuts: `g` then `k` must go to
+       the board once, not fire a shortcut and then fall through to another. */
+    document.addEventListener('keydown', (event) => {
+      if (!isChord()) return;
+      const chord = (event.key || '').toLowerCase();
+      event.preventDefault();
+      event.stopPropagation();
+      setChord(false);
+      if (chord === 'escape') return;
+      if (jumpTo[chord]) { T.navigate(jumpTo[chord]); closeSidebar(); }
+    }, true);
+
+    /* The active row is scrolled into view on the first paint only — doing it on
+       every navigation yanks the list around under the pointer. */
+    function revealActive() {
+      const active = nav.querySelector('.tc-nav-item.active');
+      if (!active || !nav.isConnected) return;
+      const host = nav.getBoundingClientRect();
+      const row = active.getBoundingClientRect();
+      if (row.top >= host.top + 8 && row.bottom <= host.bottom - 8) return;
+      nav.scrollTop += row.top - host.top - (host.height - row.height) / 2;
+    }
+
+    /* Icon-only rail: the labels are gone, so a row has no name. `.tc-sidebar` is
+       `overflow: hidden`, so the flyout has to be fixed-position and live outside
+       the rail's subtree. */
+    const railTip = h('div.tc-rail-tip', { role: 'tooltip' });
+    let tipRow = null;
+
+    nav.addEventListener('mouseover', (event) => {
+      const row = event.target.closest && event.target.closest('.tc-nav-item');
+      if (!row) {
+        /* Over the pane's own background — a gap between rows, or a section
+           heading. Nothing to point at, so drop the hover pill. */
+        if (hoverRow) {
+          hoverRow = null;
+          hoverPill.classList.remove('is-set');
+        }
+        return;
+      }
+      if (row !== hoverRow) {
+        hoverRow = row;
+        syncGlider();
+      }
+      /* The flyout label only exists in icon-only mode, where the row has no
+         visible name of its own. */
+      if (!document.documentElement.classList.contains('sidebar-rail')) return;
+      if (row === tipRow) return;
+      tipRow = row;
+      const box = row.getBoundingClientRect();
+      const label = row.querySelector('.tc-nav-label');
+      railTip.textContent = (label && label.textContent) || row.getAttribute('aria-label') || '';
+      railTip.style.top = `${box.top + box.height / 2}px`;
+      railTip.style.left = `${box.right + 10}px`;
+      railTip.classList.add('is-open');
+    });
+    nav.addEventListener('mouseleave', () => {
+      hoverRow = null;
+      tipRow = null;
+      hoverPill.classList.remove('is-set');
+      railTip.classList.remove('is-open');
+    });
+    /* Keyboard users get the same treatment as the pointer: tabbing through the
+       rail slides the light pill onto the focused row instead of leaving them to
+       guess which one has focus. Bound on the document in the capture phase —
+       it costs nothing and still works if anything downstream stops the bubble. */
+    document.addEventListener('focusin', (event) => {
+      const row = event.target.closest && event.target.closest('.tc-nav-item');
+      if (!row || !nav.contains(row) || row === hoverRow) return;
+      hoverRow = row;
+      syncGlider();
+    }, true);
+    document.addEventListener('focusout', (event) => {
+      const row = event.target.closest && event.target.closest('.tc-nav-item');
+      if (!row || !nav.contains(row) || !hoverRow) return;
+      hoverRow = null;
+      syncGlider();
+    }, true);
+
+    /* Foot: live clock + build stamp ---------------------------------- */
+    /* Tabular figures and a 10s tick: the rail is at the edge of a workshop PC
+       that nobody wants to touch just to check the time. */
+    const clock = h('span.tc-side-foot-clock');
+    function paintClock() {
+      const now = new Date();
+      clock.textContent =
+        `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    }
+    paintClock();
+    setInterval(paintClock, 10000);
+
     const sideFoot = h('div.tc-side-foot', [
       h('span.tc-status-dot', { title: 'Connected' }),
       h('span', 'Live'),
       h('span.tc-side-foot-sep', '·'),
+      clock,
+      h('span.tc-side-foot-sep', '·'),
       h('span', `v${(window.__BOOTSTRAP__ || {}).version || '1.0'}`),
     ]);
 
-    const sidebar = h('aside.tc-sidebar', { id: 'tcSidebar' }, [brand, nav, sideFoot]);
+    const sidebar = h('aside.tc-sidebar', { id: 'tcSidebar' }, [brand, nav, chordHint, sideFoot]);
 
     /* Identity — the user menu sits at the right-hand end of the top bar. */
     let userOpen = false;
@@ -283,34 +523,11 @@
       return `${Math.floor(secs / 86400)} d ago`;
     }
 
-    /* Turn "POST /api/invoices/4/payment" into something a foreman would say. */
-    function describeChange(item) {
-      const path = String(item.url || '');
-      const verb = item.method === 'DELETE' ? 'Remove'
-        : item.method === 'PATCH' ? 'Update' : 'Add';
-      const known = [
-        [/\/invoices\/\d+\/payment/, 'Record a payment'],
-        [/\/jobs\/\d+\/stage/, 'Move a job card stage'],
-        [/\/jobs\/\d+\/advance/, 'Advance a job card'],
-        [/\/jobs\/\d+\/qc/, 'Record a quality check'],
-        [/\/jobs\/\d+\/estimate/, 'Save an estimate'],
-        [/\/jobs\/\d+\/parts/, 'Fit a part'],
-        [/\/jobs\/\d+\/photos/, 'Add a job photo'],
-        [/\/jobs\/\d+\/documents/, 'Add a job document'],
-        [/\/invoices\/\d+\/issue/, 'Issue an invoice'],
-        [/\/jobs$/, 'Open a job card'],
-        [/\/invoices$/, 'Raise an invoice'],
-        [/\/tasks\/\d+$/, `${verb} a to-do`],
-        [/\/tasks$/, 'Add a to-do'],
-        [/\/parts\/\d+\/movement/, 'Record stock movement'],
-        [/\/parts$/, 'Add a stock item'],
-        [/\/customers/, 'Update a customer'],
-        [/\/vehicles/, 'Update a vehicle'],
-        [/\/bookings/, 'Update an enquiry'],
-      ];
-      for (const [re, label] of known) if (re.test(path)) return label;
-      return `${verb} — ${path.replace('/api/', '').replace(/\/\d+/g, '')}`;
-    }
+    /* Turn "POST /api/invoices/4/payment" into something a foreman would say.
+       Lives in core.js now: every screen that shows a queued change names it the
+       same way, or the same action reads as two different things depending on
+       where you happen to be looking. */
+    const describeChange = T.describeChange;
 
     async function renderOutboxPanel() {
       const items = await T.outboxPending();
@@ -358,7 +575,8 @@
         ]),
       ]);
     }
-    T.emitOutbox = () => { if (syncOpen) renderOutboxPanel(); };
+    // Repaint the panel whenever the queue changes, from anywhere in the app.
+    T.onPending(() => { if (syncOpen) renderOutboxPanel(); });
 
     /* ── "showing data from 14:20" ───────────────────────────────────────
        Served from the worker's cache, so it is real but it is not live. Said out
@@ -665,6 +883,30 @@
     /* Behaviour ------------------------------------------------------ */
     applyRail(isRail(), sidebar);
 
+    /* core.js fires this once the active class has moved, which is the only
+       moment the pill needs to be told about. */
+    syncNavGlider = syncGlider;
+    document.addEventListener('topclass:nav', () => syncGlider());
+    /* Alt+B animates the rail's width and every row rides along with it, so the
+       pill has to keep re-measuring for the whole of that transition. Watching
+       the sidebar's box does exactly that, and it covers a plain window resize
+       for free — a single `transitionend` would leave the pill on the old
+       geometry until the next navigation. `syncNavGlider` in `applyRail` is the
+       belt to this braces: it settles the instant case where the width does not
+       animate at all. */
+    if (typeof ResizeObserver === 'function') {
+      navObserver = new ResizeObserver(() => syncGlider());
+      navObserver.observe(sidebar);
+    } else {
+      window.addEventListener('resize', () => syncGlider());
+    }
+    /* Snap on the first placement, glide on every one after it. */
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      glider.classList.remove('no-anim');
+      hoverPill.classList.remove('no-anim');
+      revealActive();
+    }));
+
     async function pollBadges() {
       try {
         const data = await api.get('/api/badges', { silent: true });
@@ -703,6 +945,9 @@
       if (typing || e.ctrlKey || e.metaKey) return;
       if (e.altKey && e.key.toLowerCase() === 'b') { e.preventDefault(); toggleRail(); return; }
       if (e.altKey) return;
+      /* Arms the key map; the second key is picked up by the capture listener
+         above, which stops it from reaching any of the shortcuts below. */
+      if (e.key.toLowerCase() === 'g') { e.preventDefault(); setChord(true); return; }
       if (e.key === 'n') { e.preventDefault(); T.newJobCard(); }
       if (e.key === 'b') { e.preventDefault(); T.navigate('/board'); }
       if (e.key === 'i') { e.preventDefault(); T.navigate('/inbox'); }
@@ -716,6 +961,7 @@
     });
 
     document.addEventListener('click', (e) => {
+      if (isChord()) setChord(false);
       if (userOpen && !userWrap.contains(e.target)) toggleUserMenu(false);
       if (attnOpen && !attnPanel.contains(e.target) && !attnBell.contains(e.target)) {
         toggleAttn(false);
@@ -726,7 +972,7 @@
     });
 
     return h('div', [sidebar, h('div.tc-main', [topbar, quickbar, outlet]),
-                     attnPanel, outboxPanel]);
+                     attnPanel, outboxPanel, railTip]);
   }
 
   /* ── booking actions ──────────────────────────────────────────────────
@@ -860,6 +1106,9 @@
         toggle.appendChild(T.icon(rail ? 'chevron-double-right' : 'chevron-double-left'));
       }
     }
+    /* The rail just changed width, so the active pill is now the wrong size and
+       in the wrong place. */
+    if (syncNavGlider) syncNavGlider();
   }
 
   function toggleRail() {

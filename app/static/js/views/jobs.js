@@ -22,6 +22,10 @@
       if (state.q) params.set('q', state.q);
       if (state.status && state.status !== 'all') params.set('status', state.status);
       if (state.stage) params.set('stage', state.stage);
+      /* Put the filters in the address bar as they change. Without this the URL
+         stays `#/jobs` however you have narrowed the list, so opening a job card
+         and coming back loses the search you just did. */
+      T.listState('jobs', params);
       const data = await api.get(`/api/jobs?${params.toString()}`);
       countLabel.textContent = `${data.count} job card${data.count === 1 ? '' : 's'}`;
 
@@ -84,6 +88,9 @@
         h('button.btn.btn-brand.btn-sm', { onclick: () => T.newJobCard({ onCreated: () => load() }) },
           T.icon('plus-lg'), ' New job card'),
       ]),
+      /* Anything queued against a job card, including ones opened offline —
+         which otherwise look like they were never created at all. */
+      T.pendingStrip({ match: (url) => /\/jobs(\/|$)/.test(url), label: 'job card change' }),
       filters,
       T.section({ body: tbodyHost, flush: true }),
     ]);
