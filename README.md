@@ -489,12 +489,12 @@ reaches Render. The deployed app reads its configuration only from the Render
 *Environment* tab, which is why a `.env` that looks correct locally can still
 fail the boot check below.
 
-### The app refuses to boot on an unsafe production config
+### The app reports an unsafe production config, but still starts
 
-`create_app` runs `_assert_production_ready` before anything else and raises
-rather than warns. Every check is a failure that would otherwise be silent — the
-app would boot, render, and be quietly wide open. Nothing is wrong with the code
-when you see this; it is telling you a variable is missing:
+`create_app` runs `_check_production_config` before anything else. It logs at
+`ERROR` and the site comes up. Each check is a failure that would otherwise be
+silent — the app would boot, render, and be quietly wide open. Nothing is
+"wrong with the code" when you see one; it is telling you a variable is missing:
 
 | Message | What to set |
 |---|---|
@@ -503,37 +503,17 @@ when you see this; it is telling you a variable is missing:
 | `WA_MODE=live with no WA_APP_SECRET` | `WA_APP_SECRET` from Meta → Settings → Basic. Without it the public webhook accepts unsigned POSTs, so anyone who learns the URL can create customers, enquiries and job cards. |
 | `WA_MODE=live with PUBLIC_BASE_URL=…` | `PUBLIC_BASE_URL` set to the real HTTPS URL. Customer quotations, invoices and receipts are sent as links to it, and Meta fetches them from the public internet. |
 
-There is deliberately no override by default. Each fix is a variable, and a
-bypass left lying around gets used.
+**Starting anyway does not fix any of these.** An unsafe deploy boots exactly as
+unsafe as it was configured. The log line is the only warning you get, and three
+of the four fail silently in normal use — so read it once after each deploy.
 
-### Booting anyway — `ALLOW_UNSAFE_PRODUCTION`
-
-If you need the site up before the configuration is right, set this on the host:
-
-```dotenv
-ALLOW_UNSAFE_PRODUCTION=true
-```
-
-It waives the refusal. It **fixes nothing** — an unsafe deploy boots exactly as
-unsafe as it was, and every waived risk is printed at `ERROR` on each boot:
-
-```
-ERROR:app:BOOTING AN UNSAFE PRODUCTION CONFIGURATION: ALLOW_UNSAFE_PRODUCTION is on.
-The following are being waived, not fixed:
-  - WA_MODE=live with no WA_APP_SECRET: the webhook is public and accepts unsigned
-    POSTs, so anyone who learns the URL can create customers, enquiries and job cards.
-```
-
-Two of the four are worth knowing about before you use it, because they do not
-fail visibly:
+Two worth understanding, because nothing else will tell you:
 
 - **No `WA_APP_SECRET`** — the webhook accepts unsigned POSTs. Anyone who learns
   the URL can create customers and enquiries, and can make your business number
   send WhatsApp messages to real people. You would not see it happen.
 - **A weak `SECRET_KEY`** — see the next section. A guessable key is a forgeable
   owner session, and the guessing happens entirely offline.
-
-Turn it off again once the variables are set.
 
 ### `SECRET_KEY` has to be random, not memorable
 

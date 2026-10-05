@@ -1,9 +1,10 @@
-"""The boot-time production safety guard.
+"""The boot-time production configuration check.
 
 Each of these is a failure that would otherwise be silent: the app boots, renders,
 and is quietly wide open or quietly unreachable. They are asserted against a real
 `create_app` rather than against the checks in isolation, because the one thing
-that matters is whether a *deploy* is refused.
+that matters is what a *deploy* does — and a deploy now starts either way, so what
+it says in the log is the whole signal.
 
 The safe baseline comes from the `production_config` fixture, so there is exactly
 one definition of "production, configured correctly" and it cannot drift between
@@ -40,57 +41,68 @@ def test_development_is_never_guarded():
     assert create_app(Dev) is not None
 
 
-def test_the_published_secret_key_is_refused(production_config):
+def test_the_published_secret_key_is_reported(production_config, caplog):
     """With a known SECRET_KEY every session cookie is forgeable, so this is a
     full account takeover rather than a hardening item."""
-    with pytest.raises(RuntimeError, match="SECRET_KEY"):
-        create_app(broken(production_config, SECRET_KEY="dev-secret-change-me"))
+    with caplog.at_level(logging.ERROR):
+        assert create_app(broken(production_config,
+                                 SECRET_KEY="dev-secret-change-me")) is not None
+    assert "SECRET_KEY" in caplog.text
 
 
 @pytest.mark.parametrize("blank", ["", None])
-def test_an_empty_secret_key_is_refused(production_config, blank):
-    with pytest.raises(RuntimeError, match="SECRET_KEY"):
-        create_app(broken(production_config, SECRET_KEY=blank))
+def test_an_empty_secret_key_is_reported(production_config, caplog, blank):
+    with caplog.at_level(logging.ERROR):
+        assert create_app(broken(production_config, SECRET_KEY=blank)) is not None
+    assert "SECRET_KEY" in caplog.text
 
 
-def test_the_published_seed_password_is_refused_when_staff_would_be_created(production_config):
+def test_the_published_seed_password_is_reported_when_staff_would_be_created(production_config, caplog):
     """AUTO_SEED_STAFF + the default password is exactly how an empty database
     ends up reachable as owner@topclass.co.zw / topclass123 on a public URL."""
-    with pytest.raises(RuntimeError, match="SEED_PASSWORD"):
-        create_app(broken(production_config, AUTO_SEED_STAFF=True, SEED_PASSWORD="topclass123"))
+    with caplog.at_level(logging.ERROR):
+        create_app(broken(production_config, AUTO_SEED_STAFF=True,
+                          SEED_PASSWORD="topclass123"))
+    assert "SEED_PASSWORD" in caplog.text
 
 
-def test_the_default_seed_password_is_fine_when_nothing_is_seeded(production_config):
-    """Seeding off means the password is never used, so it is not a reason to
-    refuse a deploy."""
-    assert create_app(broken(production_config, AUTO_SEED_STAFF=False,
-                             SEED_PASSWORD="topclass123")) is not None
+def test_the_default_seed_password_is_fine_when_nothing_is_seeded(production_config, caplog):
+    """Seeding off means the password is never used, so it is not worth a line."""
+    with caplog.at_level(logging.ERROR):
+        assert create_app(broken(production_config, AUTO_SEED_STAFF=False,
+                                 SEED_PASSWORD="topclass123")) is not None
+    assert "SEED_PASSWORD" not in caplog.text
 
 
-def test_live_mode_without_the_app_secret_is_refused(production_config):
+def test_live_mode_without_the_app_secret_is_reported(production_config, caplog):
     """The webhook is public; unsigned POSTs create real customers and job cards."""
-    with pytest.raises(RuntimeError, match="WA_APP_SECRET"):
-        create_app(broken(production_config, WA_MODE="live", WA_APP_SECRET=""))
+    with caplog.at_level(logging.ERROR):
+        assert create_app(broken(production_config, WA_MODE="live",
+                                 WA_APP_SECRET="")) is not None
+    assert "WA_APP_SECRET" in caplog.text
 
 
-def test_live_mode_pointing_at_localhost_is_refused(production_config):
+def test_live_mode_pointing_at_localhost_is_reported(production_config, caplog):
     """Customer documents go out as links and Meta fetches them from the public
     internet, so a localhost link is a dead document."""
-    with pytest.raises(RuntimeError, match="PUBLIC_BASE_URL"):
+    with caplog.at_level(logging.ERROR):
         create_app(broken(production_config, WA_MODE="live",
                           PUBLIC_BASE_URL="http://127.0.0.1:5000"))
+    assert "PUBLIC_BASE_URL" in caplog.text
 
 
-def test_simulator_mode_is_not_required_to_be_reachable(production_config):
+def test_simulator_mode_is_not_required_to_be_reachable(production_config, caplog):
     """Nothing is sent, so a localhost base URL is harmless until go-live."""
-    assert create_app(broken(production_config, WA_MODE="simulator",
-                             PUBLIC_BASE_URL="http://127.0.0.1:5000")) is not None
+    with caplog.at_level(logging.ERROR):
+        assert create_app(broken(production_config, WA_MODE="simulator",
+                                 PUBLIC_BASE_URL="http://127.0.0.1:5000")) is not None
+    assert "PUBLIC_BASE_URL" not in caplog.text
 
 
-def test_every_problem_is_reported_at_once(production_config):
-    """A deploy is usually wrong in more than one way, and fixing them one failed
-    deploy at a time is how a launch eats an afternoon."""
-    with pytest.raises(RuntimeError) as caught:
+def test_every_problem_is_reported_at_once(production_config, caplog):
+    """A deploy is usually wrong in more than one way, and finding them one
+    restart at a time is how a launch eats an afternoon."""
+    with caplog.at_level(logging.ERROR):
         create_app(broken(
             production_config,
             SECRET_KEY="dev-secret-change-me",
@@ -99,10 +111,9 @@ def test_every_problem_is_reported_at_once(production_config):
             WA_MODE="live",
             WA_APP_SECRET="",
         ))
-    message = str(caught.value)
-    assert "SECRET_KEY" in message
-    assert "SEED_PASSWORD" in message
-    assert "WA_APP_SECRET" in message
+    assert "SECRET_KEY" in caplog.text
+    assert "SEED_PASSWORD" in caplog.text
+    assert "WA_APP_SECRET" in caplog.text
 
 
 def test_sqlite_in_production_warns_but_still_starts(production_config, caplog):
@@ -113,59 +124,13 @@ def test_sqlite_in_production_warns_but_still_starts(production_config, caplog):
     assert "SQLite" in caplog.text
 
 
-def test_the_override_boots_where_the_guard_would_refuse(production_config):
-    """The escape hatch: get the site up, knowingly, without deleting the checks."""
-    app = create_app(broken(
-        production_config,
-        ALLOW_UNSAFE_PRODUCTION=True,
-        WA_MODE="live",
-        WA_APP_SECRET="",
-        PUBLIC_BASE_URL="http://127.0.0.1:5000",
-    ))
-    assert app is not None
-    # Still live, so the guard was waived rather than the config quietly downgraded.
-    assert app.config["WA_MODE"] == "live"
-
-
-def test_the_override_names_what_it_waived(production_config, caplog):
-    """A waived check has to be visible on every boot. The whole reason these
-    checks raise instead of warn is that a warning nobody reads is worthless."""
-    with caplog.at_level(logging.ERROR):
-        create_app(broken(
-            production_config,
-            ALLOW_UNSAFE_PRODUCTION=True,
-            WA_MODE="live",
-            WA_APP_SECRET="",
-        ))
-    assert "ALLOW_UNSAFE_PRODUCTION" in caplog.text
-    assert "WA_APP_SECRET" in caplog.text
-
-
-def test_the_override_is_off_unless_it_is_asked_for(production_config):
-    """Default behaviour is unchanged: an unsafe deploy is still refused."""
-    with pytest.raises(RuntimeError, match="WA_APP_SECRET"):
-        create_app(broken(
-            production_config,
-            ALLOW_UNSAFE_PRODUCTION=False,
-            WA_MODE="live",
-            WA_APP_SECRET="",
-        ))
-
-
-def test_the_override_does_nothing_in_a_safe_production_config(production_config,
-                                                               caplog):
-    """It is a waiver, not a mode: a correct deploy logs nothing extra."""
-    with caplog.at_level(logging.ERROR):
-        create_app(broken(production_config, ALLOW_UNSAFE_PRODUCTION=True))
-    assert "ALLOW_UNSAFE_PRODUCTION" not in caplog.text
-
-
-def test_the_guard_message_is_pure_ascii(production_config):
-    """The message is printed by whatever logger the host runs, often on a cp1252
+def test_the_reported_problems_are_pure_ascii(production_config, caplog):
+    """The message is written by whatever logger the host runs, often on a cp1252
     console. A UnicodeEncodeError there would hide the real problem."""
-    with pytest.raises(RuntimeError) as caught:
+    with caplog.at_level(logging.ERROR):
         create_app(broken(production_config, SECRET_KEY="dev-secret-change-me"))
-    str(caught.value).encode("ascii")
+    for record in caplog.records:
+        record.getMessage().encode("ascii")
 
 
 def test_render_supplies_the_public_url_when_it_is_not_set(monkeypatch):

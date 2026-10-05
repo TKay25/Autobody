@@ -52,7 +52,7 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
     app.config.from_object(config_object or get_config())
 
     _configure_logging(app)
-    _assert_production_ready(app)
+    _check_production_config(app)
     _init_extensions(app)
     _register_blueprints(app)
     _register_jinja(app)
@@ -70,21 +70,20 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-def _assert_production_ready(app: Flask) -> None:
-    """Refuse to start a production deploy that is configured to be broken.
+def _check_production_config(app: Flask) -> None:
+    """Report a production deploy that is configured to be broken.
 
     Every check here is a failure that would otherwise be silent: the app boots,
-    renders, and is quietly wide open or quietly unreachable. They raise rather
-    than warn because a warning in a host's log viewer is a warning nobody reads,
-    and none of these are survivable in front of real customers.
+    renders, and is quietly wide open or quietly unreachable. Starting anyway is
+    a deliberate choice — a site that will not come up is its own kind of outage,
+    and it is worse when the person who needs it up cannot see why. Nothing here
+    fixes anything; it names what is wrong, at ERROR, on every boot.
 
-    Deliberately no override switch by default. The fix for each one is to set a
-    variable, which is a two-minute job, and a bypass left lying around gets used.
+    Read the log. Each line is a real hole, not a hardening suggestion:
 
-    ``ALLOW_UNSAFE_PRODUCTION=true`` is that override, for when somebody needs the
-    site up before the configuration is right. It waives the refusal; it fixes
-    nothing. Every waived risk is logged at ERROR on each boot so the state of the
-    deployment is never a surprise.
+      * a published SEED_PASSWORD hands out working staff logins
+      * no WA_APP_SECRET leaves the webhook open to unsigned POSTs
+      * a guessable SECRET_KEY makes every session cookie forgeable
     """
     if not app.config.get("IS_PRODUCTION"):
         return
@@ -126,19 +125,10 @@ def _assert_production_ready(app: Flask) -> None:
             )
 
     if problems:
-        # An explicit, loud escape hatch. The checks above stay the default; a
-        # deploy that waives them says so on purpose, and says so on every boot,
-        # so that nobody later finds the guard switched off and assumes it is on.
-        if app.config.get("ALLOW_UNSAFE_PRODUCTION"):
-            app.logger.error(
-                "BOOTING AN UNSAFE PRODUCTION CONFIGURATION: ALLOW_UNSAFE_PRODUCTION "
-                "is on. The following are being waived, not fixed:\n%s",
-                "\n".join(f"  - {problem}" for problem in problems),
-            )
-            return
-        raise RuntimeError(
-            "Refusing to start: this production configuration is unsafe.\n"
-            + "\n".join(f"  - {problem}" for problem in problems)
+        app.logger.error(
+            "PRODUCTION CONFIGURATION IS UNSAFE - starting anyway. These are not "
+            "fixed by starting:\n%s",
+            "\n".join(f"  - {problem}" for problem in problems),
         )
 
     # Survivable, but not something anyone should discover later.
