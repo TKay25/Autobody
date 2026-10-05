@@ -302,6 +302,23 @@ def _ensure_schema(app: Flask) -> None:
         drop_columns(db.engine, "job_cards", ["is_insurance"])
         drop_columns(db.engine, "estimates", ["is_insurance", "excess"])
         drop_columns(db.engine, "invoices", ["is_insurance", "insurer_code"])
+
+        # A backfill, which schema.py otherwise leaves to Flask-Migrate. There is
+        # no migrations directory in this project, and a card left on a retired
+        # stage renders in *no* column at all, so it has to be moved before the
+        # board is built. Idempotent: the next boot finds nothing to move.
+        from sqlalchemy import text
+
+        from .constants import RETIRED_STAGES
+
+        with db.engine.begin() as connection:
+            for old, new in RETIRED_STAGES.items():
+                result = connection.execute(text(
+                    f"UPDATE job_cards SET stage = '{new}' WHERE stage = '{old}'"
+                ))
+                if result.rowcount:
+                    app.logger.info("Moved %s job card(s) from retired stage %s to %s",
+                                    result.rowcount, old, new)
     except Exception:  # a schema nicety must never stop the app from booting
         db.session.rollback()
         app.logger.warning("Schema guard failed.", exc_info=True)

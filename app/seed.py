@@ -203,7 +203,7 @@ def _seed_demo_work() -> None:
     db.session.commit()
 
     stages_for_demo = [
-        "INTAKE", "ASSESSMENT", "AWAITING_APPROVAL", "PARTS_ORDER", "STRIP",
+        "INTAKE", "PARTS_ORDER", "STRIP",
         "PANEL", "PREP", "PAINT", "REASSEMBLY", "DETAILING", "QC", "READY", "COLLECTED",
     ]
 

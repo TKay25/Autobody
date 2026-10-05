@@ -242,11 +242,6 @@ def can_advance(job: JobCard) -> tuple[bool, str]:
     if job.stage in CLOSED_STAGES:
         return False, "Job card is already closed."
 
-    if job.stage == "AWAITING_APPROVAL":
-        est = job.latest_estimate
-        if est is None or est.status != "APPROVED":
-            return False, "Waiting on customer approval of the estimate."
-
     if job.stage == "PARTS_ORDER":
         blocking = [p for p in job.job_parts if p.is_blocking]
         if blocking:
@@ -404,23 +399,21 @@ def save_estimate(job: JobCard, lines: list[dict], *, vat_rate: Decimal = Decima
     estimate.vat = summary["vat"]
     estimate.total = summary["total"]
 
-    if job.stage in {"ASSESSMENT", "AWAITING_APPROVAL"}:
-        job.stage = "AWAITING_APPROVAL"
-        db.session.add(JobStageEvent(job_id=job.id, stage="AWAITING_APPROVAL",
-                                     note=f"Estimate {estimate.reference} sent for approval"))
     db.session.commit()
     return estimate
 
 
 def approve_estimate(estimate: Estimate, *, approved_by: str, user_id: int | None = None) -> Estimate:
+    """The customer has accepted the quotation.
+
+    Raising or approving a quotation no longer moves a job card between stages:
+    the quoting conversation now happens on the enquiry, before any card exists,
+    so there is nothing to advance here. An estimate that does already hang off a
+    job card — the in-house path — simply becomes approved.
+    """
     estimate.status = "APPROVED"
     estimate.approved_by = approved_by
     estimate.approved_at = utcnow()
-    job = estimate.job
-    if job and job.stage == "AWAITING_APPROVAL":
-        job.stage = "PARTS_ORDER" if any(p.is_blocking for p in job.job_parts) else "STRIP"
-        db.session.add(JobStageEvent(job_id=job.id, stage=job.stage,
-                                     note=f"Estimate approved by {approved_by}", user_id=user_id))
     db.session.commit()
     return estimate
 

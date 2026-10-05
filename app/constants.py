@@ -27,10 +27,13 @@ ROLE_LABELS = {
 MANAGER_ROLES = {ROLE_OWNER, ROLE_MANAGER}
 
 # ── Workshop stages (the WIP board columns) ──────────────────────────────────
+# The shop's physical work only. Assessment and Awaiting Approval used to sit at
+# the front of this list, which put the quoting conversation *on the job card* —
+# so a card that existed only to hold a quotation had to walk through two stages
+# that had already been done on the enquiry. Quoting now happens before the card
+# exists, and the card opens when the customer commits.
 STAGES = [
     "INTAKE",
-    "ASSESSMENT",
-    "AWAITING_APPROVAL",
     "PARTS_ORDER",
     "STRIP",
     "PANEL",
@@ -44,8 +47,6 @@ STAGES = [
 ]
 STAGE_LABELS = {
     "INTAKE": "Intake",
-    "ASSESSMENT": "Assessment",
-    "AWAITING_APPROVAL": "Awaiting Approval",
     "PARTS_ORDER": "Awaiting Parts",
     "STRIP": "Strip Down",
     "PANEL": "Panel Beating",
@@ -56,11 +57,14 @@ STAGE_LABELS = {
     "QC": "Quality Control",
     "READY": "Ready for Collection",
     "COLLECTED": "Collected",
+    # Retired stages, kept readable. A row that still carries one — a card
+    # written before the change, or a boot that failed to migrate — must render
+    # as something rather than raise a KeyError on the way to the board.
+    "ASSESSMENT": "Assessment",
+    "AWAITING_APPROVAL": "Awaiting Approval",
 }
 STAGE_COLOURS = {
     "INTAKE": "secondary",
-    "ASSESSMENT": "info",
-    "AWAITING_APPROVAL": "warning",      # amber — waiting on someone
     "PARTS_ORDER": "warning",             # amber — waiting on parts
     "STRIP": "primary",
     "PANEL": "primary",
@@ -71,7 +75,12 @@ STAGE_COLOURS = {
     "QC": "brand",                        # crimson — a gate, not a queue
     "READY": "success",                   # green
     "COLLECTED": "success",               # green
+    "ASSESSMENT": "info",
+    "AWAITING_APPROVAL": "warning",
 }
+# Stages the shop no longer uses, and what a card left on one becomes. Applied
+# once on boot so nothing disappears from a board that only renders STAGES.
+RETIRED_STAGES = {"ASSESSMENT": "INTAKE", "AWAITING_APPROVAL": "INTAKE"}
 # Customer-facing wording (used by the WhatsApp bot).
 STAGE_CUSTOMER_TEXT = {
     "INTAKE": "Your vehicle has been booked in and the job card is open.",

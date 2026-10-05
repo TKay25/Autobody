@@ -32,15 +32,22 @@ the API and the bot both get that answer from `job_flow.can_advance()`.
 ## Job lifecycle
 
 ```
-INTAKE → ASSESSMENT → AWAITING_APPROVAL → PARTS_ORDER → STRIP → PANEL
-      → PREP → PAINT → REASSEMBLY → DETAILING → QC → READY → COLLECTED
+enquiry → assessment → quotation → customer approves & commits
+                                      ↓
+INTAKE → PARTS_ORDER → STRIP → PANEL → PREP → PAINT
+      → REASSEMBLY → DETAILING → QC → READY → COLLECTED
 ```
+
+Assessment and approval happen on the **enquiry**, before a job card exists: a
+quotation is raised against the enquiry and the card is opened only once the
+customer accepts it, carrying that quotation with it. So the board shows the
+shop's physical work only — the card never walks a stage that was already
+covered during quoting.
 
 Guard rails enforced by `job_flow.can_advance()`:
 
 | Gate | Rule |
 |---|---|
-| `AWAITING_APPROVAL` | Insurance jobs need a claim with status `APPROVED`/`PARTIAL`; cash jobs need an approved estimate |
 | `PARTS_ORDER` | No part may be in `REQUIRED`, `ORDERED`, or `IN_TRANSIT` |
 | `QC` | The checklist must exist **and** have zero failures |
 

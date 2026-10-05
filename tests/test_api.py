@@ -276,7 +276,13 @@ def test_the_customer_payload_carries_the_portal_token(auth_client):
     assert auth_client.get("/portal/undefined").status_code == 404
 
 
-def test_advance_blocked_until_the_customer_approves_the_estimate(auth_client, app):
+def test_a_card_no_longer_waits_on_customer_approval_to_advance(auth_client, app):
+    """The approval gate moved off the job card.
+
+    A card is only opened once the customer has committed, so there is nothing
+    left for the shop to wait on — advancing from Intake is no longer blocked by
+    an unapproved estimate sitting on the card.
+    """
     res = auth_client.post("/api/jobs", json={
         "customer_name": "Approval Client", "reg_no": "APP1111",
         "service": "Panel Beating & Spray Painting",
@@ -284,10 +290,12 @@ def test_advance_blocked_until_the_customer_approves_the_estimate(auth_client, a
     })
     job_id = res.get_json()["job"]["id"]
 
-    auth_client.post(f"/api/jobs/{job_id}/stage", json={"stage": "AWAITING_APPROVAL"})
     res = auth_client.post(f"/api/jobs/{job_id}/advance", json={})
-    assert res.status_code == 409
-    assert "customer approval" in res.get_json()["message"].lower()
+    assert res.status_code == 200, res.get_json()
+
+    with app.app_context():
+        job = db.session.get(JobCard, job_id)
+        assert job.stage == "PARTS_ORDER"
 
 
 def test_qc_gate_blocks_release(auth_client):
