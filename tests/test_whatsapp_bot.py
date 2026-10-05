@@ -816,6 +816,75 @@ def test_service_rows_fit_whatsapps_limits(app):
         assert "Panel Beating & Spray Painting" in priced["Panel & Paint"]
 
 
+def test_unpriced_services_carry_no_invented_figure(app):
+    """No "from USD" on a service whose price depends on seeing the vehicle.
+
+    Auto body and panel work used to inherit a flat USD 75 fallback, so the menu
+    advertised "from USD 75" for a respray-class job nobody had looked at.
+    """
+    with app.app_context():
+        picker = intent_router.service_list_reply("en")
+        rows = {r["title"]: r for s in picker["sections"] for r in s["rows"]}
+
+        assert "USD" not in rows["Auto Body"].get("description", "")
+        assert "USD" not in rows["Panel & Paint"].get("description", "")
+        # The priced services are untouched by this.
+        assert "from USD 350" in rows["Ceramic Coating"]["description"]
+
+        # And the brief says so in words, rather than staying silent.
+        conv = get_or_create_conversation("263771110009", "No Price")
+        intent_router.handle_inbound(conv, interactive_id="m_enquiries")
+        brief = intent_router.handle_inbound(conv, interactive_id="enq:Auto Body")[0]["body"]
+        assert "USD" not in brief, brief
+        assert "Priced off the damage" in brief, brief
+
+
+def test_an_unpriced_enquiry_records_no_quote_rather_than_a_guess(app):
+    """The record holds no figure, and the reply omits the price line.
+
+    Auto Body is priced off the damage. Before this, the record carried the flat
+    USD 75 fallback and the confirmation quoted it back to the customer as an
+    "indicative price".
+    """
+    with app.app_context():
+        conv = get_or_create_conversation("263771110008", "No Guess")
+        intent_router.handle_inbound(conv, interactive_id="m_enquiries")
+        intent_router.handle_inbound(conv, interactive_id="enq:Auto Body")
+        intent_router.handle_inbound(conv, text_body="Front bumper is bent in.")
+
+        replies = intent_router.handle_inbound(conv, text_body="Tarisai Moyo")
+        assert conv.state == "QUOTE_EMAIL"
+        replies = intent_router.handle_inbound(conv, text_body="skip")
+
+        booking = (Booking.query.filter_by(source="whatsapp")
+                   .order_by(Booking.id.desc()).first())
+        assert booking is not None
+        assert booking.service == "Auto Body"
+        assert not booking.quoted_from
+        assert "Indicative price" not in replies[0]["body"], replies[0]["body"]
+        # Rendered for the console without inventing a figure either.
+        assert booking.to_dict()["quoted_from"] == 0.0
+
+
+def test_a_priced_enquiry_still_quotes_its_published_price(app):
+    """The other half of the guard: a real price is still shown and stored."""
+    with app.app_context():
+        conv = get_or_create_conversation("263771110010", "Has Price")
+        intent_router.handle_inbound(conv, interactive_id="m_enquiries")
+        intent_router.handle_inbound(conv, interactive_id="enq:Ceramic Coating")
+        intent_router.handle_inbound(conv, text_body="Swirl marks all over.")
+
+        intent_router.handle_inbound(conv, text_body="Rudo Chikafu")
+        replies = intent_router.handle_inbound(conv, text_body="skip")
+
+        booking = (Booking.query.filter_by(source="whatsapp")
+                   .order_by(Booking.id.desc()).first())
+        assert booking.service == "Ceramic Coating"
+        assert float(booking.quoted_from) == 350.0
+        assert "Indicative price" in replies[0]["body"], replies[0]["body"]
+        assert "USD 350" in replies[0]["body"], replies[0]["body"]
+
+
 def _emoji(chunk: str) -> list[str]:
     """Anything at or above U+2190 is a symbol or emoji.
 
@@ -2084,6 +2153,58 @@ def test_files_the_flow_collected_become_enquiry_attachments(app, client):
         kinds = sorted(p.kind for p in photos)
         assert kinds == ["DAMAGE", "DAMAGE", "DOCUMENT"], kinds
         assert any(p.caption == "report.pdf" for p in photos), [p.caption for p in photos]
+
+
+def test_a_simulated_attachment_actually_resolves(app, client):
+    """What the simulator points at has to exist, or the inbox shows a broken image.
+
+    ``_download_media`` fabricates a URL in simulator mode because nothing is
+    fetched from Meta. It used to fabricate ``/static/img/whatsapp-media-<id>.<ext>``,
+    a file that was never there — so every photo a customer sent rendered as a
+    broken image, and the comment claiming the inbox "still shows the attachment"
+    was not true.
+    """
+    res = client.post("/webhooks/whatsapp", json=_flow_payload(
+        "263773330023",
+        _picker_answers(names=("IMG_1.jpg", "sheet.pdf"),
+                        mimes=("image/jpeg", "application/pdf")),
+        message_id="wamid.SIMIMG", token="enquiry"))
+    assert res.status_code == 200
+
+    with app.app_context():
+        booking = Booking.query.first()
+        urls = [p.url for p in booking.photos]
+    assert len(urls) == 2, urls
+
+    image = next(u for u in urls if u.endswith(".jpg"))
+    document = next(u for u in urls if u.endswith(".pdf"))
+
+    # An <img> renders from Content-Type, not the URL, so these draw a real
+    # placeholder rather than a broken image icon.
+    served = client.get(image)
+    assert served.status_code == 200, image
+    assert served.headers["Content-Type"].startswith("image/svg+xml")
+
+    # The extension survives, because the inbox chooses its node by extension: a
+    # simulated PDF must keep showing as a paperclip link, not as a photo.
+    assert document.endswith(".pdf")
+    assert client.get(document).status_code == 200
+
+
+def test_the_media_placeholder_is_not_a_public_endpoint_in_live(app):
+    """Nothing generates these URLs in live mode, so it must not answer."""
+    from app import create_app
+    from config import TestConfig
+
+    class Live(TestConfig):
+        WA_MODE = "live"
+
+    live = create_app(Live)
+    with live.app_context():
+        db.create_all()
+        assert live.test_client().get(
+            "/webhooks/simulated-media/12345.jpg").status_code == 404
+        db.drop_all()
 
 
 def test_a_flow_component_that_is_not_a_picker_is_ignored(app, client):

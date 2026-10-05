@@ -214,14 +214,33 @@ def summarise(lines: list[dict], vat_rate: Decimal) -> dict:
     }
 
 
-def quick_quote(service: str) -> dict:
-    """Indicative "from" price for the quick-quote widget and the WhatsApp bot."""
+def quick_quote(service: str) -> dict | None:
+    """Indicative "from" price for the quick-quote widget and the WhatsApp bot.
+
+    ``None`` when the service has no published price. Auto body and panel work
+    are priced off the damage, and there is no safe number to guess at before
+    the vehicle has been seen — a made-up figure in the menu is how a workshop
+    ends up arguing about a price it never quoted. Callers that show a price
+    must handle the missing case; the ones that store it should use
+    :func:`quoted_from`.
+    """
     base = SERVICE_FROM_PRICE.get(service)
     if base is None:
-        base = Decimal("75.00")
+        return None
     return {
         "service": service,
         "from_price": float(_money(base)),
         "currency": "USD",
         "note": "Indicative only. A firm quotation follows a physical assessment.",
     }
+
+
+def quoted_from(service: str) -> Decimal | None:
+    """The "from" price as a ``Decimal`` for ``Booking.quoted_from``.
+
+    ``None`` when the service has no published price. The column carries a
+    ``default=0``, so what lands on the record is 0.00 — the existing meaning of
+    "we hold no figure" — and callers can simply test it for truth.
+    """
+    quote = quick_quote(service)
+    return Decimal(str(quote["from_price"])) if quote else None

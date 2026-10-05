@@ -37,7 +37,7 @@ from ..models import (Booking, BookingPhoto, Customer, Estimate, Invoice, JobCar
                       Payment, PaymentProof, Task, Vehicle, WaConversation, utcnow)
 from . import bookings as booking_ops
 from .notifications import public_url
-from .pricing import quick_quote
+from .pricing import quick_quote, quoted_from
 
 # ── tiny i18n table (English / Shona / Ndebele) ──────────────────────────────
 LANGUAGES = {
@@ -131,9 +131,9 @@ T = {
               "coating nePPF.\n\nSingakusiza njani?",
     },
     "menu_prompt": {
-        "en": "Please choose an option below.",
-        "sn": "Sarudzai chimwe chezvinotevera.",
-        "nd": "Khetha okunye kwalokhu okulandelayo.",
+        "en": 'Please select an option by clicking "Main Menu" below.',
+        "sn": 'Sarudzai chimwe chezvinotevera nekudzvanya "Main Menu" pazasi.',
+        "nd": 'Khetha okunye kwalokhu okulandelayo ngokucindezela "Main Menu" ngezansi.',
     },
     "ask_service": {
         "en": "Which service do you need?",
@@ -475,7 +475,7 @@ def main_menu_reply(company: str, lang: str, prefix: str = "") -> dict:
         # A list footer rather than a body line: the hint is an aside, and the
         # body is what the customer has to read to choose.
         "footer": t("lang_hint", lang),
-        "button": "Start",
+        "button": "Main Menu",
         "sections": [{"title": company, "rows": rows}],
     }
 
@@ -492,12 +492,14 @@ def service_list_reply(lang: str, id_prefix: str = "svc") -> dict:
         full = service["name"]
         short = service.get("short") or full
         quote = quick_quote(full)
+        # No price for auto body or panel work: they are priced off the damage,
+        # and a "from" figure we cannot stand behind is worse than none.
         price = f"from USD {quote['from_price']:.0f}" if quote else ""
         # The full name goes in the description when the title had to be shortened
         # to fit WhatsApp's 24-character row title. A plain hyphen rather than a
         # middot: a middot is easy to lose in an edit and renders inconsistently.
-        if short != full and price:
-            description = f"{full} - {price}"
+        if short != full:
+            description = f"{full} - {price}" if price else full
         else:
             description = price
         row = {"id": f"{id_prefix}:{full}", "title": short[:24]}
@@ -1862,7 +1864,7 @@ class IntentRouter:
             status="REQUESTED",
             source="whatsapp",
             notes=notes,
-            quoted_from=Decimal(str(quick_quote(service)["from_price"])),
+            quoted_from=quoted_from(service),
         )
         db.session.add(booking)
         db.session.flush()
@@ -1889,8 +1891,10 @@ class IntentRouter:
         db.session.commit()
 
         estimate_note = ""
-        if service in {"Car Detailing", "Ceramic Coating", "Paint Protection Film",
-                       "Car Vinyl Wrapping"}:
+        # Driven by the price we actually hold rather than a list of service
+        # names kept in step by hand: the two drifted, and an unpriced panel job
+        # was one forgotten name away from quoting a figure nobody agreed to.
+        if booking.quoted_from:
             estimate_note = f"\nIndicative price: *from USD {booking.quoted_from:.0f}*."
         day_note = ""
         if booked_for:

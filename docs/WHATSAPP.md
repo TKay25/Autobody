@@ -97,7 +97,7 @@ that cap is what used to keep the extra rows off the greeting entirely.
 | Enquiries | `m_enquiries` | The seven services → a short brief on the one picked → the enquiry form (or the chat enquiry when no Flow is built) |
 | Track my repair | `m_track` | Job number or registration plate |
 | I have paid — send proof | `m_pay` | Bank/EcoCash details, then waits for a screenshot |
-| Our services & prices | `m_services` | The seven service lines with "from USD" prices |
+| Our services & prices | `m_services` | The seven service lines — a "from USD" price on the ones we publish a price for |
 | Talk to a person | `m_human` | Hands over **and** raises a callback ticket |
 | Language | `m_lang` | English / Shona / Ndebele |
 | Contact details | `m_info` | Address, hours, phone, email, website |
@@ -127,7 +127,7 @@ A "what next?" menu (also a list) carries the same rows plus **Warranty**
 Customer: get a quote
 Bot:      What is the vehicle registration number? (e.g. ABC 1234)
 Customer: ABC 1234
-Bot:      Which service do you need?          ← list of 7, with "from USD" prices
+Bot:      Which service do you need?          ← list of 7, priced where we publish a price
 Customer: [Ceramic Coating]
 Bot:      Briefly describe the damage… You can also send photos 📷
 Customer: [photo] [photo]

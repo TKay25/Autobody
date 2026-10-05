@@ -481,7 +481,30 @@ COMPANY_TEL=+263 242 446954
 COMPANY_MOBILE=+263 77 555 0555
 DATABASE_URL=postgresql://…              # see the warning below
 WA_MODE=simulator                        # switch to "live" once Meta is verified
+WA_APP_SECRET=                           # REQUIRED once WA_MODE=live — see below
 ```
+
+**`.env` is not deployed.** It is gitignored, so the copy on your laptop never
+reaches Render. The deployed app reads its configuration only from the Render
+*Environment* tab, which is why a `.env` that looks correct locally can still
+fail the boot check below.
+
+### The app refuses to boot on an unsafe production config
+
+`create_app` runs `_assert_production_ready` before anything else and raises
+rather than warns. Every check is a failure that would otherwise be silent — the
+app would boot, render, and be quietly wide open. Nothing is wrong with the code
+when you see this; it is telling you a variable is missing:
+
+| Message | What to set |
+|---|---|
+| `SECRET_KEY is unset or still the value published in this repository` | `SECRET_KEY` — a long random string. Generate with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Anyone who can read the source can otherwise forge a session cookie and sign in as the owner. |
+| `AUTO_SEED_STAFF is on and SEED_PASSWORD is still the published default` | `SEED_PASSWORD` (or `OWNER_EMAIL` + `OWNER_PASSWORD` **and** `AUTO_SEED_STAFF=false`). Otherwise an empty database is seeded with accounts whose passwords are in this repository. |
+| `WA_MODE=live with no WA_APP_SECRET` | `WA_APP_SECRET` from Meta → Settings → Basic. Without it the public webhook accepts unsigned POSTs, so anyone who learns the URL can create customers, enquiries and job cards. |
+| `WA_MODE=live with PUBLIC_BASE_URL=…` | `PUBLIC_BASE_URL` set to the real HTTPS URL. Customer quotations, invoices and receipts are sent as links to it, and Meta fetches them from the public internet. |
+
+There is deliberately **no override switch**. Each fix is a variable, and a
+bypass would get used.
 
 ### ⚠️ SQLite does not survive a deploy
 

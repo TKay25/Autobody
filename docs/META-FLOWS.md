@@ -30,7 +30,9 @@ ENTRY (any of three)
 CHAT PATH  (states in WaConversation.state)
   QUOTE_REG      "Sure. What is the vehicle registration number? (e.g. ABC 1234)"
                  -> plate normalised: "adz 4477" becomes "ADZ4477"; under 3 chars is rejected
-  QUOTE_SERVICE  a list of the 7 services, with "from USD n" beside each
+  QUOTE_SERVICE  a list of the 7 services, "from USD n" on the priced ones only
+                 (auto body and panel work are quoted off the damage, so they
+                 carry no figure rather than an invented one)
   QUOTE_DESC     "Please describe the damage. Send photos, and a PDF of any assessment…"
                  -> any photo or PDF sent here is attached to the record
   QUOTE_CONTACT  "what name should we put on the job card?"  (*skip* uses the WhatsApp profile name)

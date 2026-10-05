@@ -1353,7 +1353,7 @@ def create_booking():
         status="CONFIRMED" if want(data, "confirm") else "REQUESTED",
         source=want(data, "source") or "phone",
         notes=want(data, "notes"),
-        quoted_from=as_decimal(pricing.quick_quote(service)["from_price"]),
+        quoted_from=pricing.quoted_from(service),
         reference=gen_ref(ENQUIRY_REF_PREFIX),
     )
     if booking.status == "CONFIRMED":

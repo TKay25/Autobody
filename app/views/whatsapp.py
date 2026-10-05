@@ -16,7 +16,7 @@ import hmac
 import json
 import logging
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, Response, abort, current_app, jsonify, request, url_for
 
 from ..extensions import csrf, db
 from ..services.intent_router import handle_inbound
@@ -377,6 +377,44 @@ MEDIA_EXTENSIONS = {
 }
 
 
+# A stand-in for a media object that was never fetched, so the inbox is not full
+# of broken images while WA_MODE=simulator.
+_PLACEHOLDER_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320" '
+    'viewBox="0 0 480 320" role="img" aria-label="Simulated attachment">'
+    '<rect width="480" height="320" fill="#eef2f7"/>'
+    '<rect x="60" y="62" width="360" height="170" rx="12" fill="#ffffff" '
+    'stroke="#c3ccdb"/>'
+    '<circle cx="132" cy="118" r="19" fill="#c3ccdb"/>'
+    '<path d="M60 210l112-72 92 56 62-41 94 71z" fill="#dbe3ee"/>'
+    '<text x="240" y="272" text-anchor="middle" font-family="sans-serif" '
+    'font-size="19" fill="#5a6b82">Simulated attachment</text>'
+    '<text x="240" y="297" text-anchor="middle" font-family="sans-serif" '
+    'font-size="14" fill="#8794a8">Nothing was downloaded from Meta.</text>'
+    '</svg>'
+)
+
+
+@bp.get("/simulated-media/<media_id>.<ext>")
+def simulated_media(media_id: str, ext: str):
+    """What :func:`_download_media` points at in simulator mode.
+
+    The stub used to be ``/static/img/whatsapp-media-<id>.<ext>``, a file that
+    does not exist — so every photo a customer sent showed up in the inbox as a
+    broken image. This serves real bytes instead.
+
+    Always SVG, whatever the extension claims: an ``<img>`` renders from the
+    response ``Content-Type``, not from the URL, so a simulated photo still
+    looks like a photo. The extension is left on the URL because the inbox picks
+    its node by extension — a simulated PDF keeps showing as a paperclip link,
+    which is exactly what a real one does.
+    """
+    if current_app.config.get("WA_MODE") != "simulator":  # pragma: no cover
+        # Live never generates these URLs; do not invent a public endpoint.
+        abort(404)
+    return Response(_PLACEHOLDER_SVG, mimetype="image/svg+xml")
+
+
 def _media_extension(mime_type: str | None) -> str:
     import re as _re
 
@@ -397,9 +435,10 @@ def _download_media(media_id: str, mime_type: str | None) -> str | None:
     cfg = current_app.config
     ext = _media_extension(mime_type)
     if cfg.get("WA_MODE") != "live" or not cfg.get("WA_ACCESS_TOKEN"):
-        # Simulator: keep a placeholder so the inbox still shows the attachment.
-        # It honours the extension so a simulated PDF is not drawn as an image.
-        return f"/static/img/whatsapp-media-{media_id}.{ext}"
+        # Simulator: point at the placeholder route so the inbox shows an
+        # attachment. The extension is honoured so a simulated PDF is not drawn
+        # as an image.
+        return url_for("whatsapp.simulated_media", media_id=media_id, ext=ext)
 
     try:
         meta = requests.get(

@@ -40,3 +40,20 @@ def test_quick_quote_returns_indicative_price():
     quote = pricing.quick_quote("Ceramic Coating")
     assert quote["from_price"] == 350.0
     assert "Indicative" in quote["note"]
+
+
+def test_quick_quote_is_none_when_the_service_has_no_published_price():
+    """Auto body and panel work are priced off the damage, not off a number.
+
+    These used to fall back to a flat USD 75, which the service menu then
+    rendered as a plausible-looking "from USD 75" quote.
+    """
+    assert pricing.quick_quote("Auto Body") is None
+    assert pricing.quick_quote("Panel Beating & Spray Painting") is None
+    assert pricing.quick_quote("Not A Service At All") is None
+
+
+def test_quoted_from_is_empty_rather_than_zero_when_unpriced():
+    """Holding no figure has to stay distinct from having quoted zero."""
+    assert pricing.quoted_from("Ceramic Coating") == Decimal("350.00")
+    assert pricing.quoted_from("Auto Body") is None

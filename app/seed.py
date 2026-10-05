@@ -353,7 +353,7 @@ def _seed_demo_work() -> None:
                 status=rng.choice(["REQUESTED", "CONFIRMED"]),
                 source=rng.choice(["web", "whatsapp", "phone"]),
                 notes="Customer requested morning slot.",
-                quoted_from=Decimal(str(pricing.quick_quote(service)["from_price"])),
+                quoted_from=pricing.quoted_from(service),
             ))
 
     db.session.commit()
