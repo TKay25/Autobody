@@ -1463,8 +1463,9 @@ class IntentRouter:
                 "I could not find that quotation. Our team will call you to confirm."
             )] + [more_menu_reply()]
 
-        job = estimate.job
-        customer = job.customer if job else None
+        # The quotation resolves its own customer: it may hang off an enquiry
+        # that has no job card behind it at all.
+        customer = estimate.customer
         name = (customer.name if customer else "there").split(" ")[0]
         currency = estimate.currency or "USD"
 
@@ -1477,15 +1478,25 @@ class IntentRouter:
                     "we are already on it.\n\nReply *menu* if there is anything else."
                 )
             else:
-                approve_estimate(
+                accepted = approve_estimate(
                     estimate,
                     approved_by=f"{customer.name if customer else 'Customer'} (WhatsApp)",
                 )
-                reply = text(
-                    f"Thank you, {name} — quotation *{estimate.reference}* is approved.\n\n"
-                    f"We will order the parts, book the vehicle into the workshop and keep you "
-                    f"updated at every stage."
-                )
+                # Approving is what opens the job card, and only when the car is
+                # already known. Promising a booking we have not made would be a
+                # lie the desk then has to correct on the phone.
+                if accepted.job is not None:
+                    reply = text(
+                        f"Thank you, {name} — quotation *{estimate.reference}* is approved "
+                        f"and your vehicle is booked in as job card "
+                        f"*{accepted.job.job_no}*.\n\n"
+                        f"We will order the parts and keep you updated at every stage."
+                    )
+                else:
+                    reply = text(
+                        f"Thank you, {name} — quotation *{estimate.reference}* is approved.\n\n"
+                        f"One of our team will call you to book the vehicle in."
+                    )
         else:
             estimate.status = "DECLINED"
             db.session.commit()
@@ -1497,6 +1508,9 @@ class IntentRouter:
         self.conv.ctx_set(last_estimate_id=estimate.id)
         self.conv.human_takeover = False
         db.session.commit()
+
+        # Read after the decision, not before: approval is what creates the card.
+        job = estimate.job
 
         try:
             from ..models import NotificationLog

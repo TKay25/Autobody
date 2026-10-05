@@ -403,7 +403,7 @@ def _delivered_documents(app, auth_client, *, reg="DLBTN"):
         conversation.last_inbound_at = utcnow()
         db.session.commit()
 
-        notifications.send_quotation(job_card, estimate)
+        notifications.send_quotation(estimate)
         notifications.send_invoice(job_card, invoice)
         notifications.send_receipt(payment)
 
@@ -1118,7 +1118,7 @@ def test_notifications_outside_the_window_are_never_free_form(app, auth_client, 
     ids = _closed_window(app, auth_client)
     with app.app_context():
         job, estimate, invoice, payment, _customer = _load(ids)
-        notifications.send_quotation(job, estimate)
+        notifications.send_quotation(estimate)
         notifications.send_invoice(job, invoice)
         notifications.send_receipt(payment)
 
@@ -1136,7 +1136,7 @@ def test_the_pdfs_ride_on_the_templates_document_header(app, auth_client, payloa
     ids = _closed_window(app, auth_client, reg="COLD2")
     with app.app_context():
         job, estimate, _invoice, payment, _customer = _load(ids)
-        notifications.send_quotation(job, estimate)
+        notifications.send_quotation(estimate)
         notifications.send_receipt(payment)
 
     for payload in payloads:
@@ -1160,8 +1160,7 @@ def test_the_quotation_gets_its_own_buttoned_template(app, auth_client, payloads
 
     ids = _closed_window(app, auth_client, reg="COLD3")
     with app.app_context():
-        notifications.send_quotation(db.session.get(JobCard, ids["job"]),
-                                     db.session.get(Estimate, ids["estimate"]))
+        service.send_quotation(db.session.get(Estimate, ids["estimate"]))
 
     names = [p["template"]["name"] for p in payloads]
     assert service.TEMPLATE_QUOTATION in names, names
@@ -1184,7 +1183,7 @@ def test_the_template_buttons_resolve_against_the_last_quotation(app, auth_clien
     ids = _closed_window(app, auth_client, reg="COLD4")
     with app.app_context():
         job, estimate, _invoice, _payment, customer = _load(ids)
-        notifications.send_quotation(job, estimate)
+        notifications.send_quotation(estimate)
         assert estimate.status == "SENT"
 
         conversation = get_or_create_conversation(customer.wa_number)
@@ -1201,7 +1200,7 @@ def test_download_still_works_from_the_templates_fixed_button(app, auth_client, 
     ids = _closed_window(app, auth_client, reg="COLD5")
     with app.app_context():
         job, estimate, _invoice, _payment, customer = _load(ids)
-        notifications.send_quotation(job, estimate)
+        notifications.send_quotation(estimate)
         token = estimate.public_token
         conversation = get_or_create_conversation(customer.wa_number)
         replies = intent_router.handle_inbound(conversation, interactive_id="doc_quote")

@@ -63,8 +63,8 @@ def view(kind: str, token: str):
         context.update(
             estimate=estimate,
             job=job,
-            vehicle=job.vehicle if job else None,
-            customer=job.customer if job else None,
+            vehicle=estimate.vehicle,
+            customer=estimate.customer,
             items=estimate.items,
             expires_on=estimate.expires_on,
             is_expired=estimate.is_expired,

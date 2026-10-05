@@ -233,10 +233,14 @@ register is also available at `GET /api/payments`.
 
 **Sharing over WhatsApp** (`app/services/notifications.py`):
 
-- `send_quotation(job, estimate)` — PDF plus an Approve/Decline button message. Tapping
-  **Approve** runs `approve_estimate()` and marks the estimate `APPROVED`; tapping
-  **Decline** sets it to `DECLINED`. Both are logged and answered in the customer's
-  language.
+- `send_quotation(estimate)` — PDF plus an Approve/Decline button message. It takes only
+  the quotation, because a quotation is raised against the **enquiry** and only joins a
+  job card once it is accepted: the customer, vehicle and service are read from whichever
+  record the estimate is attached to, so quoting works before the car is booked in.
+  Tapping **Approve** runs `approve_estimate()`, marks the estimate `APPROVED` and — when
+  the vehicle is already known — opens the job card at `INTAKE` with that same quotation
+  on it. Tapping **Decline** sets it to `DECLINED`. Both are logged and answered in the
+  customer's language.
 - `send_invoice(job, invoice)` and `send_receipt(payment)` — PDF with a caption carrying
   the totals and the outstanding balance.
 

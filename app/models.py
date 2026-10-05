@@ -619,6 +619,40 @@ class Estimate(TimestampMixin, db.Model):
     )
 
     @property
+    def customer(self):
+        """Who the quotation is for.
+
+        A quotation is raised against the enquiry and only gains a job card when
+        the customer accepts, so it spends most of its life attached to a
+        booking and no card at all. Every caller — the PDF, the WhatsApp
+        delivery, the desk screens — wants the same answer either way, so the
+        resolution lives here rather than being repeated at each of them.
+        """
+        job = self.job
+        if job is not None and job.customer is not None:
+            return job.customer
+        booking = self.booking
+        return booking.customer if booking is not None else None
+
+    @property
+    def vehicle(self):
+        """The car being quoted for, from whichever record is attached."""
+        job = self.job
+        if job is not None and job.vehicle is not None:
+            return job.vehicle
+        booking = self.booking
+        return booking.vehicle if booking is not None else None
+
+    @property
+    def service_name(self) -> str | None:
+        """What the car is in for, from whichever record is attached."""
+        job = self.job
+        if job is not None:
+            return job.service
+        booking = self.booking
+        return booking.service if booking is not None else None
+
+    @property
     def customer_payable(self) -> Decimal:
         """What the customer owes."""
         return _money(self.total)
@@ -645,9 +679,21 @@ class Estimate(TimestampMixin, db.Model):
         self.total = _money(self.subtotal + self.vat)
 
     def to_dict(self, deep: bool = True) -> dict:
+        job = self.job
+        booking = self.booking
+        vehicle = self.vehicle
+        customer = self.customer
         data = {
             "id": self.id,
             "job_id": self.job_id,
+            "booking_id": self.booking_id,
+            "job_no": job.job_no if job else None,
+            "booking_reference": booking.display_reference if booking else None,
+            "customer_id": customer.id if customer else None,
+            "customer_name": customer.name if customer else None,
+            "reg_no": vehicle.reg_no if vehicle else None,
+            "vehicle_title": vehicle.title if vehicle else None,
+            "service": self.service_name,
             "reference": self.reference,
             "version": self.version,
             "status": self.status,

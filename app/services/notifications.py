@@ -119,9 +119,14 @@ def _undialable_reason(customer) -> str:
 
 
 def _dispatch(job: JobCard | None, body: str, *, template: str, use_template: bool = False,
-              params: list[str] | None = None, document: dict | None = None) -> bool:
-    """Send a message (optionally with a PDF attachment) and log it."""
-    customer = _customer(job) or (document or {}).get("customer")
+              params: list[str] | None = None, document: dict | None = None,
+              customer=None) -> bool:
+    """Send a message (optionally with a PDF attachment) and log it.
+
+    ``customer`` is the fallback for a message with no job card behind it — a
+    quotation is sent from the enquiry, before a card exists.
+    """
+    customer = _customer(job) or customer or (document or {}).get("customer")
     if not customer:
         return False
     if not customer.whatsapp_opt_in:
@@ -240,29 +245,40 @@ def _download_prompt(number: str, conversation, *, body: str, doc_id: str,
     )
 
 
-def send_quotation(job: JobCard, estimate, *, with_buttons: bool = True) -> dict:
+def send_quotation(estimate, *, job: JobCard | None = None, with_buttons: bool = True) -> dict:
     """Send the quotation PDF plus an approve/decline prompt.
+
+    The quotation supplies its own context. It is raised against the enquiry and
+    only gains a job card once the customer accepts, so most quotations go out
+    with no card behind them at all — the customer, vehicle and service come from
+    whichever record the estimate is attached to.
 
     Returns a small result dict so the UI can report what actually happened.
     """
-    customer = _customer(job)
+    job = job or estimate.job
+    customer = (job.customer if job else None) or estimate.customer
     if not customer:
         return {"sent": False, "reason": "no_customer"}
+
+    vehicle = job.vehicle if job else estimate.vehicle
+    service = (job.service if job else None) or estimate.service_name or ""
 
     link = public_url(f"/doc/quote/{estimate.public_token}")
     pdf_link = public_url(f"/doc/quote/{estimate.public_token}.pdf")
     currency = estimate.currency or "USD"
 
+    headline = " — ".join(part for part in (
+        vehicle.reg_no if vehicle else None, service or None) if part)
     caption = (
         f"Quotation {estimate.reference}\n"
-        f"{job.vehicle.reg_no if job.vehicle else ''} — {job.service}\n"
-        f"Total: {currency} {_money(estimate.total)}\n"
+        + (f"{headline}\n" if headline else "")
+        + f"Total: {currency} {_money(estimate.total)}\n"
         f"Valid until {estimate.expires_on.strftime('%d %b %Y')}"
     )
 
-    conversation = _remember(job, last_estimate_id=estimate.id)
+    conversation = _remember(job, customer=customer, last_estimate_id=estimate.id)
     delivered = _dispatch(
-        job, caption, template=TEMPLATE_QUOTATION, use_template=True,
+        job, caption, template=TEMPLATE_QUOTATION, use_template=True, customer=customer,
         params=[customer.name, estimate.reference, f"{currency} {_money(estimate.total)}"],
         document={"link": pdf_link, "filename": f"Quotation-{estimate.reference}.pdf"},
     )
@@ -292,7 +308,7 @@ def send_quotation(job: JobCard, estimate, *, with_buttons: bool = True) -> dict
                         {"id": "a_decline", "title": "Decline"},
                         {"id": "doc_quote", "title": "Download quotation"},
                     ],
-                    job_id=job.id, intent="quotation_decision",
+                    job_id=job.id if job else None, intent="quotation_decision",
                 )
 
     if delivered:

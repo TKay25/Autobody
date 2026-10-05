@@ -13,6 +13,7 @@ from uuid import uuid4
 from flask import Blueprint, current_app, jsonify, request
 from flask_login import current_user, login_required
 from sqlalchemy import func, or_
+from sqlalchemy.orm import aliased
 from werkzeug.utils import secure_filename
 
 from .. import reference_meta, tz
@@ -502,7 +503,36 @@ def create_job():
         odometer_in=as_int(data.get("odometer_in")) or vehicle.mileage,
     )
 
-    if data.get("source_estimate_id"):
+    booking = None
+    if data.get("booking_id"):
+        booking = db.session.get(Booking, as_int(data["booking_id"]))
+        if not booking:
+            return bad("That enquiry could not be found.", 404)
+        if booking.customer_id != customer.id:
+            return bad("That enquiry belongs to a different customer.")
+
+    carried = None
+    if booking is not None:
+        # Booking a car in from the enquiry it was quoted on. The card takes that
+        # quotation rather than having the panels re-listed and the same work
+        # priced again — which is what made intake feel like starting the
+        # conversation over.
+        job.booking_id = booking.id
+        candidate = job_flow.latest_quotation(booking)
+        if candidate is not None and candidate.job_id is None:
+            job_flow.attach_quotation(candidate, job)
+            db.session.commit()
+            carried = candidate
+
+    if carried is not None:
+        log_activity(
+            "estimate.attached",
+            f"{job.job_no} booked in from quotation {carried.reference} "
+            f"({len(carried.items)} lines, {carried.currency} {carried.total:,.2f})",
+            entity_type="estimate", entity_id=carried.id, entity_ref=carried.reference,
+            job_id=job.id, meta={"booking_id": booking.id}, commit=True,
+        )
+    elif data.get("source_estimate_id"):
         # Build the estimate from a quotation the customer already has, rather
         # than re-listing every panel on the job card.
         source = db.session.get(Estimate, as_int(data["source_estimate_id"]))
@@ -825,17 +855,38 @@ def get_estimate(estimate_id: int):
 @bp.get("/quotations")
 @login_required
 def list_quotations():
-    """Quotations already in the system that a new job card can be built from.
+    """Every quotation in the system, newest first.
 
-    Intake filters this by the customer or registration picked on the form, so
-    "the same car came back" or "the fleet sent the same job again" is one tap.
+    A quotation is raised against an enquiry and only joins a job card once the
+    customer accepts, so it can hang off either — or, for most of its life,
+    neither is populated on the other side. Both parents are joined, and the
+    vehicle and customer are looked up through whichever one exists; an inner
+    join on the job card (which is what this used to be) would have hidden every
+    quotation taken before the car was booked in, which is now all of them.
+
+    Filters back the intake screen ("the same car came back", "the fleet sent the
+    same job again") and the quotations screen.
     """
+    # Aliases rather than one join per table: a card booked in from an enquiry
+    # can legitimately carry a different vehicle to the one on the enquiry, and a
+    # single join keyed on either id would then return the estimate twice.
+    job_vehicle = aliased(Vehicle)
+    enquiry_vehicle = aliased(Vehicle)
+    job_customer = aliased(Customer)
+    enquiry_customer = aliased(Customer)
+
     query = (
         Estimate.query
-        .join(JobCard, Estimate.job_id == JobCard.id)
-        .outerjoin(Vehicle, JobCard.vehicle_id == Vehicle.id)
-        .outerjoin(Customer, JobCard.customer_id == Customer.id)
+        .outerjoin(JobCard, Estimate.job_id == JobCard.id)
+        .outerjoin(Booking, Estimate.booking_id == Booking.id)
+        .outerjoin(job_vehicle, JobCard.vehicle_id == job_vehicle.id)
+        .outerjoin(enquiry_vehicle, Booking.vehicle_id == enquiry_vehicle.id)
+        .outerjoin(job_customer, JobCard.customer_id == job_customer.id)
+        .outerjoin(enquiry_customer, Booking.customer_id == enquiry_customer.id)
     )
+
+    reg_no = func.coalesce(job_vehicle.reg_no, enquiry_vehicle.reg_no)
+    customer_name = func.coalesce(job_customer.name, enquiry_customer.name)
 
     exclude_job = as_int(request.args.get("exclude_job"))
     if exclude_job:
@@ -843,7 +894,8 @@ def list_quotations():
 
     customer_id = as_int(request.args.get("customer_id"))
     if customer_id:
-        query = query.filter(JobCard.customer_id == customer_id)
+        query = query.filter(or_(JobCard.customer_id == customer_id,
+                                 Booking.customer_id == customer_id))
 
     reg = (want(request.args, "reg_no") or "").replace(" ", "").upper()
     if reg:
@@ -852,7 +904,16 @@ def list_quotations():
         # may not be. SQLite's LIKE is case-insensitive so `like` happened to work
         # there; PostgreSQL's is case-sensitive and would silently stop matching
         # those rows. Matches the pattern used for the free-text search below.
-        query = query.filter(func.replace(Vehicle.reg_no, " ", "").ilike(f"%{reg}%"))
+        query = query.filter(func.replace(reg_no, " ", "").ilike(f"%{reg}%"))
+
+    status = want(request.args, "status")
+    if status:
+        query = query.filter(Estimate.status == status.upper())
+
+    # A quotation still waiting on an answer is the one the desk chases, so the
+    # screen can ask for just those without paging through decided ones.
+    if want(request.args, "open_only"):
+        query = query.filter(Estimate.status.in_(["DRAFT", "SENT"]))
 
     q = want(request.args, "q")
     if q:
@@ -860,9 +921,11 @@ def list_quotations():
         query = query.filter(or_(
             Estimate.reference.ilike(like),
             JobCard.job_no.ilike(like),
-            Customer.name.ilike(like),
-            Vehicle.reg_no.ilike(like),
-            func.replace(Vehicle.reg_no, " ", "").ilike(f"%{q.replace(' ', '')}%"),
+            Booking.reference.ilike(like),
+            Booking.booking_reference.ilike(like),
+            customer_name.ilike(like),
+            reg_no.ilike(like),
+            func.replace(reg_no, " ", "").ilike(f"%{q.replace(' ', '')}%"),
         ))
 
     limit = as_int(request.args.get("limit"), 40) or 40
@@ -871,7 +934,9 @@ def list_quotations():
     items = []
     for est in estimates:
         job = est.job
-        vehicle = job.vehicle if job else None
+        booking = est.booking
+        vehicle = est.vehicle
+        customer = est.customer
         items.append({
             "id": est.id,
             "reference": est.reference,
@@ -882,30 +947,154 @@ def list_quotations():
             "created_at": est.created_at.isoformat() if est.created_at else None,
             "job_id": est.job_id,
             "job_no": job.job_no if job else None,
-            "customer_id": job.customer_id if job else None,
-            "customer_name": job.customer.name if job and job.customer else None,
+            "booking_id": est.booking_id,
+            "booking_reference": booking.display_reference if booking else None,
+            "customer_id": customer.id if customer else None,
+            "customer_name": customer.name if customer else None,
             "reg_no": vehicle.reg_no if vehicle else None,
             "vehicle_title": vehicle.title if vehicle else None,
+            "service": est.service_name,
+            "expires_on": est.expires_on.isoformat(),
+            "is_expired": est.is_expired,
         })
     return jsonify({"items": items, "count": len(items)})
+
+
+@bp.post("/bookings/<int:booking_id>/estimate")
+@login_required
+def create_booking_estimate(booking_id: int):
+    """Price an enquiry — this is where a quotation is born.
+
+    The customer described the job and the estimator priced it; the answer goes
+    back *before* any job card exists, so the shop never opens a card for work
+    nobody has agreed to pay for. Accepting the quotation is what opens one.
+    """
+    booking = db.session.get(Booking, booking_id)
+    if not booking:
+        return bad("Enquiry not found.", 404)
+    data = payload()
+
+    lines = data.get("lines")
+    if not lines:
+        lines = pricing.build_lines(
+            list(data.get("panels") or []),
+            include_paint=data.get("include_paint", True),
+            parts=data.get("parts") or [],
+            extra_labour=data.get("extra_labour") or [],
+            include_consumables=data.get("include_consumables", True),
+        )
+    if not lines:
+        return bad("Nothing to quote — choose at least one panel or part.")
+
+    estimate = job_flow.save_estimate(
+        None, lines, booking=booking,
+        vat_rate=as_decimal(data.get("vat_rate"), Decimal("0.15")),
+        notes=want(data, "notes"),
+        # Never SENT here, for the same reason as the in-house path: saving a
+        # quotation tells the desk it exists, it does not hand the customer the
+        # document. Only `send_quotation` flips the status.
+        mark_sent=False,
+    )
+    log_activity(
+        "estimate.created",
+        f"Quotation {estimate.reference} raised on enquiry "
+        f"{booking.display_reference} totalling "
+        f"{estimate.currency} {estimate.total:,.2f}",
+        entity_type="estimate", entity_id=estimate.id, entity_ref=estimate.reference,
+        meta={"total": float(estimate.total), "booking_id": booking.id}, commit=True,
+    )
+    return jsonify({"estimate": estimate.to_dict(), "booking": booking.to_dict()}), 201
 
 
 @bp.post("/estimates/<int:estimate_id>/approve")
 @login_required
 def approve_estimate(estimate_id: int):
+    """The customer has accepted. This is what turns a quotation into work.
+
+    When the vehicle is already known the job card is opened here, so the shop
+    never holds a ramp slot for a price nobody agreed to. A bot-taken enquiry
+    often has no registration on it, and a card cannot exist without a vehicle,
+    so those come back with ``job: null`` and get booked in from the quotation
+    screen instead.
+    """
     estimate = db.session.get(Estimate, estimate_id)
     if not estimate:
         return bad("Estimate not found.", 404)
     data = payload()
     approved_by = want(data, "approved_by") or current_user.full_name
     job_flow.approve_estimate(estimate, approved_by=approved_by, user_id=current_user.id)
+    job = estimate.job
     log_activity(
         "estimate.approved",
         f"Estimate {estimate.reference} approved by {approved_by}",
         entity_type="estimate", entity_id=estimate.id, entity_ref=estimate.reference,
-        job_id=estimate.job_id, commit=True,
+        job_id=job.id if job else None, meta={"total": float(estimate.total)}, commit=True,
     )
-    return jsonify({"estimate": estimate.to_dict(), "job": estimate.job.to_dict(brief=True)})
+    return jsonify({
+        "estimate": estimate.to_dict(),
+        "job": job.to_dict(brief=True) if job else None,
+        "booked_in": job is not None,
+    })
+
+
+@bp.post("/estimates/<int:estimate_id>/book-in")
+@login_required
+def book_in_estimate(estimate_id: int):
+    """Book the accepted quotation in and open its job card.
+
+    The registration is captured here rather than on the quotation itself: the
+    bot takes most enquiries from a photo and a message, with no car attached,
+    and asking for a registration before a price can be written would stop the
+    desk quoting at all.
+    """
+    estimate = db.session.get(Estimate, estimate_id)
+    if not estimate:
+        return bad("Quotation not found.", 404)
+    if estimate.job is not None:
+        return bad(f"Quotation {estimate.reference} is already on "
+                   f"job card {estimate.job.job_no}.", 409)
+    data = payload()
+
+    customer = estimate.customer
+    if customer is None:
+        return bad("This quotation has nobody to book in.", 409)
+
+    vehicle = estimate.vehicle
+    reg = want(data, "reg_no")
+    if reg:
+        vehicle = job_flow.find_or_create_vehicle(
+            customer, reg_no=reg, make=want(data, "make"), model=want(data, "model"),
+            year=as_int(data.get("year")), colour=want(data, "colour"),
+            mileage=as_int(data.get("mileage")),
+        )
+        # Remember the car on the enquiry too, so a second quotation on the same
+        # enquiry already knows what it is for.
+        booking = estimate.booking
+        if booking is not None and booking.vehicle_id is None:
+            booking.vehicle_id = vehicle.id
+
+    try:
+        job = job_flow.book_in_estimate(
+            estimate, user_id=current_user.id, vehicle=vehicle,
+            description=want(data, "description"),
+            damage_summary=want(data, "damage_summary"),
+            priority=want(data, "priority"), bay=want(data, "bay"),
+            technician_id=as_int(data.get("technician_id")),
+            fuel_level=want(data, "fuel_level"), valuables=want(data, "valuables"),
+            odometer_in=as_int(data.get("odometer_in")),
+            promised_date=as_date(data.get("promised_date")),
+        )
+    except job_flow.JobFlowError as exc:
+        return bad(str(exc), 409)
+
+    log_activity(
+        "job.created",
+        f"Opened job card {job.job_no} for {vehicle.reg_no} from approved "
+        f"quotation {estimate.reference}",
+        entity_type="job", entity_id=job.id, entity_ref=job.job_no, job_id=job.id,
+        meta={"estimate_id": estimate.id, "booking_id": job.booking_id}, commit=True,
+    )
+    return jsonify({"job": job.to_dict(), "estimate": estimate.to_dict()}), 201
 
 
 @bp.post("/estimates/<int:estimate_id>/decline")
@@ -1331,16 +1520,29 @@ def create_booking():
     service = want(data, "service")
     slot_date = as_date(data.get("slot_date"))
 
-    if not name or not phone or not service:
-        return bad("Name, phone and service are required.")
+    if not service:
+        return bad("A service is required.")
     if service not in SERVICE_NAMES:
         return bad("Unknown service.")
     if not slot_date:
         slot_date = tz.today() + timedelta(days=1)
 
-    customer = job_flow.find_or_create_customer(name=name, phone=phone, whatsapp=phone,
-                                                email=want(data, "email"),
-                                                id_number=want(data, "id_number"))
+    # A customer picked from the desk's own list is taken as-is. Demanding a phone
+    # for somebody already on file would make the operator re-type what the
+    # register holds, and refuse the enquiry outright for the customers nobody has
+    # a number for yet.
+    customer = (db.session.get(Customer, as_int(data.get("customer_id")))
+                if data.get("customer_id") else None)
+    if customer is not None:
+        # A number typed beside a customer we already have is a correction, same
+        # as on intake — and it is the number every WhatsApp update goes to.
+        job_flow.apply_customer_phone(customer, phone)
+    else:
+        if not name or not phone:
+            return bad("Name, phone and service are required.")
+        customer = job_flow.find_or_create_customer(name=name, phone=phone, whatsapp=phone,
+                                                    email=want(data, "email"),
+                                                    id_number=want(data, "id_number"))
     vehicle = None
     if want(data, "reg_no"):
         vehicle = job_flow.find_or_create_vehicle(customer, reg_no=data["reg_no"],
@@ -2114,16 +2316,20 @@ def list_payments():
 @bp.post("/estimates/<int:estimate_id>/send")
 @login_required
 def send_estimate(estimate_id: int):
-    """WhatsApp the quotation PDF with Approve / Decline buttons."""
+    """WhatsApp the quotation PDF with Approve / Decline buttons.
+
+    Works whether the quotation hangs off a job card or, as is now the norm,
+    off the enquiry it was priced on.
+    """
     estimate = db.session.get(Estimate, estimate_id)
-    if not estimate or not estimate.job:
+    if not estimate:
         return bad("Estimate not found.", 404)
 
-    result = notifications.send_quotation(estimate.job, estimate)
+    result = notifications.send_quotation(estimate)
     log_activity(
         "estimate.sent",
         f"Quotation {estimate.reference} sent to "
-        f"{estimate.job.customer.name if estimate.job.customer else 'customer'} on WhatsApp",
+        f"{estimate.customer.name if estimate.customer else 'customer'} on WhatsApp",
         entity_type="estimate", entity_id=estimate.id, entity_ref=estimate.reference,
         job_id=estimate.job_id, meta=result, commit=True,
     )
@@ -2131,7 +2337,7 @@ def send_estimate(estimate_id: int):
         return jsonify({
             "error": "not_sent",
             "message": {
-                "no_customer": "This job has no customer record.",
+                "no_customer": "This quotation has no customer record.",
                 "no_number": "No WhatsApp number on file for this customer.",
             }.get(result.get("reason"), "The message could not be sent."),
             "result": result,

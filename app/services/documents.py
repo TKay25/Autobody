@@ -608,8 +608,10 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
         raise DocumentError("Quotation not found.")
 
     job = estimate.job
-    vehicle = job.vehicle if job else None
-    customer = job.customer if job else None
+    # The quotation resolves its own customer and vehicle: most are raised
+    # against an enquiry and have no job card at all.
+    vehicle = estimate.vehicle
+    customer = estimate.customer
     styles = _styles()
     currency = estimate.currency or "USD"
     # A5, matching the invoice and the receipt: one sheet the customer can hold
@@ -624,7 +626,11 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
         ("Date", tz.format_local(estimate.created_at) if estimate.created_at
          else tz.today().strftime("%d %b %Y")),
         ("Valid until", estimate.expires_on.strftime("%d %b %Y")),
-        ("Job card", job.job_no if job else "—"),
+        # Quoted before the car is booked in, the only reference the customer
+        # holds is the enquiry's — labelling it "Job card" would send them
+        # looking for a card that does not exist yet.
+        ("Job card" if job else "Enquiry", job.job_no if job else (
+            estimate.booking.display_reference if estimate.booking else "—")),
     ]
 
     items = [i.to_dict() for i in estimate.items]
@@ -641,7 +647,7 @@ def build_quotation_pdf(estimate: Estimate) -> bytes:
             ("Vehicle", [
                 ("Registration", vehicle.reg_no if vehicle else "—"),
                 ("Vehicle", vehicle.title if vehicle else "—"),
-                ("Service", job.service if job else "—"),
+                ("Service", estimate.service_name or "—"),
             ]),
         ], width=width),
         Spacer(1, 1.5 * mm if narrow else 2 * mm),

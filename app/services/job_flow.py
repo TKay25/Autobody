@@ -10,6 +10,7 @@ from .. import tz
 from ..constants import (
     CLOSED_STAGES,
     QC_CHECKLIST,
+    SERVICE_NAMES,
     STAGES,
 )
 from ..extensions import db
@@ -349,9 +350,14 @@ def receive_job_part(job_part, *, user_id: int | None = None) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Estimating bridge
 # ─────────────────────────────────────────────────────────────────────────────
-def save_estimate(job: JobCard, lines: list[dict], *, vat_rate: Decimal = Decimal("0.15"),
+def save_estimate(job: JobCard | None, lines: list[dict], *,
+                  booking=None, vat_rate: Decimal = Decimal("0.15"),
                   notes: str | None = None, mark_sent: bool = False) -> Estimate:
-    """Persist a new estimate version for a job.
+    """Persist a new estimate version.
+
+    Attaches to a ``job`` (in-house work: the desk prices what is already on the
+    ramp) or to a ``booking`` (the enquiry path, where quoting happens *before*
+    any card exists and the card is only opened once the customer accepts).
 
     ``mark_sent`` defaults to **False**, and that is deliberate: an estimate is
     not sent because somebody saved it. The only thing that sends it is
@@ -361,10 +367,16 @@ def save_estimate(job: JobCard, lines: list[dict], *, vat_rate: Decimal = Decima
     """
     from .pricing import summarise
 
-    existing = job.estimates or []
+    if job is None and booking is None:
+        raise JobFlowError("A quotation needs an enquiry or a job card behind it.")
+
+    # Versions are numbered per record, so the second quotation on one enquiry is
+    # v2 whether or not somebody else's card sits next to it in the table.
+    siblings = job.estimates if job is not None else booking.estimates
     estimate = Estimate(
-        job_id=job.id,
-        version=len(existing) + 1,
+        job_id=job.id if job else None,
+        booking_id=booking.id if booking else None,
+        version=len(siblings or []) + 1,
         notes=notes,
         status="SENT" if mark_sent else "DRAFT",
         sent_at=utcnow() if mark_sent else None,
@@ -403,18 +415,116 @@ def save_estimate(job: JobCard, lines: list[dict], *, vat_rate: Decimal = Decima
     return estimate
 
 
+def attach_quotation(estimate: Estimate, job: JobCard) -> Estimate:
+    """Move an enquiry's quotation onto the job card it was booked in on.
+
+    Moved, not copied. The customer is already holding a PDF and a reference from
+    the enquiry; re-issuing those under a new number at the moment they say yes
+    reads as a second quotation, and leaves two documents to keep in step.
+
+    The enquiry link is kept as well: the quotation was priced there, and the
+    paperwork should stay findable from the enquiry it came out of.
+    """
+    estimate.job_id = job.id
+    if estimate.booking_id is None and job.booking_id is not None:
+        estimate.booking_id = job.booking_id
+    return estimate
+
+
+def latest_quotation(booking) -> Estimate | None:
+    """The quotation on an enquiry the desk would act on.
+
+    An accepted one if there is one — that is the price the customer agreed to —
+    otherwise the most recent, which is whatever the desk is waiting on an
+    answer for.
+    """
+    quotes = list(booking.estimates or [])
+    if not quotes:
+        return None
+    approved = [e for e in quotes if e.status == "APPROVED"]
+    return approved[-1] if approved else quotes[-1]
+
+
+def book_in_estimate(estimate: Estimate, *, user_id: int | None = None,
+                     vehicle: Vehicle | None = None, **fields) -> JobCard:
+    """Open the job card for an accepted quotation.
+
+    This is what turns a quotation into work, and it is the only way a card is
+    meant to be born: the customer has accepted a price, so the shop has
+    something to build. Opening a card before that would mean holding a ramp slot
+    for work nobody has agreed to.
+
+    The approved quotation *moves* onto the new card rather than being copied.
+    The reference, the totals and the public link the customer already holds all
+    stay valid, and there is one document to keep in step with reality instead of
+    a quotation and a near-identical card copy that can drift apart.
+
+    ``fields`` carries whatever the desk captured when booking the car in —
+    mileage, fuel, bay, technician — because none of that is known at quoting
+    time.
+    """
+    if estimate.job is not None:
+        return estimate.job
+    if estimate.status != "APPROVED":
+        raise JobFlowError(
+            "The customer has to accept the quotation before the car is booked in."
+        )
+
+    customer = estimate.customer
+    if customer is None:
+        raise JobFlowError("This quotation has nobody to book in.")
+
+    booking = estimate.booking
+    vehicle = vehicle or estimate.vehicle
+    if vehicle is None:
+        raise JobFlowError(
+            "Capture the vehicle's registration before booking this quotation in."
+        )
+
+    job = open_job_card(
+        customer=customer,
+        vehicle=vehicle,
+        service=estimate.service_name or SERVICE_NAMES[0],
+        description=fields.get("description"),
+        # The enquiry notes are what the customer described on the way in, and
+        # the card should carry them even when the desk types nothing at intake.
+        damage_summary=fields.get("damage_summary") or (booking.notes if booking else None),
+        priority=fields.get("priority") or "NORMAL",
+        promised_date=fields.get("promised_date") or (booking.slot_date if booking else None),
+        bay=fields.get("bay"),
+        user_id=user_id,
+        technician_id=fields.get("technician_id"),
+        fuel_level=fields.get("fuel_level"),
+        valuables=fields.get("valuables"),
+        odometer_in=fields.get("odometer_in"),
+    )
+    # Both links are kept: the card knows which enquiry produced it, and the
+    # quotation stays reachable from the enquiry it was priced on.
+    job.booking_id = booking.id if booking else None
+    attach_quotation(estimate, job)
+    db.session.commit()
+    return job
+
+
 def approve_estimate(estimate: Estimate, *, approved_by: str, user_id: int | None = None) -> Estimate:
     """The customer has accepted the quotation.
 
-    Raising or approving a quotation no longer moves a job card between stages:
-    the quoting conversation now happens on the enquiry, before any card exists,
-    so there is nothing to advance here. An estimate that does already hang off a
-    job card — the in-house path — simply becomes approved.
+    Acceptance is the commitment, so it is also the moment the car is booked in —
+    but only when we already know which car it is. Enquiries the bot takes often
+    have no registration on them, and a job card cannot exist without a vehicle,
+    so those wait for the desk to book the car in. The quotation is carried onto
+    the card then; it is never re-priced and never re-typed.
+
+    An estimate that already hangs off a job card — the in-house path, where the
+    car is on the ramp before anyone prices it — simply becomes approved.
     """
     estimate.status = "APPROVED"
     estimate.approved_by = approved_by
     estimate.approved_at = utcnow()
     db.session.commit()
+
+    if estimate.job is None and estimate.vehicle is not None:
+        book_in_estimate(estimate, user_id=user_id)
     return estimate
 
 

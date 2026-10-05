@@ -74,7 +74,7 @@ def main() -> int:
         failures += not check("public_token present", bool(payment.public_token))
 
         print("WhatsApp delivery (simulator)")
-        result = notifications.send_quotation(estimate.job, estimate)
+        result = notifications.send_quotation(estimate)
         failures += not check("quotation sent", bool(result.get("sent")), str(result))
         failures += not check("estimate marked SENT", estimate.status == "SENT",
                               estimate.status)
