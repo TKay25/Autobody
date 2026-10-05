@@ -433,6 +433,18 @@ python tools/check_js.py      # also runs as part of the suite
 
 ---
 
+## Working with a bad connection
+
+The workshop cannot stop when the internet does. Writes are queued on the device
+with an idempotency key and replayed when the link returns, and a service worker
+lets the console open and show the last data it saw — labelled **"Data as of
+14:20"** so nobody takes money against a figure they think is live.
+
+See **[docs/OFFLINE.md](docs/OFFLINE.md)** for what is covered and, more
+importantly, what is not.
+
+---
+
 ## Production notes
 
 - **Database** — swap SQLite for PostgreSQL by setting `DATABASE_URL`, then run

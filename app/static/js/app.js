@@ -161,6 +161,14 @@
           type: 'button',
           onclick: async () => {
             await api.post('/auth/logout', {}, { silent: true }).catch(() => {});
+            /* Drop the cached API responses. A workshop PC is shared, and that
+               cache holds customers, job cards and money — the next person to
+               sign in must not be served the previous one's data. */
+            try {
+              const reg = await navigator.serviceWorker.getRegistration();
+              const worker = reg && (reg.active || reg.waiting);
+              if (worker) worker.postMessage({ type: 'clear-data' });
+            } catch (e) { /* no worker, or storage blocked */ }
             window.location.href = '/login';
           },
         }, T.icon('box-arrow-right'), 'Sign out'),
@@ -228,8 +236,160 @@
       todoBody,
     ]);
 
-    const ATT_MIN_KEY = 'topclass.bell.min';
+    /* ── offline sync indicator ─────────────────────────────────────────
+       Work done while the connection was down sits in a queue in the browser.
+       Queued work that nobody can see is worse than work that was refused — the
+       operator walks away believing the payment was recorded. So the count is
+       always in the top bar, and anything the server *refused* is spelled out
+       here rather than retried in silence for ever.
+       ────────────────────────────────────────────────────────────────── */
+    let syncOpen = false;
+    const outboxBadge = h('span.tc-bell-count', { hidden: true, id: 'outboxCount' });
+    const outboxBtn = h('button.tc-bell', {
+      type: 'button', id: 'outboxBtn',
+      title: 'Nothing waiting to sync',
+      'aria-haspopup': 'dialog', 'aria-expanded': 'false',
+      onclick: (e) => { e.stopPropagation(); toggleSync(); },
+    }, [T.icon('arrow-repeat'), outboxBadge]);
 
+    const outboxBody = h('div.tc-bell-body');
+    const outboxPanel = h('div.tc-bell-panel', {
+      role: 'dialog', 'aria-label': 'Changes waiting to sync', hidden: true,
+    }, [
+      h('div.tc-bell-head', [
+        h('div.tc-bell-tabs', [h('span.tc-bell-tab.is-active',
+          [T.icon('arrow-repeat'), h('span', 'Waiting to sync')])]),
+        h('span.flex-fill'),
+        h('button.tc-bell-x', {
+          type: 'button', title: 'Close', onclick: () => toggleSync(false),
+        }, '\u00d7'),
+      ]),
+      outboxBody,
+    ]);
+
+    function toggleSync(force) {
+      syncOpen = force === undefined ? !syncOpen : force;
+      outboxPanel.hidden = !syncOpen;
+      outboxBtn.classList.toggle('is-open', syncOpen);
+      outboxBtn.setAttribute('aria-expanded', String(syncOpen));
+      if (syncOpen) renderOutboxPanel();
+    }
+
+    function whenLabel(ms) {
+      const secs = Math.max(0, Math.round((Date.now() - ms) / 1000));
+      if (secs < 60) return 'just now';
+      if (secs < 3600) return `${Math.floor(secs / 60)} min ago`;
+      if (secs < 86400) return `${Math.floor(secs / 3600)} h ago`;
+      return `${Math.floor(secs / 86400)} d ago`;
+    }
+
+    /* Turn "POST /api/invoices/4/payment" into something a foreman would say. */
+    function describeChange(item) {
+      const path = String(item.url || '');
+      const verb = item.method === 'DELETE' ? 'Remove'
+        : item.method === 'PATCH' ? 'Update' : 'Add';
+      const known = [
+        [/\/invoices\/\d+\/payment/, 'Record a payment'],
+        [/\/jobs\/\d+\/stage/, 'Move a job card stage'],
+        [/\/jobs\/\d+\/advance/, 'Advance a job card'],
+        [/\/jobs\/\d+\/qc/, 'Record a quality check'],
+        [/\/jobs\/\d+\/estimate/, 'Save an estimate'],
+        [/\/jobs\/\d+\/parts/, 'Fit a part'],
+        [/\/jobs\/\d+\/photos/, 'Add a job photo'],
+        [/\/jobs\/\d+\/documents/, 'Add a job document'],
+        [/\/invoices\/\d+\/issue/, 'Issue an invoice'],
+        [/\/jobs$/, 'Open a job card'],
+        [/\/invoices$/, 'Raise an invoice'],
+        [/\/tasks\/\d+$/, `${verb} a to-do`],
+        [/\/tasks$/, 'Add a to-do'],
+        [/\/parts\/\d+\/movement/, 'Record stock movement'],
+        [/\/parts$/, 'Add a stock item'],
+        [/\/customers/, 'Update a customer'],
+        [/\/vehicles/, 'Update a vehicle'],
+        [/\/bookings/, 'Update an enquiry'],
+      ];
+      for (const [re, label] of known) if (re.test(path)) return label;
+      return `${verb} — ${path.replace('/api/', '').replace(/\/\d+/g, '')}`;
+    }
+
+    async function renderOutboxPanel() {
+      const items = await T.outboxPending();
+      if (!items.length) {
+        T.mount(outboxBody, h('div.tc-bell-note.is-clear', [
+          h('span.tc-bell-ok', T.icon('check2-circle')),
+          ' Everything is saved.',
+        ]));
+        return;
+      }
+      T.mount(outboxBody, [
+        h('div.tc-bell-rows', items.map((item) => h('div.tc-bell-row'
+          + (item.state === 'failed' ? '.is-request' : ''), [
+          h('div.tc-bell-row-main', [
+            h('span.tc-bell-name', describeChange(item)),
+            h('span.tc-bell-meta', item.state === 'failed'
+              ? `Could not be saved — ${item.error || 'the server refused it'}`
+              : `Waiting · done ${whenLabel(item.queued_at)}`
+                + (item.attempts ? ` · tried ${item.attempts}x` : '')),
+          ]),
+          h('div.tc-bell-row-actions', [
+            item.state === 'failed'
+              ? h('button.btn.btn-sm.btn-outline-secondary', {
+                  type: 'button', title: 'Throw this change away',
+                  onclick: async () => {
+                    await T.outboxDrop(item.id);
+                    renderOutboxPanel();
+                  },
+                }, 'Discard')
+              : null,
+          ]),
+        ]))),
+        h('div.tc-bell-foot', [
+          h('button.btn.btn-sm.btn-outline-secondary', {
+            type: 'button', onclick: async (e) => {
+              e.target.disabled = true;
+              await T.outboxRetryNow();
+              e.target.disabled = false;
+              renderOutboxPanel();
+            },
+          }, T.icon('arrow-clockwise'), ' Try now'),
+          h('span.flex-fill'),
+          h('span.small.text-secondary',
+            `${items.length} change${items.length === 1 ? '' : 's'} on this device`),
+        ]),
+      ]);
+    }
+    T.emitOutbox = () => { if (syncOpen) renderOutboxPanel(); };
+
+    /* ── "showing data from 14:20" ───────────────────────────────────────
+       Served from the worker's cache, so it is real but it is not live. Said out
+       loud rather than left to be assumed, because the number someone reads here
+       is sometimes the number they take money against. Hidden the moment a
+       single response comes back from the network again.
+       ────────────────────────────────────────────────────────────────── */
+    const staleChip = h('button.tc-stale-chip', {
+      type: 'button', hidden: true,
+      title: 'This screen was served from this device. Click to try the network again.',
+      onclick: async (e) => {
+        e.stopPropagation();
+        await T.replayOutbox();
+        T.renderRoute();
+      },
+    });
+
+    function paintFreshness(iso) {
+      if (!iso) { staleChip.hidden = true; return; }
+      const d = new Date(iso);
+      const when = isNaN(d) ? null
+        : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+      T.mount(staleChip, [
+        T.icon('cloud-slash'),
+        h('span', when ? `Data as of ${when}` : 'Offline copy'),
+      ]);
+      staleChip.hidden = false;
+    }
+    T.onFreshness(paintFreshness);
+
+    const ATT_MIN_KEY = 'topclass.bell.min';
     function setAttnMin(min) {
       attnPanel.classList.toggle('is-min', !!min);
       try { localStorage.setItem(ATT_MIN_KEY, min ? '1' : '0'); } catch (e) { /* ignore */ }
@@ -467,6 +627,8 @@
           href: '#/inbox', title: 'WhatsApp inbox', 'aria-label': 'WhatsApp inbox',
         }, T.icon('whatsapp')),
         h('span.tc-topbar-sep.d-none.d-sm-block'),
+        staleChip,
+        outboxBtn,
         attnBell,
         userWrap,
       ]),
@@ -527,6 +689,15 @@
     }
     setTimeout(pollBadges, 700);
 
+    /* Offline queue. Bound once, and drained on boot: whatever a previous
+       session parked goes out as soon as the app is open and the link is there. */
+    T.bindOutbox();
+    window.addEventListener('topclass:synced', () => {
+      // The visible screen was drawn before those changes existed, so its figures
+      // are stale by definition.
+      T.renderRoute();
+    });
+
     document.addEventListener('keydown', (e) => {
       const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
       if (typing || e.ctrlKey || e.metaKey) return;
@@ -539,7 +710,9 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { closeSidebar(); toggleUserMenu(false); toggleAttn(false); }
+      if (e.key === 'Escape') {
+        closeSidebar(); toggleUserMenu(false); toggleAttn(false); toggleSync(false);
+      }
     });
 
     document.addEventListener('click', (e) => {
@@ -547,9 +720,13 @@
       if (attnOpen && !attnPanel.contains(e.target) && !attnBell.contains(e.target)) {
         toggleAttn(false);
       }
+      if (syncOpen && !outboxPanel.contains(e.target) && !outboxBtn.contains(e.target)) {
+        toggleSync(false);
+      }
     });
 
-    return h('div', [sidebar, h('div.tc-main', [topbar, quickbar, outlet]), attnPanel]);
+    return h('div', [sidebar, h('div.tc-main', [topbar, quickbar, outlet]),
+                     attnPanel, outboxPanel]);
   }
 
   /* ── booking actions ──────────────────────────────────────────────────

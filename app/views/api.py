@@ -51,12 +51,47 @@ from ..models import (
     utcnow,
 )
 from ..services import bookings as booking_ops
-from ..services import documents, job_flow, notifications, pricing, reporting
+from ..services import documents, idempotency, job_flow, notifications, pricing, reporting
 from ..services import phone as phone_numbers
 from ..services.activity import log_activity, recent_activity
 from ..services.whatsapp_client import log_inbound, normalise_msisdn
 
 bp = Blueprint("api", __name__, url_prefix="/api")
+
+# Writes that an offline client may hold in a queue and replay. The hooks below
+# cover every one of them without any endpoint needing to know, so a handler
+# added next year is protected on the day it is written.
+_WRITE_METHODS = frozenset({"POST", "PATCH", "PUT", "DELETE"})
+
+
+@bp.before_request
+def _idempotency_begin():
+    """Replay a stored answer instead of running the handler a second time.
+
+    A no-op unless the caller sent an ``Idempotency-Key``, so normal online
+    traffic is untouched. See :mod:`app.services.idempotency`.
+    """
+    if request.method not in _WRITE_METHODS:
+        return None
+    replay = idempotency.begin()
+    if replay is None:
+        return None
+    body, status = replay
+    response = jsonify(body)
+    response.status_code = status
+    # So a client can tell "I did it" apart from "you already had it" — a replayed
+    # payment must not be reported to the operator as a fresh one.
+    response.headers["Idempotent-Replay"] = "true"
+    return response
+
+
+@bp.after_request
+def _idempotency_finish(response):
+    """Remember the outcome, so a later replay of this key can reproduce it."""
+    if request.method in _WRITE_METHODS:
+        idempotency.finish(response.status_code,
+                           response.get_json(silent=True) if response.is_json else None)
+    return response
 
 
 # ─────────────────────────────────────────────────────────────────────────────

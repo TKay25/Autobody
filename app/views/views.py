@@ -33,6 +33,29 @@ def shell():
     return render_template("app.html", bootstrap=payload)
 
 
+@bp.get("/sw.js")
+def service_worker():
+    """The offline worker, served from the ROOT on purpose.
+
+    A service worker's scope is capped at the path it is served from, so the copy
+    sitting in `/static/` could only ever control `/static/*` — it could not
+    intercept the app shell or `/api/`, which is exactly what it exists to do.
+    Hence one extra route rather than a `<script src="/static/sw.js">`.
+
+    `Service-Worker-Allowed` is belt and braces: the header is only needed when
+    the script lives somewhere other than the scope root, but sending it makes
+    the intent explicit and survives someone later moving the file.
+    """
+    response = send_from_directory(
+        current_app.static_folder, "sw.js", mimetype="application/javascript")
+    # No caching of the worker itself. A stale worker is the one asset that can
+    # outlive every cache-busting trick there is — it serves the old code that
+    # then asks for the old files.
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Service-Worker-Allowed"] = "/"
+    return response
+
+
 @bp.get("/uploads/<path:filename>")
 @login_required
 def uploaded_file(filename: str):

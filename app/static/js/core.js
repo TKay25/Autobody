@@ -124,6 +124,206 @@
     };
   }
 
+  /* ── the offline outbox ──────────────────────────────────────────────
+     A write the network refused is not lost — it is parked here and sent again
+     when the link returns.
+
+     Anything queued carries an `Idempotency-Key`, and the server remembers the
+     answer it gave for that key, so a replay that the server has already seen
+     returns the first outcome instead of performing the action a second time.
+     Without that, "record this payment" queued and replayed takes the money
+     twice — which is why the key exists and why it is minted here, at the moment
+     the write is first attempted, not when it is replayed.
+     ──────────────────────────────────────────────────────────────────── */
+  const OUTBOX_DB = 'topclass-outbox';
+  const OUTBOX_STORE = 'queue';
+  const WRITE_METHODS = new Set(['POST', 'PATCH', 'PUT', 'DELETE']);
+  // A write that keeps failing on the server is retried, but not for ever —
+  // past this many attempts it is surfaced to the operator to deal with.
+  const OUTBOX_MAX_ATTEMPTS = 6;
+
+  let outboxDb = null;
+  function openOutbox() {
+    if (outboxDb) return Promise.resolve(outboxDb);
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) return reject(new Error('no indexDB'));
+      const req = indexedDB.open(OUTBOX_DB, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(OUTBOX_STORE)) {
+          const store = db.createObjectStore(OUTBOX_STORE, { keyPath: 'id', autoIncrement: true });
+          store.createIndex('queued_at', 'queued_at');
+        }
+      };
+      req.onsuccess = () => { outboxDb = req.result; resolve(outboxDb); };
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  function tx(mode, fn) {
+    return openOutbox().then((db) => new Promise((resolve, reject) => {
+      const t = db.transaction(OUTBOX_STORE, mode);
+      const store = t.objectStore(OUTBOX_STORE);
+      let out;
+      try { out = fn(store); } catch (e) { reject(e); return; }
+      t.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out);
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error);
+    }));
+  }
+
+  const outbox = {
+    add: (entry) => tx('readwrite', (s) => s.add(entry)),
+    all: () => tx('readonly', (s) => s.getAll()).then((r) => r || []),
+    get: (id) => tx('readonly', (s) => s.get(id)),
+    update: (id, patch) => tx('readwrite', (s) => new Promise((res, rej) => {
+      const g = s.get(id);
+      g.onsuccess = () => { Object.assign(g.result, patch); res(s.put(g.result)); };
+      g.onerror = () => rej(g.error);
+    })),
+    remove: (id) => tx('readwrite', (s) => s.delete(id)),
+    count: () => tx('readonly', (s) => s.count()),
+  };
+
+  function newKey() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return `k-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  /** Everything still waiting, oldest first — the order it was done in is the
+      order it must be applied in, or a stage change can land after the next. */
+  async function outboxPending() {
+    const items = await outbox.all().catch(() => []);
+    return items.sort((a, b) => a.queued_at - b.queued_at);
+  }
+  TCA.outboxPending = outboxPending;
+
+  async function outboxRemove(id) {
+    await outbox.remove(id).catch(() => {});
+    TCA.emitOutbox && TCA.emitOutbox();
+  }
+
+  async function outboxRetryNow() {
+    await replayOutbox({ announce: true });
+  }
+  TCA.outboxRetryNow = outboxRetryNow;
+
+  async function outboxDrop(id) {
+    await outboxRemove(id);
+  }
+  TCA.outboxDrop = outboxDrop;
+
+  let replaying = false;
+  let lastOutboxCount = 0;
+
+  function announceOutbox() {
+    const badge = document.getElementById('outboxCount');
+    TCA.outboxPending().then((items) => {
+      const failed = items.filter((i) => i.state === 'failed').length;
+      lastOutboxCount = items.length;
+      // The panel is optional — the console works with no top bar in tests.
+      if (badge) {
+        badge.textContent = String(items.length);
+        badge.hidden = !items.length;
+      }
+      const wrapBtn = document.getElementById('outboxBtn');
+      if (wrapBtn) {
+        wrapBtn.classList.toggle('has-items', !!items.length);
+        wrapBtn.classList.toggle('has-failed', failed > 0);
+        wrapBtn.title = items.length
+          ? `${items.length} change${items.length === 1 ? '' : 's'} waiting to sync`
+            + (failed ? ` — ${failed} could not be saved` : '')
+          : 'Nothing waiting to sync';
+      }
+      TCA.emitOutbox && TCA.emitOutbox(items);
+    });
+    return lastOutboxCount;
+  }
+  TCA.announceOutbox = announceOutbox;
+
+  /** Send everything that was parked while the connection was down. */
+  async function replayOutbox({ announce = false } = {}) {
+    if (replaying) return { synced: 0, failed: 0, deferred: 0 };
+    /* Deliberately NOT gated on `navigator.onLine`. It lies — the embedded
+       browser reports offline while the server is perfectly reachable, and a
+       gate on it means the queue never drains and the operator is told their
+       work is waiting when it could have gone. Attempt the send and let the
+       fetch outcome decide, which is how `setConnectionState` already works. */
+    replaying = true;
+    const result = { synced: 0, failed: 0, deferred: 0 };
+    try {
+      const items = await outboxPending();
+      for (const item of items) {
+        if (item.state === 'failed') { result.failed += 1; continue; }
+        try {
+          await request(item.method, item.url, item.body, {
+            noQueue: true, silent: true, idempotencyKey: item.key,
+          });
+          await outbox.remove(item.id);
+          result.synced += 1;
+        } catch (err) {
+          if (err.status === 409) {
+            // The server is still settling the original. Leave it queued rather
+            // than deciding on its behalf.
+            result.deferred += 1;
+            continue;
+          }
+          if (err.status >= 400 && err.status < 500) {
+            // The server understood and refused. Retrying cannot fix it, so it
+            // becomes the operator's problem and is shown, not swallowed.
+            await outbox.update(item.id, { state: 'failed', error: err.message });
+            result.failed += 1;
+          } else {
+            const attempts = (item.attempts || 0) + 1;
+            await outbox.update(item.id, {
+              attempts,
+              state: attempts >= OUTBOX_MAX_ATTEMPTS ? 'failed' : 'queued',
+              error: err.message,
+            });
+            result.failed += attempts >= OUTBOX_MAX_ATTEMPTS ? 1 : 0;
+            // Network or server trouble: stop here so the queue keeps its order.
+            break;
+          }
+        }
+      }
+    } finally {
+      replaying = false;
+      await announceOutbox();
+    }
+
+    if (result.synced) {
+      // The screen on show was rendered from data that predates these changes,
+      // so the app refreshes the route. Announced rather than called directly so
+      // core.js stays free of knowledge about routing.
+      try {
+        window.dispatchEvent(new CustomEvent('topclass:synced', { detail: result }));
+      } catch (e) { /* older browsers — the toast still fires */ }
+    }
+
+    if (announce && (result.synced || result.failed)) {
+      if (result.failed) {
+        TCA.toast(`${result.synced} change(s) saved. ${result.failed} could not be `
+          + 'saved — open the sync panel to see why.', 'warning');
+      } else {
+        TCA.toast(`${result.synced} offline change(s) saved.`, 'success');
+      }
+    }
+    return result;
+  }
+  TCA.replayOutbox = replayOutbox;
+
+  let outboxTimersBound = false;
+  function bindOutbox() {
+    if (outboxTimersBound) return;
+    outboxTimersBound = true;
+    window.addEventListener('online', () => replayOutbox({ announce: true }));
+    // Also poll, because the browser often does not announce the return of a
+    // flaky link at all — and because `online` is not a reliable signal here.
+    window.setInterval(() => replayOutbox({ announce: true }), 45000);
+    announceOutbox();
+  }
+  TCA.bindOutbox = bindOutbox;
+
   /* ── api client ──────────────────────────────────────────────────── */
   /**
    * Connection state is driven by real evidence — failed fetches and the
@@ -137,6 +337,52 @@
     const banner = document.getElementById('connBanner');
     if (banner) banner.classList.toggle('show', !online);
   }
+
+  /* ── how old is what you are looking at ────────────────────────────────
+     When the worker answers a read from its cache it stamps the response, and
+     the UI says so. A figure on screen that is two hours old is fine as long as
+     nobody believes it is live — the danger is a balance that looks current and
+     is not, because that is what someone takes money against.
+     ──────────────────────────────────────────────────────────────────── */
+  let staleSince = null;
+  const staleListeners = [];
+
+  function emitFreshness() {
+    staleListeners.forEach((fn) => { try { fn(staleSince); } catch (e) { /* ignore */ } });
+  }
+
+  /** A read that came off this device rather than the network.
+   *
+   * Sticky for the rest of the render, and it keeps the OLDEST stamp, so the
+   * warning describes the stalest thing on the screen. A later fresh response
+   * must not clear it — that would mean one figure from this morning sits beside
+   * a live one with no warning at all, which is the case that actually misleads
+   * somebody.
+   */
+  function markStale(when) {
+    const next = when || new Date().toISOString();
+    if (staleSince && new Date(staleSince) <= new Date(next)) return;
+    staleSince = next;
+    emitFreshness();
+  }
+
+  /** Start of a render: the screen is about to re-fetch everything it needs, so
+      it gets the benefit of the doubt until something comes back cached. */
+  function resetFreshness() {
+    if (staleSince === null) return;
+    staleSince = null;
+    emitFreshness();
+  }
+
+  TCA.staleSince = () => staleSince;
+  TCA.onFreshness = (fn) => {
+    staleListeners.push(fn);
+    try { fn(staleSince); } catch (e) { /* ignore */ }
+    return () => {
+      const i = staleListeners.indexOf(fn);
+      if (i >= 0) staleListeners.splice(i, 1);
+    };
+  };
 
   const store = createStore({
     user: (window.__BOOTSTRAP__ || {}).user,
@@ -159,6 +405,9 @@
       },
       credentials: 'same-origin',
     };
+    // A queued write already has a key — reuse it on every replay, so the server
+    // can recognise the repeat. A fresh write gets one only if it ends up queued.
+    if (opts.idempotencyKey) init.headers['Idempotency-Key'] = opts.idempotencyKey;
     if (body !== undefined) {
       init.headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(body);
@@ -168,10 +417,45 @@
       res = await fetch(path, init);
     } catch (err) {
       setConnectionState(false);
+      /* The network refused it. For a write that means "not yet", not "no" — so
+         it is parked with a key and replayed once the link is back. A read
+         cannot be parked, and a queued item being replayed must not re-queue
+         itself, hence `noQueue`. */
+      if (WRITE_METHODS.has(method) && !opts.noQueue) {
+        const key = opts.idempotencyKey || newKey();
+        try {
+          await outbox.add({
+            method, url: path, body: body === undefined ? null : body,
+            key, queued_at: Date.now(), attempts: 0, state: 'queued',
+            label: opts.queueLabel || `${method} ${path}`,
+          });
+        } catch (e) {
+          // No IndexedDB (private mode, or a browser refusing storage). Say so
+          // rather than pretending the change was kept.
+          if (!opts.silent) {
+            TCA.toast('Could not save that change offline — it has been lost. '
+              + 'Reconnect and try again.', 'danger');
+          }
+          throw new ApiError('Network error', 0, null);
+        }
+        announceOutbox();
+        if (!opts.silent) {
+          TCA.toast('Offline — that change is saved and will go through when the '
+            + 'connection returns.', 'warning');
+        }
+        // Shaped like a normal response so a caller reading `.message` says the
+        // right thing; `queued` is the flag a screen can check if it must.
+        return { queued: true, message: 'Saved offline. It will sync automatically.' };
+      }
       if (!opts.silent) TCA.toast('Network problem — check your connection.', 'danger');
       throw new ApiError('Network error', 0, null);
     }
     setConnectionState(true);
+    /* The worker stamps a cached read. Anything unstamped is live, and a live
+       read deliberately does NOT clear the warning — see markStale(). */
+    if (res.headers.get('X-Served-From') === 'cache') {
+      markStale(res.headers.get('X-Cached-At'));
+    }
     if (res.status === 401 && !opts.silent) {
       window.location.href = '/login';
       throw new ApiError('Signed out', 401, null);
@@ -1360,6 +1644,9 @@
     const { handler, params, query, path } = resolve();
     const outlet = document.getElementById('viewOutlet');
     if (!outlet) return;
+    /* A fresh render re-fetches everything this screen needs, so it starts from
+       "live" and a cached read puts the warning back. */
+    resetFreshness();
     if (typeof currentCleanup === 'function') { try { currentCleanup(); } catch (e) { /* noop */ } currentCleanup = null; }
     outlet.innerHTML = '';
     outlet.appendChild(spinner('Loading…'));

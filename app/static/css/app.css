@@ -1697,6 +1697,23 @@ body.app-body .toast-host { top: calc(var(--tc-topbar-h) + .7rem); }
 }
 .conn-banner.show { transform: translateY(0); }
 
+/* "Data as of 14:20" — shown only while the screen is being served from this
+   device rather than the network. Amber, because it is not an error and not a
+   normal state either: the figures are real but they are not current. */
+.tc-stale-chip {
+  display: inline-flex; align-items: center; gap: .35rem;
+  padding: .28rem .6rem; border-radius: 999px;
+  font-size: .7rem; font-weight: 700; white-space: nowrap;
+  background: rgba(232, 163, 23, .18); color: #7a5606;
+  border: 1px solid rgba(232, 163, 23, .5); cursor: pointer;
+}
+.tc-stale-chip:hover { background: rgba(232, 163, 23, .28); }
+.tc-stale-chip .bi { font-size: .8rem; }
+@media (max-width: 575.98px) {
+  /* The chip is the first thing to go on a phone — the offline banner at the
+     foot of the screen already says the same thing. */
+  .tc-stale-chip { display: none; }
+}
 /* ── Placeholders ──────────────────────────────────────────────────── */
 .skeleton {
   background: linear-gradient(90deg, #eef1f7 25%, #dfe5f0 37%, #eef1f7 63%);
@@ -2497,6 +2514,12 @@ input[type="file"].form-control::file-selector-button:hover { background: #e5eaf
 .tc-bell.is-open { background: var(--tc-navy-900); border-color: var(--tc-navy-900); color: #fff; }
 .tc-bell.has-items { border-color: var(--tc-crimson-500); color: var(--tc-crimson-600); }
 .tc-bell.has-items:hover { background: #fdecef; }
+/* A change the server *refused* is not the same as one that is merely waiting.
+   Amber, not crimson: nothing is wrong with the app, but the operator has work
+   to do — a queued payment that will never go through must not look like one
+   that is about to. */
+.tc-bell.has-failed { border-color: var(--tc-amber-400); color: #7a5606; background: #fffaf2; }
+.tc-bell.has-failed.has-items { animation: none; }
 .tc-bell-count {
   position: absolute; top: -5px; right: -5px;
   min-width: 17px; padding: 0 4px; border-radius: 999px;

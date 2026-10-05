@@ -1,0 +1,25 @@
+{
+  "name": "Topclass Auto Body — Workshop OS",
+  "short_name": "Topclass",
+  "description": "Job cards, the WIP board, quotations, invoices and the WhatsApp inbox for Topclass Auto Body, Msasa.",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#08142c",
+  "theme_color": "#08142c",
+  "icons": [
+    {
+      "src": "/static/img/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/img/app-icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

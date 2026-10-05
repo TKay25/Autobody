@@ -184,6 +184,19 @@ def _ensure_schema(app: Flask) -> None:
         db.session.rollback()
         app.logger.warning("Schema guard failed.", exc_info=True)
 
+    # Idempotency keys only matter while a client could still be holding one, so
+    # the table is trimmed on boot rather than by a scheduled job. Nothing needs
+    # the cron; an app that never restarts simply accumulates rows harmlessly.
+    try:
+        from .services import idempotency
+
+        removed = idempotency.prune()
+        if removed:
+            app.logger.info("Pruned %s stale idempotency key(s).", removed)
+    except Exception:
+        db.session.rollback()
+        app.logger.warning("Idempotency prune failed.", exc_info=True)
+
 
 def _bootstrap_reference_data(app: Flask) -> None:
     """Give a database with no accounts something to sign in with.

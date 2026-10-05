@@ -1412,5 +1412,59 @@ __all__ = [
     "User", "Customer", "Vehicle", "JobCard", "JobStageEvent", "JobPhoto",
     "Estimate", "EstimateItem", "Part", "StockMovement", "JobPart",
     "QcResult", "Invoice", "Payment", "Booking", "WaConversation", "WaMessage",
-    "NotificationLog", "ActivityLog", "gen_ref", "utcnow",
+    "NotificationLog", "ActivityLog", "IdempotencyKey", "gen_ref", "utcnow",
 ]
+
+
+class IdempotencyKey(db.Model):
+    """One client-supplied key, and the response that key produced.
+
+    This is what makes the offline outbox safe. A queued write is replayed when
+    the connection returns, and a replay that is *not* recognised would create a
+    second job card, a second stock movement, or — the one that actually hurts —
+    a second payment against an invoice. So every write may carry an
+    ``Idempotency-Key``; the first one claims this row, and every repeat of that
+    key returns the *stored* response instead of running the handler again.
+
+    Keyed by ``(user_id, key)`` rather than the key alone: the key is generated
+    per client action, and two operators must never be able to collide by
+    accident (or read each other's response by guessing one).
+
+    ``status_code IS NULL`` means the first request is still in flight — see
+    :func:`app.services.idempotency.begin`.
+    """
+
+    __tablename__ = "idempotency_keys"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), index=True)
+    key = db.Column(db.String(80), nullable=False)
+    method = db.Column(db.String(8), nullable=False)
+    path = db.Column(db.String(255), nullable=False)
+    # NULL until the handler returns. A claimed-but-unfinished row is how a
+    # concurrent duplicate is detected rather than double-executed.
+    status_code = db.Column(db.Integer)
+    response_json = db.Column(db.Text)
+    # How many times the client has replayed this key. Visible so a support call
+    # can tell "sent once" from "retried six times across a bad afternoon".
+    replay_count = db.Column(db.Integer, default=0, nullable=False)
+    created_at = db.Column(db.DateTime, default=_now, nullable=False, index=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "key", name="uq_idempotency_user_key"),
+    )
+
+    @property
+    def is_complete(self) -> bool:
+        return self.status_code is not None
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "key": self.key,
+            "method": self.method,
+            "path": self.path,
+            "status_code": self.status_code,
+            "replay_count": self.replay_count or 0,
+            "created_at": self.created_at.isoformat(),
+        }

@@ -2,6 +2,11 @@
 {% block title %}{{ COMPANY.name }} — Workshop OS{% endblock %}
 {% block body_class %}app-body{% endblock %}
 
+{% block head %}
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/img/app-icon.svg">
+{% endblock %}
+
 {% block body %}
 <div id="app" class="app-shell">
   <div class="app-loading">
@@ -43,7 +48,7 @@
 
 <!-- Connection status -->
 <div class="conn-banner" id="connBanner" role="status">
-  <i class="bi bi-wifi-off me-1"></i>You are offline — changes will not be saved until the connection returns.
+  <i class="bi bi-wifi-off me-1"></i>You are offline — changes are saved on this device and go through when the connection returns.
 </div>
 {% endblock %}
 
@@ -61,6 +66,16 @@
       document.documentElement.classList.add('density-compact');
     }
   } catch (e) { /* private mode */ }
+
+  /* Registered here, not in core.js, because only this page needs it: the worker
+     precaches the app shell and the login page has nothing to serve offline.
+     Served from /sw.js so its scope covers /app and /api/ — a copy under
+     /static/ would only control /static/* and do nothing useful. */
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+    });
+  }
 </script>
 <script src="{{ static_url('js/core.js') }}"></script>
 <script src="{{ static_url('js/views/dashboard.js') }}"></script>
