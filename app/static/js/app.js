@@ -6,34 +6,54 @@
   /* Navigation model. `badge` keys map to GET /api/badges. `key` is the letter
      you press after `g` to jump straight there — deliberately avoiding b, i and
      n, which are already single-key shortcuts, so no letter ever means two
-     different things. */
+     different things. `preview` is what the hover card shows: pairs of
+     [badge key, words], and a pair with a zero count is simply left out. */
   const NAV = [
     { section: 'Workshop' },
-    { route: '/dashboard', label: 'Dashboard', icon: 'grid-1x2-fill', key: 'd', hint: 'Overview of today' },
-    { route: '/board', label: 'WIP board', icon: 'kanban', key: 'k', hint: 'Drag job cards through the shop' },
+    { route: '/dashboard', label: 'Dashboard', icon: 'grid-1x2-fill', key: 'd',
+      hint: 'Overview of today',
+      preview: [['jobs', 'open job cards'], ['jobs_ready', 'ready to collect']] },
+    { route: '/board', label: 'WIP board', icon: 'kanban', key: 'k',
+      hint: 'Drag job cards through the shop',
+      preview: [['jobs', 'in the shop'], ['jobs_overdue', 'overdue']] },
     { route: '/jobs', label: 'Job cards', icon: 'clipboard-check', badge: 'jobs', key: 'j',
-      hint: 'Every vehicle in the shop' },
+      hint: 'Every vehicle in the shop',
+      preview: [['jobs', 'open'], ['jobs_overdue', 'overdue']] },
     { route: '/todo', label: 'To-do', icon: 'list-check', badge: 'tasks', key: 't',
-      hint: 'What has to happen today and this week' },
-    { route: '/bookings', label: 'Enquiries & Bookings', icon: 'calendar-check', badge: 'bookings', key: 'e',
-      hint: 'Enquiries, bookings and confirmations' },
+      hint: 'What has to happen today and this week',
+      preview: [['tasks', 'due today']] },
+    { route: '/bookings', label: 'Enquiries & Bookings', icon: 'calendar-check', badge: 'bookings',
+      key: 'e', hint: 'Enquiries, bookings and confirmations',
+      preview: [['bookings', 'awaiting an answer']] },
     { section: 'Customers' },
     { route: '/customers', label: 'Customers', icon: 'people', key: 'c', hint: 'CRM and contact details' },
     { route: '/vehicles', label: 'Vehicles', icon: 'car-front', key: 'v', hint: 'Registration register' },
     { route: '/inbox', label: 'WhatsApp', icon: 'whatsapp', badge: 'whatsapp', key: 'w',
-      hint: 'Chat with customers' },
+      hint: 'Chat with customers',
+      preview: [['whatsapp', 'unread']] },
     { section: 'Money' },
     { route: '/payments', label: 'Payments', icon: 'cash-coin', key: 'p',
       hint: 'Receipts, methods and takings' },
     { route: '/invoices', label: 'Invoices', icon: 'receipt', badge: 'invoices', key: 'f',
-      hint: 'Billing and payments' },
-    { route: '/reports', label: 'Reports', icon: 'graph-up-arrow', key: 'r', hint: 'Performance and margins' },
+      hint: 'Billing and payments',
+      preview: [['invoices', 'past due']] },
+    { route: '/reports', label: 'Reports', icon: 'graph-up-arrow', key: 'r',
+      hint: 'Performance and margins' },
     { section: 'Resources' },
     { route: '/parts', label: 'Parts & stock', icon: 'box-seam', badge: 'parts', key: 's',
-      hint: 'Stock levels and suppliers' },
-    { route: '/activity', label: 'Activity log', icon: 'clock-history', key: 'a', hint: 'Who changed what' },
+      hint: 'Stock levels and suppliers',
+      preview: [['parts', 'at or below reorder level']] },
+    { route: '/activity', label: 'Activity log', icon: 'clock-history', key: 'a',
+      hint: 'Who changed what' },
     { route: '/staff', label: 'Staff & settings', icon: 'gear', key: 'g', hint: 'Accounts and bot setup' },
   ];
+
+  /* Model order, so a rearranged rail can be put back exactly as it shipped. */
+  const NAV_INDEX = {};
+  NAV.forEach((item, i) => { if (item.route) NAV_INDEX[item.route] = i; });
+
+  const NAV_BY_ROUTE = {};
+  NAV.forEach((item) => { if (item.route) NAV_BY_ROUTE[item.route] = item; });
 
   /* Quick actions — the handful of jobs people start most often. Each renders
      as a card in the strip under the top bar. `run` fires a dialog in place;
@@ -80,6 +100,41 @@
      into the sidebar's closure. */
   let syncNavGlider = null;
 
+  /* The order the operator dragged the rail into: a flat list of routes, only
+     ever permuted within one section, so it can never move a screen from one
+     block to another.
+
+     The ACCOUNT holds it — it has to follow a person from the front desk to the
+     workshop tablet — and the browser keeps a copy purely so the rail draws
+     right on the first frame after sign-in. That copy is keyed by user id: a
+     single unscoped key on a shared PC hands the previous operator's arrangement
+     to the next one. */
+  const orderKeyFor = (userId) => `topclass.nav.order.${userId || 0}`;
+  /* Where the previous, browser-only version kept it. Read once on the way past,
+     so an arrangement somebody already made is not silently thrown away. */
+  const LEGACY_ORDER_KEY = 'topclass.nav.order';
+
+  function readOrder(key) {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(key) || 'null');
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (e) { return null; }
+  }
+
+  function writeOrder(key, routes) {
+    try { localStorage.setItem(key, JSON.stringify(routes)); } catch (e) { /* ignore */ }
+  }
+
+  function dropOrder(key) {
+    try { localStorage.removeItem(key); } catch (e) { /* ignore */ }
+  }
+
+  /* Fire and forget. The rail has already moved on screen, and failing to file a
+     display preference is not worth an error anybody has to read. */
+  function pushOrder(routes) {
+    api.patch('/api/me/nav-order', { routes }, { silent: true }).catch(() => {});
+  }
+
   /* ── layout ──────────────────────────────────────────────────────── */
   function layout(payload) {
     const user = payload.user;
@@ -117,22 +172,75 @@
       }
     });
 
+    const orderKey = orderKeyFor(user.id);
+    let hasCustomOrder = false;
+
+    function rememberOrder(routes) {
+      hasCustomOrder = true;
+      writeOrder(orderKey, routes);
+      pushOrder(routes);
+    }
+
+    function forgetOrder() {
+      hasCustomOrder = false;
+      dropOrder(orderKey);
+      pushOrder([]);
+    }
+
+    /* The account's order wins. The browser's copy only covers the gap between
+       signing in and the rail drawing, and the legacy key is adopted once so
+       nobody loses an arrangement they made before this moved to the server. */
+    let order = (user.nav_order && user.nav_order.length) ? user.nav_order : readOrder(orderKey);
+    hasCustomOrder = !!(order && order.length);
+    if (!order) {
+      const legacy = readOrder(LEGACY_ORDER_KEY);
+      if (legacy && legacy.length) {
+        order = legacy;
+        rememberOrder(legacy);
+      }
+    }
+    dropOrder(LEGACY_ORDER_KEY);
+
+    /* A saved order permutes each block on its own: the sort runs per group, so
+       dragging Job cards to the top of Workshop can never smuggle it into Money.
+       Routes that were never dragged keep their model order (Array.sort is
+       stable), which is also why adding a new screen to NAV just works. */
+    if (order) {
+      const rank = new Map(order.map((route, i) => [route, i]));
+      const pos = (item) => (rank.has(item.route) ? rank.get(item.route) : 1e6);
+      navGroups.forEach((group) => group.items.sort((a, b) => pos(a) - pos(b)));
+    }
+
+    const navNodes = {};      // route -> the <a>, so a reset can re-append in place
+    const groupBodies = {};   // section label -> the box holding that section's rows
+    let droppedAt = 0;        // suppresses the click that can follow a drop
+
     function navItem(item) {
       const pill = item.badge ? h('span.tc-nav-pill', { hidden: true }) : null;
       if (pill) pills[item.badge] = pill;
 
-      return h('a.tc-nav-item', {
+      const row = h('a.tc-nav-item', {
         href: `#${item.route}`,
         'data-route': item.route,
         title: item.hint || item.label,
         'aria-label': item.label,
-        onclick: () => closeSidebar(),
+        onclick: (event) => {
+          /* The grip is a handle, not a link, and a drop must never navigate. */
+          if (event.target.closest('.tc-nav-grip') || Date.now() - droppedAt < 250) {
+            event.preventDefault();
+            return;
+          }
+          closeSidebar();
+        },
       }, [
         h('span.tc-nav-icon', T.icon(item.icon)),
         h('span.tc-nav-label', item.label),
         pill,
         h('kbd.tc-nav-key', item.key),
+        h('span.tc-nav-grip', { title: 'Drag to reorder' }, T.icon('grip-vertical')),
       ]);
+      navNodes[item.route] = row;
+      return row;
     }
 
     /* Two travelling pills, both built with the rail so neither can be missing
@@ -206,14 +314,27 @@
           'aria-expanded': String(!shut),
           title: `${shut ? 'Unfold' : 'Fold'} ${group.label}`,
         }, [h('span.tc-nav-section-label', group.label), chevron()]);
-        const groupEl = h(`div.tc-nav-group${shut ? '.is-collapsed' : ''}`, [
-          heading,
-          h('div.tc-nav-group-body', group.items.map(navItem)),
-        ]);
+        const body = h('div.tc-nav-group-body', group.items.map(navItem));
+        groupBodies[key] = body;
+        const groupEl = h(`div.tc-nav-group${shut ? '.is-collapsed' : ''}`, [heading, body]);
         heading.onclick = () =>
           foldGroup(groupEl, heading, key, !groupEl.classList.contains('is-collapsed'));
         return groupEl;
       })));
+
+    /* Put the rail back the way it shipped. Done in place rather than by
+       reloading the page: the model order is static, so re-sorting and
+       re-appending the nodes already on screen is exact. */
+    function resetNavOrder() {
+      forgetOrder();
+      navGroups.forEach((group) => {
+        const body = groupBodies[group.label.toLowerCase()];
+        if (!body) return;
+        group.items.sort((a, b) => NAV_INDEX[a.route] - NAV_INDEX[b.route]);
+        group.items.forEach((item) => body.appendChild(navNodes[item.route]));
+      });
+      syncGlider();
+    }
 
     /* ── `g` chords ──────────────────────────────────────────────────
        Fourteen rows is past the point where reaching for the mouse beats typing,
@@ -265,11 +386,47 @@
       nav.scrollTop += row.top - host.top - (host.height - row.height) / 2;
     }
 
-    /* Icon-only rail: the labels are gone, so a row has no name. `.tc-sidebar` is
-       `overflow: hidden`, so the flyout has to be fixed-position and live outside
-       the rail's subtree. */
-    const railTip = h('div.tc-rail-tip', { role: 'tooltip' });
-    let tipRow = null;
+    /* ── The hover card ──────────────────────────────────────────────
+       In icon-only mode it names the row you are over; a moment later it also
+       says what is waiting there. The delay is the point — a card that appears
+       the instant the pointer crosses a row is noise when you are only
+       travelling across to the one you actually want. `.tc-sidebar` is
+       `overflow: hidden`, so it has to be fixed-position and live outside the
+       sidebar's subtree. */
+    const navPop = h('div.tc-nav-pop', { role: 'tooltip' });
+    let popRow = null;
+    let popTimer = null;
+    let counts = {};          // the last /api/badges payload, for the stats
+
+    function popDelay() {
+      return document.documentElement.classList.contains('sidebar-rail') ? 90 : 420;
+    }
+
+    function hidePop() {
+      if (popTimer) { clearTimeout(popTimer); popTimer = null; }
+      popRow = null;
+      navPop.classList.remove('is-open');
+    }
+
+    function showPop(row) {
+      const item = NAV_BY_ROUTE[row.dataset.route] || {};
+      navPop.textContent = '';
+      navPop.appendChild(h('div.tc-nav-pop-title', item.label || row.getAttribute('aria-label')));
+      if (item.hint) navPop.appendChild(h('div.tc-nav-pop-hint', item.hint));
+      /* Only non-zero figures: "0 overdue" is noise, and its absence already
+         says the same thing. */
+      const stats = (item.preview || [])
+        .map(([key, word]) => ({ n: counts[key] || 0, word }))
+        .filter((stat) => stat.n > 0);
+      if (stats.length) {
+        navPop.appendChild(h('div.tc-nav-pop-stats', stats.map((stat) =>
+          h('span.tc-nav-pop-stat', [h('b', String(stat.n)), ` ${stat.word}`]))));
+      }
+      const box = row.getBoundingClientRect();
+      navPop.style.top = `${box.top + box.height / 2}px`;
+      navPop.style.left = `${box.right + 12}px`;
+      navPop.classList.add('is-open');
+    }
 
     nav.addEventListener('mouseover', (event) => {
       const row = event.target.closest && event.target.closest('.tc-nav-item');
@@ -280,30 +437,101 @@
           hoverRow = null;
           hoverPill.classList.remove('is-set');
         }
+        hidePop();
         return;
       }
       if (row !== hoverRow) {
         hoverRow = row;
         syncGlider();
       }
-      /* The flyout label only exists in icon-only mode, where the row has no
-         visible name of its own. */
-      if (!document.documentElement.classList.contains('sidebar-rail')) return;
-      if (row === tipRow) return;
-      tipRow = row;
-      const box = row.getBoundingClientRect();
-      const label = row.querySelector('.tc-nav-label');
-      railTip.textContent = (label && label.textContent) || row.getAttribute('aria-label') || '';
-      railTip.style.top = `${box.top + box.height / 2}px`;
-      railTip.style.left = `${box.right + 10}px`;
-      railTip.classList.add('is-open');
+      if (row === popRow) return;
+      hidePop();
+      popRow = row;
+      popTimer = setTimeout(() => {
+        popTimer = null;
+        if (popRow === row && row.isConnected) showPop(row);
+      }, popDelay());
     });
     nav.addEventListener('mouseleave', () => {
       hoverRow = null;
-      tipRow = null;
       hoverPill.classList.remove('is-set');
-      railTip.classList.remove('is-open');
+      hidePop();
     });
+
+    /* ── Drag to reorder ─────────────────────────────────────────────
+       Only the grip starts a drag — `draggable` is switched on in mousedown — so
+       a wobbly click on a nav row can never rearrange the rail. Drops are
+       confined to the block the row came from: dragging a screen into another
+       section would silently re-file it under a different heading, which is a
+       different feature with a different meaning. */
+    let dragRow = null;
+    let dropAfter = false;
+
+    function clearDropMarks() {
+      nav.querySelectorAll('.is-drop-before, .is-drop-after')
+        .forEach((el) => el.classList.remove('is-drop-before', 'is-drop-after'));
+    }
+
+    function releaseGrips() {
+      nav.querySelectorAll('.tc-nav-item').forEach((a) => { a.draggable = false; });
+    }
+
+    function finishDrag() {
+      if (!dragRow) return;
+      dragRow.classList.remove('is-dragging');
+      dragRow = null;
+      releaseGrips();
+      clearDropMarks();
+      droppedAt = Date.now();
+      rememberOrder([...nav.querySelectorAll('.tc-nav-item')].map((a) => a.dataset.route));
+      syncGlider();
+    }
+
+    nav.addEventListener('mousedown', (event) => {
+      const row = event.target.closest && event.target.closest('.tc-nav-item');
+      if (!row) return;
+      releaseGrips();
+      row.draggable = !!(event.target.closest && event.target.closest('.tc-nav-grip'));
+    });
+    nav.addEventListener('mouseup', releaseGrips);
+
+    nav.addEventListener('dragstart', (event) => {
+      const row = event.target.closest && event.target.closest('.tc-nav-item');
+      if (!row || !row.draggable) return;
+      dragRow = row;
+      hidePop();
+      row.classList.add('is-dragging');
+      nav.classList.add('is-reordering');
+      try {
+        event.dataTransfer.setData('text/plain', row.dataset.route);
+        event.dataTransfer.effectAllowed = 'move';
+      } catch (e) { /* a synthetic DataTransfer can be read-only */ }
+    });
+
+    nav.addEventListener('dragover', (event) => {
+      if (!dragRow) return;
+      const row = event.target.closest && event.target.closest('.tc-nav-item');
+      if (!row || row === dragRow || row.parentElement !== dragRow.parentElement) return;
+      /* preventDefault is what makes a target legal, so a row in another block
+         simply refuses the drop rather than quietly moving the screen. */
+      event.preventDefault();
+      const box = row.getBoundingClientRect();
+      dropAfter = event.clientY > box.top + box.height / 2;
+      clearDropMarks();
+      row.classList.add(dropAfter ? 'is-drop-after' : 'is-drop-before');
+    });
+
+    nav.addEventListener('drop', (event) => {
+      if (!dragRow) return;
+      const row = event.target.closest && event.target.closest('.tc-nav-item');
+      if (row && row !== dragRow && row.parentElement === dragRow.parentElement) {
+        event.preventDefault();
+        if (dropAfter) row.after(dragRow); else row.before(dragRow);
+      }
+      finishDrag();
+    });
+
+    nav.addEventListener('dragend', finishDrag);
     /* Keyboard users get the same treatment as the pointer: tabbing through the
        rail slides the light pill onto the focused row instead of leaving them to
        guess which one has focus. Bound on the document in the capture phase —
@@ -350,6 +578,8 @@
     function toggleUserMenu(force) {
       userOpen = force === undefined ? !userOpen : force;
       userMenu.hidden = !userOpen;
+      /* Only offer the undo when there is something to undo. */
+      resetOrderItem.hidden = !hasCustomOrder;
       userBtn.classList.toggle('is-open', userOpen);
       userBtn.setAttribute('aria-expanded', String(userOpen));
     }
@@ -370,6 +600,19 @@
       ]),
       h('span.tc-user-caret', T.icon('chevron-expand')),
     ]);
+
+    /* Rearranging the rail is easy to do by accident and impossible to
+       reconstruct from memory, so the undo sits with the other display
+       preferences. Hidden until there is an order to reset. */
+    const resetOrderItem = h('button.tc-user-menu-item', {
+      type: 'button',
+      hidden: true,
+      onclick: () => {
+        closeMenu();
+        resetNavOrder();
+        T.toast('Navigation order reset.');
+      },
+    }, T.icon('arrow-counterclockwise'), 'Reset nav order');
 
     const userMenu = h('div.tc-user-menu', { role: 'menu', hidden: true }, [
       h('div.tc-user-menu-head', [
@@ -395,6 +638,7 @@
           onclick: () => { closeMenu(); toggleDensity(); },
         }, T.icon('list-ul'),
           isCompact() ? 'Comfortable rows' : 'Compact rows'),
+        resetOrderItem,
       ]),
       h('div.tc-user-menu-foot', [
         h('button.tc-user-menu-item.is-danger', {
@@ -910,6 +1154,7 @@
     async function pollBadges() {
       try {
         const data = await api.get('/api/badges', { silent: true });
+        counts = data;
         Object.entries(pills).forEach(([key, pill]) => {
           const count = data[key] || 0;
           pill.textContent = count > 99 ? '99+' : String(count);
@@ -972,7 +1217,7 @@
     });
 
     return h('div', [sidebar, h('div.tc-main', [topbar, quickbar, outlet]),
-                     attnPanel, outboxPanel, railTip]);
+                     attnPanel, outboxPanel, navPop]);
   }
 
   /* ── booking actions ──────────────────────────────────────────────────

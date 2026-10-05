@@ -160,6 +160,24 @@ def me():
     return jsonify({"user": current_user.to_dict()})
 
 
+@bp.patch("/me/nav-order")
+@login_required
+def save_nav_order():
+    """Store the order this operator dragged their navigation into.
+
+    Held on the user rather than in the browser so it follows them from the
+    front desk to the workshop tablet. A single unscoped localStorage key does
+    the opposite on a shared PC: it hands one person's arrangement to the next.
+    """
+    data = request.get_json(silent=True) or {}
+    routes = data.get("routes")
+    if not isinstance(routes, list):
+        return jsonify({"error": "routes must be a list"}), 400
+    current_user.set_nav_order(routes)
+    db.session.commit()
+    return jsonify({"nav_order": current_user.nav_order_routes})
+
+
 @bp.get("/badges")
 @login_required
 def badges():

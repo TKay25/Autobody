@@ -88,6 +88,38 @@ class User(UserMixin, TimestampMixin, db.Model):
     role = db.Column(db.String(30), default="frontdesk", nullable=False)
     is_active_user = db.Column(db.Boolean, default=True, nullable=False)
     last_login_at = db.Column(db.DateTime)
+    # The order this operator dragged their navigation rail into, as a JSON array
+    # of routes. Nullable on purpose: the schema guard adds columns with a plain
+    # ALTER, and SQLite will not add a NOT NULL column without a default.
+    nav_order = db.Column(db.Text)
+
+    NAV_ORDER_MAX = 40
+
+    @property
+    def nav_order_routes(self) -> list:
+        """The stored order, always as a list — junk in the column reads as empty."""
+        if not self.nav_order:
+            return []
+        try:
+            parsed = json.loads(self.nav_order)
+        except (TypeError, ValueError):
+            return []
+        return [r for r in parsed if isinstance(r, str)] if isinstance(parsed, list) else []
+
+    def set_nav_order(self, routes) -> None:
+        """Store a navigation order, keeping only things that look like a route.
+
+        The server has no business knowing the nav model, but it does know a path
+        when it sees one — so a malformed payload cannot be filed away and later
+        handed back to the rail as a screen that does not exist.
+        """
+        cleaned = [
+            route for route in (routes or [])
+            if isinstance(route, str) and 1 < len(route) <= 60
+            and route.startswith("/")
+            and all(ch.isalnum() or ch in "/_-" for ch in route)
+        ]
+        self.nav_order = json.dumps(cleaned[: self.NAV_ORDER_MAX]) if cleaned else None
 
     def set_password(self, raw: str) -> None:
         """Hash and store a password.
@@ -144,6 +176,9 @@ class User(UserMixin, TimestampMixin, db.Model):
             # disabling the person being edited, including the owner editing
             # themselves.
             "is_active_user": self.is_active_user,
+            # The rail's order, so it follows the operator to whichever machine
+            # they sign in on instead of living in one browser's localStorage.
+            "nav_order": self.nav_order_routes,
         }
 
     def __repr__(self) -> str:  # pragma: no cover

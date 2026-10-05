@@ -173,6 +173,12 @@ def _ensure_schema(app: Flask) -> None:
             "id_number": "VARCHAR(60)",
         })
 
+        # The navigation rail's per-account order. A column added to a table that
+        # already existed, so it needs the guard like any other.
+        ensure_columns(db.engine, "users", {
+            "nav_order": "TEXT",
+        })
+
         # A column added to a table that already existed. `create_all()` makes a
         # missing *table* but never ALTERs one, so on any database provisioned
         # before this column existed every query touching it fails — locally and
