@@ -112,7 +112,7 @@
 
         h('button.btn.btn-outline-primary.btn-sm', {
           onclick: () => T.navigate(`/estimates/new/${j.id}`),
-        }, T.icon('calculator'), estimate ? ' New estimate version' : ' Build estimate'),
+        }, T.icon('calculator'), estimate ? ' New quotation version' : ' Build quotation'),
 
         h('button.btn.btn-outline-secondary.btn-sm', {
           onclick: () => addPartDialog(j),

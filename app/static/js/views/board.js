@@ -22,6 +22,10 @@
       if (id && target) pendingMoves.set(id, target);
     });
 
+    // The live search term, so the counts can be recomputed against it after a
+    // card moves rather than snapping back to showing every card.
+    let currentTerm = '';
+
     // Every job, with the column it should *appear* in.
     const placements = [];
     data.board.columns.forEach((col) => {
@@ -78,6 +82,7 @@
 
         index.push({
           el: card,
+          jobId: job.id,
           stage: to,
           // Everything an operator might type: plate, name, job number, vehicle.
           haystack: [job.job_no, job.reg_no, job.vehicle_title, job.customer_name,
@@ -97,12 +102,11 @@
           if (!jobId) return;
           const current = placements.find((p) => String(p.job.id) === jobId);
           if (current && current.to === col.stage) return;
-          // Optimistic move
-          const moveCard = document.querySelector(`[data-job-id="${jobId}"]`);
-          if (moveCard) body.prepend(moveCard);
-          // Remember it, so dropping the same card twice in one visit is not
-          // read as two different moves.
-          if (current) current.to = col.stage;
+          // Optimistic move, through placeCard so the badges come with it.
+          // Dropping the same card twice in one visit must not read as two
+          // different moves, which is why the placement is updated, not just the
+          // element.
+          placeCard(jobId, col.stage);
           try {
             const res = await api.post(`/api/jobs/${jobId}/stage`, { stage: col.stage });
             T.toast(`${res.job.job_no} → ${res.job.stage_label}${res.notified ? ' · customer notified' : ''}`);
@@ -115,8 +119,34 @@
         h('div.kanban-head', [h('span', col.label), badge]),
         body,
       ]);
-      return { shell, stage: col.stage, badge, trueCount: placed.length };
+      return { shell, stage: col.stage, badge, body, trueCount: placed.length };
     });
+
+    /* Move a card, and everything derived from where it sits: the placement the
+       counts are built from, the search index, the element itself, and then the
+       badges. Moving only the element left a card sitting in Strip Down while its
+       old column still counted it under Intake — and the count is what the shop
+       reads to decide whether the board is telling the truth. */
+    function placeCard(jobId, stage) {
+      const placement = placements.find((p) => String(p.job.id) === jobId);
+      if (placement) placement.to = stage;
+      const entry = index.find((e) => String(e.jobId) === jobId);
+      if (entry) entry.stage = stage;
+      const target = columns.find((c) => c.stage === stage);
+      const card = document.querySelector(`[data-job-id="${jobId}"]`);
+      if (target && card) target.body.prepend(card);
+      recount();
+    }
+
+    /* Recomputed from where the cards actually are, never nudged by one: a card
+       moved twice, or a move the server rejects, would otherwise drift the totals
+       away from the columns they describe. */
+    function recount() {
+      const perStage = {};
+      placements.forEach((p) => { perStage[p.to] = (perStage[p.to] || 0) + 1; });
+      columns.forEach((column) => { column.trueCount = perStage[column.stage] || 0; });
+      applyFilter(currentTerm);
+    }
 
     const resultLabel = h('div.tc-board-count.small.text-secondary.mb-2');
 
@@ -125,6 +155,7 @@
        filter — a stage showing "3" while only one card is visible reads as a bug. */
     function applyFilter(raw) {
       const term = (raw || '').trim().toLowerCase();
+      currentTerm = raw || '';
       const perStage = {};
       let total = 0;
 

@@ -63,10 +63,10 @@
       icon: 'clipboard-plus', tone: 'brand', run: () => T.newJobCard() },
     { label: 'New quotation', hint: 'Price a job card that is already open',
       icon: 'calculator', run: () => T.newJobCard({ focus: 'estimate' }) },
-    { label: 'Add stock item', hint: 'Parts, paint and consumables',
-      icon: 'box-seam', href: '#/parts?new=1' },
     { label: 'Payments & invoices', hint: 'Record a receipt against an invoice',
       icon: 'cash-coin', href: '#/invoices' },
+    { label: 'Add stock item', hint: 'Parts, paint and consumables',
+      icon: 'box-seam', href: '#/parts?new=1' },
     { label: 'Enquiries and Bookings', hint: 'Phone, WhatsApp and walk-in requests',
       icon: 'calendar-check', href: '#/bookings' },
   ];

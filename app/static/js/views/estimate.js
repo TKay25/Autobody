@@ -5,7 +5,7 @@
  * dialog. Intake books the vehicle in and attaches any quotation the customer
  * already has; this screen does the measuring and the money.
  *
- * Reached from the job card's "Build estimate" button and the command palette.
+ * Reached from the job card's "Build quotation" button and the command palette.
  */
 (function () {
   const T = window.TCA;
@@ -160,7 +160,7 @@
     return h('div', [
       h('div.d-flex.align-items-center.mb-3.flex-wrap.gap-2', [
         h('div.flex-fill', [
-          h('h1.h4.mb-0', 'Build estimate'),
+          h('h1.h4.mb-0', 'Build quotation'),
           h('div.small.text-secondary',
             `${job.job_no} · ${job.reg_no || '—'} · ${job.customer_name || '—'}`
             + (job.estimate ? ` · currently ${job.estimate.reference} (${job.estimate.status})` : '')),
