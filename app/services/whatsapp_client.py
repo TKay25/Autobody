@@ -23,7 +23,21 @@ log = logging.getLogger(__name__)
 
 
 class WhatsAppError(Exception):
-    pass
+    """A send that Meta refused, or the network refused to carry.
+
+    ``retryable`` is the whole distinction that matters to the outbound queue. A
+    dropped connection or a 500 from Meta is worth sending again; a 400 is Meta
+    telling us the message itself is wrong — an unapproved template, a bad number
+    — and sending it again a hundred times will fail a hundred times.
+
+    Defaults to ``True`` because the commonest cause is a dead link, and the
+    consequence of guessing wrong that way is a retry, not a lost message.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True, status: int | None = None):
+        super().__init__(message)
+        self.retryable = retryable
+        self.status = status
 
 
 def normalise_msisdn(raw: str | None) -> str:
@@ -109,9 +123,17 @@ class WhatsAppClient:
                 timeout=20,
             )
         except requests.RequestException as exc:  # pragma: no cover - network
-            raise WhatsAppError(str(exc)) from exc
+            # No response at all: the link is down, or Meta is unreachable. The
+            # customer is owed this message, so it goes on the retry queue rather
+            # than being logged and forgotten.
+            raise WhatsAppError(str(exc), retryable=True) from exc
         if resp.status_code >= 400:
-            raise WhatsAppError(f"{resp.status_code}: {resp.text[:400]}")
+            # 429 (rate limited) and 5xx are Meta having a bad moment, so they are
+            # worth another go. Everything else in the 4xx range is about the
+            # message itself and will fail identically every time.
+            retryable = resp.status_code == 429 or resp.status_code >= 500
+            raise WhatsAppError(f"{resp.status_code}: {resp.text[:400]}",
+                                retryable=retryable, status=resp.status_code)
         return resp.json()
 
     # ── public API ───────────────────────────────────────────────────────

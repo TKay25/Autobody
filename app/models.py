@@ -1412,7 +1412,8 @@ __all__ = [
     "User", "Customer", "Vehicle", "JobCard", "JobStageEvent", "JobPhoto",
     "Estimate", "EstimateItem", "Part", "StockMovement", "JobPart",
     "QcResult", "Invoice", "Payment", "Booking", "WaConversation", "WaMessage",
-    "NotificationLog", "ActivityLog", "IdempotencyKey", "gen_ref", "utcnow",
+    "NotificationLog", "ActivityLog", "IdempotencyKey", "OutboundQueue",
+    "OUTBOUND_MAX_ATTEMPTS", "gen_ref", "utcnow",
 ]
 
 
@@ -1467,4 +1468,70 @@ class IdempotencyKey(db.Model):
             "status_code": self.status_code,
             "replay_count": self.replay_count or 0,
             "created_at": self.created_at.isoformat(),
+        }
+
+
+# How many times a message may be re-sent before the desk is asked to look. Small
+# on purpose: a customer who should have had a reply three hours ago is better
+# served by a phone call than by a tenth automatic attempt.
+OUTBOUND_MAX_ATTEMPTS = 5
+
+
+class OutboundQueue(db.Model):
+    """A WhatsApp message that could not be sent, kept until it can be.
+
+    When the workshop loses its internet, the bot cannot reply. Before this
+    existed those replies were logged as failed and thrown away — the customer
+    asked a question and simply never heard back, and nobody knew. Now the whole
+    Meta envelope is kept and re-sent when the link returns.
+
+    The **payload** is stored rather than the arguments, because it is exactly
+    what ``_post`` sends: replaying it needs no knowledge of which `send_*`
+    produced it, so a reply, a button prompt, a document and an approved template
+    all queue and replay through one path.
+
+    ``status``: ``pending`` (will be tried again), ``sent``, or ``failed``
+    (Meta refused it in a way that retrying cannot fix — an unapproved template,
+    a bad number, or a free-form message that fell outside the 24-hour window
+    while it sat here).
+    """
+
+    __tablename__ = "outbound_queue"
+
+    id = db.Column(db.Integer, primary_key=True)
+    wa_id = db.Column(db.String(40), nullable=False, index=True)
+    conversation_id = db.Column(db.Integer, db.ForeignKey("wa_conversations.id"))
+    # The full Meta envelope, exactly as it would have been POSTed.
+    payload_json = db.Column(db.Text, nullable=False)
+    # What the customer would have read — for the screen, not for sending.
+    body = db.Column(db.Text)
+    msg_type = db.Column(db.String(20), default="text")
+    intent = db.Column(db.String(60))
+    attempts = db.Column(db.Integer, default=0, nullable=False)
+    last_error = db.Column(db.String(400))
+    next_attempt_at = db.Column(db.DateTime, default=_now, nullable=False, index=True)
+    status = db.Column(db.String(20), default="pending", nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=_now, nullable=False, index=True)
+    sent_at = db.Column(db.DateTime)
+
+    conversation = db.relationship("WaConversation")
+
+    @property
+    def is_pending(self) -> bool:
+        return self.status == "pending"
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "wa_id": self.wa_id,
+            "body": self.body,
+            "msg_type": self.msg_type,
+            "intent": self.intent,
+            "attempts": self.attempts or 0,
+            "last_error": self.last_error,
+            "status": self.status,
+            "next_attempt_at": (self.next_attempt_at.isoformat()
+                                if self.next_attempt_at else None),
+            "created_at": self.created_at.isoformat(),
+            "sent_at": self.sent_at.isoformat() if self.sent_at else None,
         }
