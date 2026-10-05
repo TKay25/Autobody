@@ -366,6 +366,10 @@ class JobCard(TimestampMixin, db.Model):
     job_no = db.Column(db.String(30), unique=True, nullable=False, index=True)
     customer_id = db.Column(db.Integer, db.ForeignKey("customers.id"), nullable=False, index=True)
     vehicle_id = db.Column(db.Integer, db.ForeignKey("vehicles.id"), nullable=False, index=True)
+    # The enquiry this card was raised from, when it came from one. Filled in at
+    # the moment a customer approves their quotation — which is also the moment
+    # the card is created, so the quotation it approved travels with it.
+    booking_id = db.Column(db.Integer, db.ForeignKey("bookings.id"), nullable=True, index=True)
 
     service = db.Column(db.String(80), default="Panel Beating & Spray Painting")
     stage = db.Column(db.String(30), default="INTAKE", nullable=False, index=True)
@@ -394,6 +398,7 @@ class JobCard(TimestampMixin, db.Model):
 
     customer = db.relationship("Customer", back_populates="jobs")
     vehicle = db.relationship("Vehicle", back_populates="jobs")
+    booking = db.relationship("Booking", back_populates="job_cards")
     technician = db.relationship("User", foreign_keys=[technician_id])
     estimator = db.relationship("User", foreign_keys=[estimator_id])
 
@@ -579,7 +584,11 @@ class Estimate(TimestampMixin, db.Model):
     __tablename__ = "estimates"
 
     id = db.Column(db.Integer, primary_key=True)
-    job_id = db.Column(db.Integer, db.ForeignKey("job_cards.id"), nullable=False, index=True)
+    # Empty until the customer approves and the work is booked in. A quotation is
+    # raised against the *enquiry* first — that is what the estimator prices and
+    # what the customer accepts — so it has no job card for most of its life.
+    job_id = db.Column(db.Integer, db.ForeignKey("job_cards.id"), nullable=True, index=True)
+    booking_id = db.Column(db.Integer, db.ForeignKey("bookings.id"), nullable=True, index=True)
     reference = db.Column(db.String(30), unique=True, default=lambda: gen_ref("TC-EST"))
     public_token = db.Column(
         db.String(40), unique=True, index=True,
@@ -603,6 +612,7 @@ class Estimate(TimestampMixin, db.Model):
     sent_at = db.Column(db.DateTime)
 
     job = db.relationship("JobCard", back_populates="estimates")
+    booking = db.relationship("Booking", back_populates="estimates")
     items = db.relationship(
         "EstimateItem", back_populates="estimate", cascade="all, delete-orphan",
         order_by="EstimateItem.sort_order",
@@ -1093,6 +1103,12 @@ class Booking(TimestampMixin, db.Model):
     attended_by = db.relationship("User", foreign_keys=[attended_by_id])
     photos = db.relationship("BookingPhoto", back_populates="booking",
                              cascade="all, delete-orphan", order_by="BookingPhoto.id")
+    # What the enquiry turned into. A quotation is raised against the enquiry and
+    # is only attached to a job card once the customer approves it.
+    estimates = db.relationship("Estimate", back_populates="booking",
+                                order_by="Estimate.id")
+    job_cards = db.relationship("JobCard", back_populates="booking",
+                                order_by="JobCard.id")
 
     @property
     def display_reference(self) -> str:

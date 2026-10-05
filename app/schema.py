@@ -74,6 +74,45 @@ def ensure_columns(engine, table: str, columns: Mapping[str, str]) -> list[str]:
     return added
 
 
+def relax_not_null(engine, table: str, column: str) -> bool:
+    """Drop a NOT NULL constraint, so the column may hold a NULL.
+
+    ``ensure_columns`` only ever adds, and this is the one shape of change it
+    cannot express: there is no ``ALTER TABLE ... ALTER COLUMN`` in SQLite at
+    all — it needs the whole table rebuilt. Alembic's batch mode does that
+    rebuild, and degrades to a plain ``ALTER`` on PostgreSQL, so one call is
+    correct on both. That matters here because the local database is SQLite and
+    the deployed one is Postgres, and the two must not drift.
+
+    Idempotent: a column that is already nullable, or absent, is left alone.
+    Returns True when the column now accepts a NULL.
+    """
+    inspector = inspect(engine)
+    if table not in inspector.get_table_names():
+        return False
+
+    current = next((c for c in inspector.get_columns(table) if c["name"] == column),
+                   None)
+    if current is None or current["nullable"]:
+        return False
+
+    try:
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+
+        with engine.begin() as connection:
+            operations = Operations(MigrationContext.configure(connection))
+            with operations.batch_alter_table(table) as batch:
+                batch.alter_column(column, nullable=True)
+    except Exception:  # pragma: no cover - dialect-specific quirks
+        logger.warning("Could not relax NOT NULL on %s.%s", table, column,
+                       exc_info=True)
+        return False
+
+    logger.info("Relaxed NOT NULL on %s.%s", table, column)
+    return True
+
+
 def drop_columns(engine, table: str, names: Iterable[str]) -> list[str]:
     """Drop the named columns from ``table`` if they are still there.
 

@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from app.constants import BOOKING_STATUSES, TASK_STATUSES
 from app.models import User
-from app.schema import drop_columns, drop_tables, ensure_columns
+from app.schema import drop_columns, drop_tables, ensure_columns, relax_not_null
 
 
 def _booking(auth_client, phone="+263772100100", name="Report Lead"):
@@ -243,6 +243,41 @@ def test_drop_columns_removes_a_retired_field(tmp_path):
     with engine.begin() as conn:
         assert conn.execute(text("SELECT job_no FROM job_cards")).scalar() == "TC-1"
     assert drop_columns(engine, "nope", ["x"]) == []
+
+
+# The one change ``ensure_columns`` cannot express: a column that has to be able
+# to hold a NULL. A quotation is raised against the enquiry and only acquires a
+# job card once the customer approves the work, so estimates.job_id must be able
+# to be empty — and SQLite has no ALTER COLUMN, so the whole table is rebuilt.
+def test_relax_not_null_lets_a_column_hold_null(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'relax.db'}")
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE estimates (id INTEGER PRIMARY KEY, "
+            "job_id INTEGER NOT NULL, reference TEXT)"
+        ))
+        conn.execute(text("INSERT INTO estimates (job_id, reference) VALUES (7, 'TC-EST-1')"))
+        conn.execute(text("CREATE TABLE estimate_items (id INTEGER PRIMARY KEY, "
+                          "estimate_id INTEGER NOT NULL REFERENCES estimates(id))"))
+        conn.execute(text("INSERT INTO estimate_items (estimate_id) VALUES (7)"))
+
+    assert relax_not_null(engine, "estimates", "job_id") is True
+
+    column = next(c for c in inspect(engine).get_columns("estimates")
+                  if c["name"] == "job_id")
+    assert column["nullable"] is True
+    # The row survived, and so did the child table pointing at it.
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT reference FROM estimates")).scalar() == "TC-EST-1"
+        assert conn.execute(text("SELECT estimate_id FROM estimate_items")).scalar() == 7
+        conn.execute(text(
+            "INSERT INTO estimates (job_id, reference) VALUES (NULL, 'TC-EST-2')"))
+        assert conn.execute(text(
+            "SELECT id FROM estimates WHERE job_id IS NULL")).scalar() is not None
+
+    # Idempotent, and a missing table or column is not an error.
+    assert relax_not_null(engine, "estimates", "job_id") is False
+    assert relax_not_null(engine, "nope", "job_id") is False
 
 
 def test_drop_tables_removes_a_retired_table(tmp_path):

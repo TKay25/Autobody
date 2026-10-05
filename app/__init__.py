@@ -230,7 +230,7 @@ def _ensure_schema(app: Flask) -> None:
     the moment SQLAlchemy stopped sending it, every ``INSERT`` on that table
     failed. Retiring a field therefore means removing the physical column too.
     """
-    from .schema import drop_columns, drop_tables, ensure_columns
+    from .schema import drop_columns, drop_tables, ensure_columns, relax_not_null
 
     try:
         # Purely additive, so this is safe against a populated database. No
@@ -252,6 +252,19 @@ def _ensure_schema(app: Flask) -> None:
             "requested_at": "TIMESTAMP",
             "requested_note": "TEXT",
         })
+
+        # A quotation is raised against the *enquiry* — that is what the
+        # estimator prices and what the customer approves — and only acquires a
+        # job card when the work is booked in afterwards. So both records need
+        # to be able to point at the enquiry, and estimates.job_id has to be
+        # able to be empty, which is the one thing ensure_columns cannot do.
+        ensure_columns(db.engine, "estimates", {
+            "booking_id": "INTEGER",
+        })
+        ensure_columns(db.engine, "job_cards", {
+            "booking_id": "INTEGER",
+        })
+        relax_not_null(db.engine, "estimates", "job_id")
 
         ensure_columns(db.engine, "job_cards", {
             "feedback_requested_at": "TIMESTAMP",
