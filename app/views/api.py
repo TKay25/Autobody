@@ -2068,11 +2068,10 @@ def list_payments():
 
     since = as_date(request.args.get("since"))
     if since:
-        query = query.filter(Payment.created_at >= datetime.combine(since, datetime.min.time()))
+        query = query.filter(Payment.created_at >= tz.start_of_day_utc(since))
     until = as_date(request.args.get("until"))
     if until:
-        query = query.filter(
-            Payment.created_at < datetime.combine(until, datetime.min.time()) + timedelta(days=1))
+        query = query.filter(Payment.created_at < tz.end_of_day_utc(until))
 
     payments = query.order_by(Payment.id.desc()).limit(300).all()
 
@@ -2095,8 +2094,8 @@ def list_payments():
         "items": [p.to_dict() for p in payments],
         "count": len(payments),
         "total": float(total),
-        "received_today": _sum_from(datetime.combine(today, datetime.min.time())),
-        "received_month": _sum_from(datetime.combine(today.replace(day=1), datetime.min.time())),
+        "received_today": _sum_from(tz.start_of_day_utc(today)),
+        "received_month": _sum_from(tz.start_of_day_utc(today.replace(day=1))),
         "by_method": sorted(
             [{"method": name, "count": values["count"], "total": float(values["total"])}
              for name, values in by_method.items()],

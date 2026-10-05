@@ -987,7 +987,7 @@ def build_end_of_day_pdf(report: dict) -> bytes:
         _letterhead(
             [("Report", "End of day"),
              ("For", report["date_label"]),
-             ("Generated", (report["generated_at"] or "")[:16].replace("T", " "))],
+             ("Generated", report.get("generated_at_local") or "")],
         ),
         Spacer(1, 6 * mm),
 

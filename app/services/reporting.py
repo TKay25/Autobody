@@ -300,6 +300,8 @@ def end_of_day(day: date | None = None) -> dict:
         "date": day.isoformat(),
         "date_label": day.strftime("%A, %d %B %Y"),
         "generated_at": utcnow().isoformat(),
+        # The sheet is read in the workshop, so it prints the workshop's clock.
+        "generated_at_local": tz.format_local(utcnow(), "%d %b %Y %H:%M"),
         "jobs": jobs_section,
         "bookings": bookings_section,
         "tasks": tasks_section,

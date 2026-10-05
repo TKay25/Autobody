@@ -1,11 +1,24 @@
 """Pytest fixtures."""
 from __future__ import annotations
 
+import os
+import time
+
 import pytest
 
 from app import create_app
 from app.extensions import db
 from config import ProductionConfig, TestConfig
+
+# The workshop is in Harare, and the app now says so explicitly (see app/tz.py).
+# Many tests still build their expected dates with `date.today()` though, so pin
+# the test process to the same timezone: on a UTC CI runner the two clocks would
+# disagree for two hours every night and the suite would fail on the calendar
+# rather than on the code. `tzset` is POSIX-only, so on Windows this is a no-op
+# -- which is fine, because the developer is in Harare.
+os.environ["TZ"] = "Africa/Harare"
+if hasattr(time, "tzset"):
+    time.tzset()
 
 
 @pytest.fixture()

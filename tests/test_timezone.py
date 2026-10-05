@@ -253,3 +253,58 @@ def test_the_sidebar_clock_shows_harare_time():
     assert clock, "paintClock is missing from app.js"
     assert "clockFmt" in clock.group(1), "the clock uses getHours() — the PC's zone"
     assert "Africa/Harare" in source
+
+
+# ── money, which is where a wrong boundary costs real money ──────────────
+def test_the_days_takings_run_to_harare_midnight(app, auth_client):
+    """A payment taken at 23:30 in Harare belongs to that day's banking.
+
+    The register's window started at UTC midnight — two hours *after* the
+    workshop opened the day — so the last two hours of every trading day were
+    attributed to tomorrow. At the month end that is a real discrepancy against
+    the bank statement.
+    """
+    from tests.test_payments import _invoice_with_payment
+
+    from app.extensions import db
+    from app.models import Payment
+
+    _invoice_with_payment(auth_client, reg="TZ101")
+    _invoice_with_payment(auth_client, reg="TZ102")
+
+    late_today = tz.start_of_day_utc(tz.today()) + timedelta(hours=23, minutes=30)
+    rows = Payment.query.order_by(Payment.id.asc()).all()
+    assert len(rows) == 2
+
+    rows[0].created_at = late_today
+    rows[1].created_at = late_today - timedelta(days=1)      # 23:30 yesterday
+    db.session.commit()
+
+    body = auth_client.get("/api/payments").get_json()
+    assert body["received_today"] == float(rows[0].amount)
+
+
+def test_the_end_of_day_sheet_prints_the_harare_clock(app):
+    """The sheet is filed in the workshop, so it must not read two hours early."""
+    from app.services import reporting
+
+    report = reporting.end_of_day()
+    stamped = datetime.fromisoformat(report["generated_at"])            # naive UTC
+    printed = datetime.strptime(report["generated_at_local"], "%d %b %Y %H:%M")
+    delta = (printed - stamped).total_seconds()
+
+    assert delta == pytest.approx(2 * 3600, abs=60), "not a Harare reading"
+    assert abs((printed - tz.now().replace(tzinfo=None, microsecond=0)).total_seconds()) < 120
+
+
+def test_no_module_builds_a_utc_midnight_boundary():
+    """`datetime.combine(day, time.min)` is UTC midnight, which is 02:00 Harare."""
+    offenders: list[str] = []
+    for path in sorted(APP_DIR.rglob("*.py")):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "datetime.min.time()" in line:
+                offenders.append(f"{path.relative_to(APP_DIR)}:{number}")
+    assert not offenders, (
+        "these bound a day at UTC midnight, so the first two hours of the workshop's "
+        "day are lost; use app.tz.start_of_day_utc / end_of_day_utc: "
+        + ", ".join(offenders))
