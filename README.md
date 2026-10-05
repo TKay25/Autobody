@@ -503,8 +503,61 @@ when you see this; it is telling you a variable is missing:
 | `WA_MODE=live with no WA_APP_SECRET` | `WA_APP_SECRET` from Meta → Settings → Basic. Without it the public webhook accepts unsigned POSTs, so anyone who learns the URL can create customers, enquiries and job cards. |
 | `WA_MODE=live with PUBLIC_BASE_URL=…` | `PUBLIC_BASE_URL` set to the real HTTPS URL. Customer quotations, invoices and receipts are sent as links to it, and Meta fetches them from the public internet. |
 
-There is deliberately **no override switch**. Each fix is a variable, and a
-bypass would get used.
+There is deliberately no override by default. Each fix is a variable, and a
+bypass left lying around gets used.
+
+### Booting anyway — `ALLOW_UNSAFE_PRODUCTION`
+
+If you need the site up before the configuration is right, set this on the host:
+
+```dotenv
+ALLOW_UNSAFE_PRODUCTION=true
+```
+
+It waives the refusal. It **fixes nothing** — an unsafe deploy boots exactly as
+unsafe as it was, and every waived risk is printed at `ERROR` on each boot:
+
+```
+ERROR:app:BOOTING AN UNSAFE PRODUCTION CONFIGURATION: ALLOW_UNSAFE_PRODUCTION is on.
+The following are being waived, not fixed:
+  - WA_MODE=live with no WA_APP_SECRET: the webhook is public and accepts unsigned
+    POSTs, so anyone who learns the URL can create customers, enquiries and job cards.
+```
+
+Two of the four are worth knowing about before you use it, because they do not
+fail visibly:
+
+- **No `WA_APP_SECRET`** — the webhook accepts unsigned POSTs. Anyone who learns
+  the URL can create customers and enquiries, and can make your business number
+  send WhatsApp messages to real people. You would not see it happen.
+- **A weak `SECRET_KEY`** — see the next section. A guessable key is a forgeable
+  owner session, and the guessing happens entirely offline.
+
+Turn it off again once the variables are set.
+
+### `SECRET_KEY` has to be random, not memorable
+
+The guard only rejects the published default, so a short or patterned key boots
+happily — and is the one mistake here that has no warning at all.
+
+Flask signs the session cookie as `base64(payload).timestamp.signature`, using
+HMAC with `SECRET_KEY`. **Visiting `/login` hands anyone a session cookie**, so
+an attacker gets a known payload with a valid signature for free. They then guess
+keys offline, recomputing the HMAC until it matches — no rate limit, no log line,
+nothing on your server. A match is the key, confirmed. Sign `{"user_id": 1}` with
+it and you are the owner.
+
+So the key's entropy is the only thing protecting the cookie. A short phrase like
+`Summer2024!` or `Topclass123` is characters of pattern, not characters of
+entropy. Use:
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+64 characters, roughly 384 bits. It is never read by a human, so it does not need
+to be memorable — and it must not be reused for `SEED_PASSWORD` or
+`WA_VERIFY_TOKEN`, because a key that leaks anywhere else is a key that leaks here.
 
 ### ⚠️ SQLite does not survive a deploy
 

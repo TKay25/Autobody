@@ -35,11 +35,32 @@ def _database_uri() -> str:
     return raw
 
 
+def _public_base_url() -> str:
+    """The absolute, publicly reachable URL customers get links to.
+
+    Render sets ``RENDER_EXTERNAL_URL`` to the service's own public HTTPS URL,
+    so a deploy that forgets ``PUBLIC_BASE_URL`` still gets the right answer
+    instead of the localhost default — which the production check rejects, and
+    which would hand customers links only the server itself can open.
+    """
+    return (
+        os.getenv("PUBLIC_BASE_URL")
+        or os.getenv("RENDER_EXTERNAL_URL")
+        or "http://127.0.0.1:5000"
+    ).rstrip("/")
+
+
 class Config:    # Lets the factory tell a real deployment from a local run without guessing
     # from hostnames or env vars. See `_assert_production_ready`.
     IS_PRODUCTION = False
     # ── Flask ────────────────────────────────────────────────────────────
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
+    # Boot in production even when the checks in `_assert_production_ready`
+    # fail. Off by default, because every check there guards a failure that is
+    # otherwise silent — the app boots, renders, and is quietly wide open. Turn
+    # it on knowingly: each waived risk is printed at ERROR on every boot, and
+    # waiving it does not fix anything, it only stops the refusal.
+    ALLOW_UNSAFE_PRODUCTION = _bool("ALLOW_UNSAFE_PRODUCTION", False)
     JSON_SORT_KEYS = False
     MAX_CONTENT_LENGTH = 24 * 1024 * 1024  # 24 MB photo uploads
     WTF_CSRF_TIME_LIMIT = None
@@ -118,7 +139,7 @@ class Config:    # Lets the factory tell a real deployment from a local run with
 
     # Absolute, publicly reachable base URL for customer-facing links and for
     # document URLs that Meta must fetch. Must be HTTPS in production.
-    PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:5000").rstrip("/")
+    PUBLIC_BASE_URL = _public_base_url()
 
     # ── Documents ────────────────────────────────────────────────────────
     BANK_DETAILS = os.getenv(

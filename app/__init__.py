@@ -78,8 +78,13 @@ def _assert_production_ready(app: Flask) -> None:
     than warn because a warning in a host's log viewer is a warning nobody reads,
     and none of these are survivable in front of real customers.
 
-    Deliberately no override switch. The fix for each one is to set a variable,
-    which is a two-minute job; a bypass would get used.
+    Deliberately no override switch by default. The fix for each one is to set a
+    variable, which is a two-minute job, and a bypass left lying around gets used.
+
+    ``ALLOW_UNSAFE_PRODUCTION=true`` is that override, for when somebody needs the
+    site up before the configuration is right. It waives the refusal; it fixes
+    nothing. Every waived risk is logged at ERROR on each boot so the state of the
+    deployment is never a surprise.
     """
     if not app.config.get("IS_PRODUCTION"):
         return
@@ -121,6 +126,16 @@ def _assert_production_ready(app: Flask) -> None:
             )
 
     if problems:
+        # An explicit, loud escape hatch. The checks above stay the default; a
+        # deploy that waives them says so on purpose, and says so on every boot,
+        # so that nobody later finds the guard switched off and assumes it is on.
+        if app.config.get("ALLOW_UNSAFE_PRODUCTION"):
+            app.logger.error(
+                "BOOTING AN UNSAFE PRODUCTION CONFIGURATION: ALLOW_UNSAFE_PRODUCTION "
+                "is on. The following are being waived, not fixed:\n%s",
+                "\n".join(f"  - {problem}" for problem in problems),
+            )
+            return
         raise RuntimeError(
             "Refusing to start: this production configuration is unsafe.\n"
             + "\n".join(f"  - {problem}" for problem in problems)

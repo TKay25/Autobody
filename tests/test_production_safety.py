@@ -113,9 +113,90 @@ def test_sqlite_in_production_warns_but_still_starts(production_config, caplog):
     assert "SQLite" in caplog.text
 
 
+def test_the_override_boots_where_the_guard_would_refuse(production_config):
+    """The escape hatch: get the site up, knowingly, without deleting the checks."""
+    app = create_app(broken(
+        production_config,
+        ALLOW_UNSAFE_PRODUCTION=True,
+        WA_MODE="live",
+        WA_APP_SECRET="",
+        PUBLIC_BASE_URL="http://127.0.0.1:5000",
+    ))
+    assert app is not None
+    # Still live, so the guard was waived rather than the config quietly downgraded.
+    assert app.config["WA_MODE"] == "live"
+
+
+def test_the_override_names_what_it_waived(production_config, caplog):
+    """A waived check has to be visible on every boot. The whole reason these
+    checks raise instead of warn is that a warning nobody reads is worthless."""
+    with caplog.at_level(logging.ERROR):
+        create_app(broken(
+            production_config,
+            ALLOW_UNSAFE_PRODUCTION=True,
+            WA_MODE="live",
+            WA_APP_SECRET="",
+        ))
+    assert "ALLOW_UNSAFE_PRODUCTION" in caplog.text
+    assert "WA_APP_SECRET" in caplog.text
+
+
+def test_the_override_is_off_unless_it_is_asked_for(production_config):
+    """Default behaviour is unchanged: an unsafe deploy is still refused."""
+    with pytest.raises(RuntimeError, match="WA_APP_SECRET"):
+        create_app(broken(
+            production_config,
+            ALLOW_UNSAFE_PRODUCTION=False,
+            WA_MODE="live",
+            WA_APP_SECRET="",
+        ))
+
+
+def test_the_override_does_nothing_in_a_safe_production_config(production_config,
+                                                               caplog):
+    """It is a waiver, not a mode: a correct deploy logs nothing extra."""
+    with caplog.at_level(logging.ERROR):
+        create_app(broken(production_config, ALLOW_UNSAFE_PRODUCTION=True))
+    assert "ALLOW_UNSAFE_PRODUCTION" not in caplog.text
+
+
 def test_the_guard_message_is_pure_ascii(production_config):
     """The message is printed by whatever logger the host runs, often on a cp1252
     console. A UnicodeEncodeError there would hide the real problem."""
     with pytest.raises(RuntimeError) as caught:
         create_app(broken(production_config, SECRET_KEY="dev-secret-change-me"))
     str(caught.value).encode("ascii")
+
+
+def test_render_supplies_the_public_url_when_it_is_not_set(monkeypatch):
+    """A deploy that forgets PUBLIC_BASE_URL should still get the right answer.
+
+    Render sets RENDER_EXTERNAL_URL to the service's own public HTTPS URL. Without
+    this fallback the guard refuses the deploy pointing at 127.0.0.1 — a value
+    nobody configured and nobody can act on, since the real URL was right there
+    in the environment.
+    """
+    import config as config_module
+
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://autobody.onrender.com")
+    assert config_module._public_base_url() == "https://autobody.onrender.com"
+
+
+def test_an_explicit_public_url_still_wins_over_render(monkeypatch):
+    """The fallback must never override a value somebody actually set."""
+    import config as config_module
+
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://autobody.onrender.com")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://workshop.topclass.co.zw/")
+    # Trailing slash is stripped: these URLs are concatenated with a path.
+    assert config_module._public_base_url() == "https://workshop.topclass.co.zw"
+
+
+def test_without_any_public_url_it_falls_back_to_localhost(monkeypatch):
+    """A local run keeps working; the guard is what refuses this in production."""
+    import config as config_module
+
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+    assert config_module._public_base_url() == "http://127.0.0.1:5000"
