@@ -66,6 +66,20 @@ def create_app(config_object: type[Config] | None = None) -> Flask:
         _bootstrap_reference_data(app)
         _bootstrap_owner(app)
 
+        # Everything above talks to the database, so the pool now holds a live
+        # PostgreSQL connection. Under gunicorn --preload this factory runs in
+        # the master process, which then forks the workers — and a forked worker
+        # inherits that same TLS socket. Two processes interleaving records on
+        # one TLS connection is precisely what "SSL error: decryption failed or
+        # bad record mac" means, and it appears on the first query a request
+        # makes. Dropping the pool here costs each worker one reconnect and
+        # removes the sharing.
+        #
+        # Not for SQLite: an in-memory database *is* that connection, so
+        # disposing it would throw the database away.
+        if not app.config["SQLALCHEMY_DATABASE_URI"].startswith("sqlite"):
+            db.engine.dispose()
+
     return app
 
 

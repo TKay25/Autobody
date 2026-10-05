@@ -65,6 +65,10 @@ class Config:
     # ── Database ─────────────────────────────────────────────────────────
     SQLALCHEMY_DATABASE_URI = _database_uri()
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # Render's Postgres sits behind a proxy that drops idle connections, and a
+    # free-tier service is idle most of the day. Without a liveness check the
+    # first query after a quiet spell is handed a socket that is already gone.
+    SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
 
     # ── Uploads ──────────────────────────────────────────────────────────
     UPLOAD_DIR = INSTANCE_DIR / "uploads"
