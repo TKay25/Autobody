@@ -342,6 +342,7 @@ class WhatsAppClient:
             conversation = get_or_create_conversation(to)
 
         status = "delivered"
+        failure = None
         try:
             result = self._post(payload)
             if isinstance(result, dict) and result.get("simulated"):
@@ -352,13 +353,48 @@ class WhatsAppClient:
                 status = "simulated"
         except WhatsAppError as exc:
             status = "failed"
+            failure = exc
             log.error("WhatsApp send failed: %s", exc)
 
         message = log_outbound(
             conversation, body=body, msg_type=msg_type, payload=extra,
             is_bot=is_bot, intent=intent, job_id=job_id, status=status,
         )
+
+        # Queued *after* the log entry exists, so the retry can find the failed
+        # message and mark it delivered rather than posting a second copy of the
+        # same reply into the thread.
+        #
+        # The customer is owed this message. If the failure is transient — a dead
+        # link, Meta having a bad moment — keep the whole envelope and try again,
+        # rather than logging it and letting the customer wait for a reply that is
+        # never coming. A permanent refusal (a 400 from Meta) is not queued: it
+        # would fail identically for ever.
+        if failure is not None and failure.retryable:
+            _queue_for_retry(to, payload, body, msg_type, intent, conversation,
+                             failure, message_id=getattr(message, "id", None))
         return message
+
+
+def _queue_for_retry(to, payload, body, msg_type, intent, conversation, exc,
+                     *, message_id: int | None = None) -> None:
+    """Park an undeliverable message. Never raises.
+
+    A failure to queue must not turn into a failure to return the WaMessage the
+    caller is expecting — the send already failed, and that is enough to report.
+    """
+    try:
+        from . import outbound
+
+        outbound.enqueue(
+            wa_id=to, payload=payload, body=body, msg_type=msg_type,
+            intent=intent,
+            conversation_id=getattr(conversation, "id", None),
+            message_id=message_id,
+            error=str(exc),
+        )
+    except Exception as queue_exc:  # noqa: BLE001
+        log.error("Could not queue an undelivered message to %s: %s", to, queue_exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

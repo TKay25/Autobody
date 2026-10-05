@@ -197,6 +197,26 @@ def _ensure_schema(app: Flask) -> None:
         db.session.rollback()
         app.logger.warning("Idempotency prune failed.", exc_info=True)
 
+    # Messages that were delivered or given up on a fortnight ago have served
+    # their purpose. The pending ones are never touched.
+    try:
+        from .services import outbound
+
+        stale = outbound.prune()
+        if stale:
+            app.logger.info("Pruned %s settled outbound queue row(s).", stale)
+        waiting = outbound.pending_count()
+        if waiting:
+            # Worth saying at boot: these are customers who have not heard from
+            # us, and the retry job is the only thing that will change that.
+            app.logger.warning(
+                "%s WhatsApp message(s) are still waiting to be delivered. Run "
+                "'flask outbound-retry' or the /api/whatsapp/outbox/retry cron.",
+                waiting)
+    except Exception:
+        db.session.rollback()
+        app.logger.warning("Outbound queue check failed.", exc_info=True)
+
 
 def _bootstrap_reference_data(app: Flask) -> None:
     """Give a database with no accounts something to sign in with.
@@ -440,9 +460,23 @@ def _register_cli(app: Flask) -> None:
             f"({result['due']} due, {result['skipped']} already asked)."
         )
 
+    @app.cli.command("outbound-retry")
+    def outbound_retry() -> None:
+        """Re-send WhatsApp messages that could not go out while the link was down.
+
+        Safe to run as often as you like — each message carries its own
+        next-attempt time, so a call that is too early finds nothing due.
+        """
+        from .services import outbound
+
+        result = outbound.retry_due()
+        click.echo(
+            f"{result['sent']} message(s) delivered, {result['rescheduled']} still "
+            f"trying, {result['failed']} given up on "
+            f"({result['due']} were due, {result['pending']} waiting)."
+        )
+
     @app.cli.command("purge-business-data")
-    @click.option("--yes", is_flag=True,
-                  help="Actually delete. Without it the command only reports.")
     @click.option("--keep-whatsapp", is_flag=True,
                   help="Keep the WhatsApp inbox (conversations and messages).")
     def purge_business_data(yes: bool, keep_whatsapp: bool) -> None:

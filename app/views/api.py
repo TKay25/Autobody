@@ -1216,6 +1216,45 @@ def run_booking_reminders():
     return jsonify(send_due_booking_reminders(day))
 
 
+@bp.post("/whatsapp/outbox/retry")
+@login_required
+def run_outbound_retry():
+    """Re-send the messages the workshop owed a customer while the link was down.
+
+    Exposed as an endpoint as well as ``flask outbound-retry`` so a scheduler that
+    only speaks HTTP can drive it, which is how the reminders and the feedback
+    asks already work. Safe to call as often as you like: each message carries its
+    own next-attempt time, so a call that is too early simply finds nothing due.
+    """
+    if not current_user.is_manager:
+        return manager_only()
+
+    from ..services import outbound
+
+    return jsonify(outbound.retry_due())
+
+
+@bp.get("/whatsapp/outbox")
+@login_required
+def list_outbound_queue():
+    """What is still waiting, and what has been given up on.
+
+    The desk needs both: "waiting" answers "did the customer hear from us yet?",
+    and "given up" is a customer who needs phoning.
+    """
+    from ..models import OutboundQueue
+
+    rows = (OutboundQueue.query
+            .filter(OutboundQueue.status.in_(("pending", "failed")))
+            .order_by(OutboundQueue.created_at.desc())
+            .limit(200).all())
+    return jsonify({
+        "items": [r.to_dict() for r in rows],
+        "pending": sum(1 for r in rows if r.status == "pending"),
+        "failed": sum(1 for r in rows if r.status == "failed"),
+    })
+
+
 @bp.post("/jobs/feedback-requests")
 @login_required
 def run_feedback_requests():

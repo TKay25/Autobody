@@ -1501,6 +1501,10 @@ class OutboundQueue(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     wa_id = db.Column(db.String(40), nullable=False, index=True)
     conversation_id = db.Column(db.Integer, db.ForeignKey("wa_conversations.id"))
+    # The failed message this row is trying to deliver. Kept so a successful retry
+    # *updates* that entry rather than adding a second one — otherwise the inbox
+    # shows the customer's reply twice and reads as though we answered twice.
+    message_id = db.Column(db.Integer, db.ForeignKey("wa_messages.id"))
     # The full Meta envelope, exactly as it would have been POSTed.
     payload_json = db.Column(db.Text, nullable=False)
     # What the customer would have read — for the screen, not for sending.
@@ -1515,6 +1519,7 @@ class OutboundQueue(db.Model):
     sent_at = db.Column(db.DateTime)
 
     conversation = db.relationship("WaConversation")
+    message = db.relationship("WaMessage")
 
     @property
     def is_pending(self) -> bool:
@@ -1527,6 +1532,7 @@ class OutboundQueue(db.Model):
             "body": self.body,
             "msg_type": self.msg_type,
             "intent": self.intent,
+            "message_id": self.message_id,
             "attempts": self.attempts or 0,
             "last_error": self.last_error,
             "status": self.status,
