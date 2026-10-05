@@ -71,27 +71,84 @@
       icon: 'calendar-check', href: '#/bookings' },
   ];
 
-  const RAIL_KEY = 'topclass.sidebar.rail';
+  /* ── Display preferences ──────────────────────────────────────────────
+     Rail mode, compact rows and the folded nav sections follow the ACCOUNT, like
+     the rail order: the same person works the front desk and the workshop tablet.
+     The browser keeps a per-user copy purely so the first frame is right — the
+     inline script in app.html reads it before paint — and the account is the
+     truth. One unscoped key on a shared PC hands one operator's layout to
+     whoever signs in next, which is the thing this whole layer exists to stop. */
+  const DEFAULT_PREFS = { rail: false, compact_rows: false, collapsed_sections: [] };
 
-  function isRail() {
-    try { return localStorage.getItem(RAIL_KEY) === '1'; } catch (e) { return false; }
-  }
+  /* Where the browser-only version kept each one. Read once on the way past, so a
+     layout somebody already set up is not silently thrown away. */
+  const LEGACY_PREFS = {
+    rail: ['topclass.sidebar.rail', (raw) => raw === '1'],
+    compact_rows: ['topclass.rows.compact', (raw) => raw === '1'],
+    collapsed_sections: ['topclass.nav.collapsed', (raw) => {
+      try { return JSON.parse(raw) || []; } catch (e) { return []; }
+    }],
+  };
 
-  /* Folded nav sections. Remembered per browser, like the rail and the row
-     density: a storeman who never opens Money should not be re-opening it
-     every morning. */
-  const COLLAPSE_KEY = 'topclass.nav.collapsed';
+  const prefsKeyFor = (userId) => `topclass.prefs.${userId || 0}`;
 
-  function collapsedSections() {
-    try {
-      const raw = localStorage.getItem(COLLAPSE_KEY);
-      return new Set(raw ? JSON.parse(raw) : []);
-    } catch (e) { return new Set(); }
+  let prefs = { ...DEFAULT_PREFS };
+  let prefsUserId = 0;
+
+  function isRail() { return prefs.rail === true; }
+  function isCompact() { return prefs.compact_rows === true; }
+  function collapsedSections() { return new Set(prefs.collapsed_sections || []); }
+
+  function savePrefs(patch) {
+    prefs = { ...prefs, ...patch };
+    try { localStorage.setItem(prefsKeyFor(prefsUserId), JSON.stringify(prefs)); }
+    catch (e) { /* private mode */ }
+    /* Fire and forget: the rail has already moved on screen, and failing to file
+       a display preference is not worth an error anybody has to read. */
+    api.patch('/api/me/preferences', patch, { silent: true }).catch(() => {});
   }
 
   function saveCollapsed(set) {
-    try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...set])); }
-    catch (e) { /* ignore */ }
+    savePrefs({ collapsed_sections: [...set] });
+  }
+
+  /* Server first, then this browser's copy, then the pre-server keys. Any of the
+     three counts as "chosen" — which is exactly why the server sends only what
+     was actually set rather than a filled-in default. */
+  function loadPrefs(userId, fromServer) {
+    prefsUserId = userId || 0;
+    let cached = null;
+    try { cached = JSON.parse(localStorage.getItem(prefsKeyFor(userId)) || 'null'); }
+    catch (e) { cached = null; }
+
+    const next = { ...DEFAULT_PREFS };
+    /* Only the keys that actually came from cache or from a legacy key are pushed.
+       Sending the whole set would put explicit defaults on the account for anyone
+       who happened to have one old key lying around, which is noise at best and
+       at worst makes the account look "already chosen" when it never was. */
+    const patch = {};
+    Object.keys(DEFAULT_PREFS).forEach((key) => {
+      if (fromServer && fromServer[key] !== undefined) { next[key] = fromServer[key]; return; }
+      if (cached && cached[key] !== undefined) {
+        next[key] = cached[key];
+        patch[key] = cached[key];
+        return;
+      }
+      const [legacyKey, parse] = LEGACY_PREFS[key];
+      let raw = null;
+      try { raw = localStorage.getItem(legacyKey); } catch (e) { raw = null; }
+      if (raw !== null) {
+        next[key] = parse(raw);
+        patch[key] = next[key];
+      }
+    });
+    prefs = next;
+    try { Object.values(LEGACY_PREFS).forEach(([key]) => localStorage.removeItem(key)); }
+    catch (e) { /* private mode */ }
+    /* Seed the account from whatever this browser had, so a layout somebody
+       already set up starts following them from here. If the write fails it is
+       retried on the next load, which is what makes this self-healing. */
+    if (Object.keys(patch).length) savePrefs(patch);
   }
 
   /* Kept at module scope so it cannot be collected while it is still observing. */
@@ -1358,7 +1415,7 @@
 
   function toggleRail() {
     const rail = !isRail();
-    try { localStorage.setItem(RAIL_KEY, rail ? '1' : '0'); } catch (e) { /* ignore */ }
+    savePrefs({ rail });
     applyRail(rail);
   }
 
@@ -1368,19 +1425,13 @@
      on one screen, which is what a front-desk tablet wants. It is a class on
      the root that swaps the table padding tokens, so it costs one repaint and
      no reload. */
-  const DENSITY_KEY = 'topclass.rows.compact';
-
-  function isCompact() {
-    try { return localStorage.getItem(DENSITY_KEY) === '1'; } catch (e) { return false; }
-  }
-
   function applyDensity(compact) {
     document.documentElement.classList.toggle('density-compact', compact);
   }
 
   function toggleDensity() {
     const compact = !isCompact();
-    try { localStorage.setItem(DENSITY_KEY, compact ? '1' : '0'); } catch (e) { /* ignore */ }
+    savePrefs({ compact_rows: compact });
     applyDensity(compact);
     T.toast(compact ? 'Compact rows on — more of the list per screen.' : 'Comfortable rows on.');
   }
@@ -1396,6 +1447,12 @@
     T.stageColours = {};
     (payload.meta.stages || []).forEach((s) => { T.stageColours[s.code] = s.colour; });
 
+    /* Before layout, because layout applies the rail from them. Row density has
+       no equivalent hook — the shell script sets it before first paint, but that
+       only knows what the account and the browser cache had, so a value adopted
+       from a legacy key would otherwise sit unused until the next load. */
+    loadPrefs((payload.user || {}).id, (payload.user || {}).preferences);
+    applyDensity(isCompact());
     T.mount('#app', layout(payload));
     T.startRouter();
 

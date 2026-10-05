@@ -56,16 +56,26 @@
 <script>
   window.__BOOTSTRAP__ = {{ bootstrap | tojson }};
   window.__CSRF__ = "{{ csrf_token() if csrf_token is defined else '' }}";
-  /* Apply the saved display preferences before first paint so the shell does
-     not flash from full width to rail, or from comfortable rows to compact. */
-  try {
-    if (localStorage.getItem('topclass.sidebar.rail') === '1') {
-      document.documentElement.classList.add('sidebar-rail');
-    }
-    if (localStorage.getItem('topclass.rows.compact') === '1') {
-      document.documentElement.classList.add('density-compact');
-    }
-  } catch (e) { /* private mode */ }
+  /* Apply the saved display preferences before first paint so the shell does not
+     flash from full width to rail, or from comfortable rows to compact. They live
+     on the account; the browser's per-user copy is only here to cover the gap
+     between this first frame and the app booting. */
+  (function () {
+    var user = (window.__BOOTSTRAP__ || {}).user || {};
+    var fromServer = user.preferences || {};
+    var cached = null;
+    try { cached = JSON.parse(localStorage.getItem('topclass.prefs.' + (user.id || 0)) || 'null'); }
+    catch (e) { cached = null; }
+    var on = function (key) {
+      if (typeof fromServer[key] === 'boolean') return fromServer[key];
+      if (cached && typeof cached[key] === 'boolean') return cached[key];
+      return false;
+    };
+    try {
+      if (on('rail')) document.documentElement.classList.add('sidebar-rail');
+      if (on('compact_rows')) document.documentElement.classList.add('density-compact');
+    } catch (e) { /* private mode */ }
+  })();
 
   /* Registered here, not in core.js, because only this page needs it: the worker
      precaches the app shell and the login page has nothing to serve offline.

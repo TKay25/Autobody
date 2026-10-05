@@ -92,8 +92,62 @@ class User(UserMixin, TimestampMixin, db.Model):
     # of routes. Nullable on purpose: the schema guard adds columns with a plain
     # ALTER, and SQLite will not add a NOT NULL column without a default.
     nav_order = db.Column(db.Text)
+    # The display toggles: rail mode, compact rows, folded nav sections. One JSON
+    # object rather than a column each, so the next preference the rail grows
+    # costs no migration at all — the schema guard is only a nuisance when it has
+    # to run. `nav_order` keeps its own column because it is structured and
+    # bounded; these are just toggles.
+    preferences = db.Column(db.Text)
 
     NAV_ORDER_MAX = 40
+    PREFERENCE_SECTIONS_MAX = 24
+
+    @property
+    def display_preferences(self) -> dict:
+        """Only what has actually been set, and only what we understand.
+
+        Deliberately NOT defaulted. The client has to be able to tell "this
+        account has never chosen" from "this account chose the default", or a
+        layout somebody set up in the browser before this moved onto the account
+        would be overwritten by an empty one the first time they sign in.
+        """
+        if not self.preferences:
+            return {}
+        try:
+            stored = json.loads(self.preferences)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(stored, dict):
+            return {}
+
+        out = {}
+        for key in ("rail", "compact_rows"):
+            if isinstance(stored.get(key), bool):
+                out[key] = stored[key]
+        sections = stored.get("collapsed_sections")
+        if isinstance(sections, list):
+            out["collapsed_sections"] = [
+                s for s in sections if isinstance(s, str) and 0 < len(s) <= 60
+            ][: self.PREFERENCE_SECTIONS_MAX]
+        return out
+
+    def set_display_preferences(self, patch) -> None:
+        """Merge a partial patch of known preferences.
+
+        A merge rather than a replace: the rail, the row density and the folded
+        sections are saved by three different gestures, so a replace would mean
+        any one of them quietly resetting the other two.
+        """
+        current = self.display_preferences
+        for key in ("rail", "compact_rows"):
+            if isinstance(patch.get(key), bool):
+                current[key] = patch[key]
+        sections = patch.get("collapsed_sections")
+        if isinstance(sections, list):
+            current["collapsed_sections"] = [
+                s for s in sections if isinstance(s, str) and 0 < len(s) <= 60
+            ][: self.PREFERENCE_SECTIONS_MAX]
+        self.preferences = json.dumps(current) if current else None
 
     @property
     def nav_order_routes(self) -> list:
@@ -179,6 +233,9 @@ class User(UserMixin, TimestampMixin, db.Model):
             # The rail's order, so it follows the operator to whichever machine
             # they sign in on instead of living in one browser's localStorage.
             "nav_order": self.nav_order_routes,
+            # Same reasoning for rail mode, row density and the folded sections.
+            # Not defaulted — see `display_preferences`.
+            "preferences": self.display_preferences,
         }
 
     def __repr__(self) -> str:  # pragma: no cover

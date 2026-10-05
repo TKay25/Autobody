@@ -169,13 +169,32 @@ def save_nav_order():
     front desk to the workshop tablet. A single unscoped localStorage key does
     the opposite on a shared PC: it hands one person's arrangement to the next.
     """
-    data = request.get_json(silent=True) or {}
-    routes = data.get("routes")
+    data = request.get_json(silent=True)
+    routes = data.get("routes") if isinstance(data, dict) else None
     if not isinstance(routes, list):
         return jsonify({"error": "routes must be a list"}), 400
     current_user.set_nav_order(routes)
     db.session.commit()
     return jsonify({"nav_order": current_user.nav_order_routes})
+
+
+@bp.patch("/me/preferences")
+@login_required
+def save_preferences():
+    """Store this operator's display preferences.
+
+    On the user, not in the browser, so their rail mode, row density and folded
+    sections follow them from the front desk to the workshop tablet — and so a
+    shared PC does not hand one person's layout to whoever signs in next.
+    """
+    # Note: no `or {}` here. An empty list is falsy, so coercing the body first
+    # turns `[]` into `{}` and waves it through the type check as an empty patch.
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "expected an object"}), 400
+    current_user.set_display_preferences(data)
+    db.session.commit()
+    return jsonify({"preferences": current_user.display_preferences})
 
 
 @bp.get("/badges")

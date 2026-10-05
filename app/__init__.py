@@ -173,10 +173,12 @@ def _ensure_schema(app: Flask) -> None:
             "id_number": "VARCHAR(60)",
         })
 
-        # The navigation rail's per-account order. A column added to a table that
-        # already existed, so it needs the guard like any other.
+        # The navigation rail's per-account order, and the display toggles that
+        # go with it. Columns added to a table that already existed, so they need
+        # the guard like any other.
         ensure_columns(db.engine, "users", {
             "nav_order": "TEXT",
+            "preferences": "TEXT",
         })
 
         # A column added to a table that already existed. `create_all()` makes a
