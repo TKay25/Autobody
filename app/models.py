@@ -17,8 +17,10 @@ from .constants import (
     BOOKING_OUTCOMES,
     BOOKING_SOURCE_LABELS,
     ENQUIRY_REF_PREFIX,
+    SERVICE_BY_NAME,
     STAGE_LABELS,
     STAGE_PROGRESS,
+    stages_for_service,
 )
 from . import tz
 from .extensions import db
@@ -422,6 +424,36 @@ class JobCard(TimestampMixin, db.Model):
         return STAGE_LABELS.get(self.stage, self.stage)
 
     @property
+    def service_code(self) -> str:
+        """The service line's code, or "" for one this shop no longer offers.
+
+        Empty rather than a guess: a card whose service was retired still has to
+        render, and pretending it is a panel job would put it on the wrong walk.
+        """
+        entry = SERVICE_BY_NAME.get((self.service or "").strip())
+        return entry["code"] if entry else ""
+
+    def stages(self) -> list[str]:
+        """This card's own walk through the workshop, in order.
+
+        The service chosen when the card was opened decides it — a valet is not
+        sent to the spray booth — so this is the list `job_flow` advances
+        through, and the list the move dialog offers.
+        """
+        return stages_for_service(self.service)
+
+    def stage_step(self) -> int:
+        """Where the card is on its own walk: 1-based, or 0 when it is off it.
+
+        0 is a real answer, not a missing one: a card can sit in a column its
+        service never uses, because the service was corrected after the car was
+        booked in or because somebody moved it there on purpose. The board says
+        so rather than pretending the position is one of the card's own.
+        """
+        walk = self.stages()
+        return walk.index(self.stage) + 1 if self.stage in walk else 0
+
+    @property
     def progress(self) -> int:
         return STAGE_PROGRESS.get(self.stage, 0)
 
@@ -470,6 +502,7 @@ class JobCard(TimestampMixin, db.Model):
         return {"total": len(rows), "passed": passed, "failed": len(rows) - passed}
 
     def to_dict(self, brief: bool = False) -> dict:
+        walk = self.stages()
         data = {
             "id": self.id,
             "job_no": self.job_no,
@@ -477,13 +510,23 @@ class JobCard(TimestampMixin, db.Model):
             "vehicle_id": self.vehicle_id,
             "customer_name": self.customer.name if self.customer else None,
             "customer_phone": self.customer.phone if self.customer else None,
+            # The number a WhatsApp update actually goes to. Not always the one at
+            # the counter: it is the normalised, dialable form, which is what the
+            # stage-move dialog has to name when it asks "tell this customer?".
+            "customer_whatsapp": self.customer.wa_number if self.customer else None,
             # Read aloud at the counter when the vehicle is handed over.
             "customer_id_number": self.customer.id_number if self.customer else None,
             "reg_no": self.vehicle.reg_no if self.vehicle else None,
             "vehicle_title": self.vehicle.title if self.vehicle else None,
             "service": self.service,
+            # The service's code, and where the card is on that service's own
+            # walk ("step 3 of 8"). Sent with every card — the board draws the
+            # walk from these rather than re-deriving it from the service name.
+            "service_code": self.service_code,
             "stage": self.stage,
             "stage_label": self.stage_label,
+            "stage_step": walk.index(self.stage) + 1 if self.stage in walk else 0,
+            "stage_steps": len(walk),
             "progress": self.progress,
             "priority": self.priority,
             "bay": self.bay,

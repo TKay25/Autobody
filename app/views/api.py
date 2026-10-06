@@ -26,6 +26,7 @@ from ..constants import (
     PAYMENT_METHODS,
     PRIORITIES,
     SERVICE_NAMES,
+    SERVICE_STAGES,
     STAGES,
     STAGE_CUSTOMER_TEXT,
     STAGE_LABELS,
@@ -128,6 +129,30 @@ def as_int(value, default=None):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def as_bool(value, default: bool = False) -> bool:
+    """A checkbox that may arrive as a real boolean, a word, or nothing at all.
+
+    The SPA posts ``true``/``false``, but an offline queue replayed from an older
+    client, or a plain form post, can send the string ``"false"`` — which is
+    truthy to Python and would quietly tell a customer about a move the shop meant
+    to keep to itself. Absent means "the friendly default", which is how every
+    client that predates the toggle goes on behaving exactly as it always did.
+    """
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+
+# A stage note is typed at the bench, one-handed, and then printed on the closing
+# sheet. Long enough for "both doors primed, waiting on the seal kit"; short
+# enough that it is still a note. The column is String(255), so this leaves room.
+STAGE_NOTE_MAX = 240
 
 
 def as_decimal(value, default=Decimal("0")):
@@ -269,7 +294,12 @@ def _board_data() -> dict:
                 "jobs": columns.get(stage, []),
             }
             for stage in STAGES
-        ]
+        ],
+        # Which of those columns each service actually walks, keyed by service
+        # code. Sent with the board because the columns are shared: the walk is
+        # what turns "the board" into "this card's board", and the dialog has to
+        # offer a card its own stages without a second round trip.
+        "walks": {code: list(walk) for code, walk in SERVICE_STAGES.items()},
     }
 
 
@@ -441,7 +471,10 @@ def get_job(job_id: int):
     ok, message = job_flow.can_advance(job)
     return jsonify({
         "job": job.to_dict(),
-        "next_stage": job_flow.next_stage(job.stage),
+        # The card's own next stage, not the board's next column: a valet does
+        # not go to the spray booth because that column is next on the wall.
+        "next_stage": job_flow.next_stage_for(job),
+        "walk": job.stages(),
         "can_advance": ok,
         "advance_message": message,
         "customer_message": STAGE_CUSTOMER_TEXT.get(job.stage, ""),
@@ -614,11 +647,16 @@ def advance_job(job_id: int):
     if not job:
         return bad("Job card not found.", 404)
     data = payload()
+    note = want(data, "note")
+    if note and len(note) > STAGE_NOTE_MAX:
+        return bad(f"A stage note can be at most {STAGE_NOTE_MAX} characters.")
+
     old_stage = job.stage
+    notify = as_bool(data.get("notify"), default=True)
     try:
         job_flow.advance_job(
-            job, user_id=current_user.id, note=want(data, "note"),
-            force=bool(data.get("force")), target=want(data, "target"),
+            job, user_id=current_user.id, note=note,
+            force=as_bool(data.get("force")), target=want(data, "target"),
         )
     except job_flow.JobFlowError as exc:
         return jsonify({"error": "blocked", "message": str(exc),
@@ -626,7 +664,7 @@ def advance_job(job_id: int):
 
     notified = False
     if job.stage != old_stage:
-        notified = notifications.notify_stage_change(job, old_stage=old_stage)
+        notified = notify and notifications.notify_stage_change(job, old_stage=old_stage)
         log_activity(
             "job.stage_changed",
             f"{job.job_no} moved {STAGE_LABELS.get(old_stage, old_stage)} → {job.stage_label}"
@@ -650,23 +688,47 @@ def move_stage(job_id: int):
     target = want(data, "stage")
     if not target:
         return bad("A target stage is required.")
-    old_stage = job.stage
-    try:
-        job_flow.advance_job(job, user_id=current_user.id, target=target,
-                             note=want(data, "note"), force=True)
-    except job_flow.JobFlowError as exc:
-        return jsonify({"error": "blocked", "message": str(exc)}), 409
 
-    notified = job.stage != old_stage and notifications.notify_stage_change(job, old_stage=old_stage)
-    if job.stage != old_stage:
+    # The note is the shop floor's own record of the move — what was done, and
+    # what the next bench needs — so it belongs on the card's history rather than
+    # in a message. `notify` answers a different question: does the *customer*
+    # hear about it? That one had no answer at all before, so every drag messaged
+    # whoever was holding the phone.
+    note = want(data, "note")
+    if note and len(note) > STAGE_NOTE_MAX:
+        return bad(f"A stage note can be at most {STAGE_NOTE_MAX} characters.")
+
+    old_stage = job.stage
+    notify = as_bool(data.get("notify"), default=True)
+    force = as_bool(data.get("force"))
+    try:
+        # A column this card never visits is still a legitimate drop — but it is
+        # the desk's decision, so the client has to say so. Drag-and-drop sends no
+        # force and gets a 409 naming the walk; the override switch sends one.
+        job_flow.advance_job(job, user_id=current_user.id, target=target,
+                             note=note, force=force)
+    except job_flow.JobFlowError as exc:
+        return jsonify({"error": "blocked", "message": str(exc),
+                        "walk": job.stages(),
+                        "next_stage": job_flow.next_stage_for(job)}), 409
+
+    moved = job.stage != old_stage
+    notified = False
+    if moved:
+        notified = notify and notifications.notify_stage_change(job, old_stage=old_stage)
         log_activity(
             "job.stage_changed",
-            f"{job.job_no} dragged to {job.stage_label}",
+            f"{job.job_no} dragged to {job.stage_label}"
+            + (" (overridden)" if force else "")
+            + ("" if notify else " (customer not told)"),
             entity_type="job", entity_id=job.id, entity_ref=job.job_no, job_id=job.id,
-            meta={"from": old_stage, "to": job.stage}, commit=True,
+            meta={"from": old_stage, "to": job.stage, "notified": notified,
+                  "overridden": force},
+            commit=True,
         )
     db.session.refresh(job)
-    return jsonify({"job": job.to_dict(brief=True), "notified": notified})
+    return jsonify({"job": job.to_dict(brief=True), "notified": notified,
+                    "note": job.events[0].note if job.events else note})
 
 
 @bp.post("/jobs/<int:job_id>/photos")
@@ -2169,6 +2231,29 @@ def end_of_day_report_pdf():
     day = as_date(request.args.get("date")) or tz.today()
     sheet = documents.build_end_of_day_pdf(reporting.end_of_day(day))
     return _pdf_response(sheet, f"End-of-day-{day.isoformat()}.pdf")
+
+
+@bp.get("/reports/range")
+@login_required
+def reports_range():
+    """The closing sheet over a span: today, yesterday, this month, this year, or
+    the two dates the desk asked for.
+
+    One endpoint rather than five, because the range is the only thing that
+    differs — the sheet itself is assembled once, in ``reporting``, and the same
+    service feeds the day sheet and its PDF.
+    """
+    preset = (want(request.args, "preset") or "today").lower()
+    if preset not in reporting.PRESETS:
+        return bad(f"'{preset}' is not a range this report knows.")
+    try:
+        first, last = reporting.preset_bounds(
+            preset, start=as_date(request.args.get("from")),
+            end=as_date(request.args.get("to")),
+        )
+    except ValueError as exc:
+        return bad(str(exc))
+    return jsonify(reporting.window_report(first, last, preset=preset))
 
 
 @bp.get("/reports/overview")

@@ -1186,7 +1186,14 @@ html.sidebar-rail { --tc-sidebar: 74px; }
 .tc-tab.active { color: var(--tc-crimson-600); }
 .tc-tab-icon { position: relative; display: grid; place-items: center; font-size: 1.2rem; }
 .tc-tab.active .tc-tab-icon { color: var(--tc-crimson-500); }
-.tc-tab-label { letter-spacing: .01em; }
+/* One line, always. A wrapped label would make the bar taller than the space
+   `.tc-main` reserves underneath it, and the last row of the screen would slip
+   behind the bar — at text zoom, or on whatever phone is narrower than the one
+   this was eyeballed on. */
+.tc-tab-label {
+  letter-spacing: .01em; max-width: 100%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .tc-tab-pill {
   position: absolute; top: -6px; right: -12px;
   min-width: 17px; padding: 0 4px; border-radius: 999px;
@@ -1196,8 +1203,12 @@ html.sidebar-rail { --tc-sidebar: 74px; }
 }
 
 @media (max-width: 991px) {
-  /* Room for the tab bar, so the last card is never parked behind it. */
-  .tc-main { padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)); }
+  /* Room for the tab bar, so the last card is never parked behind it. The bar
+     itself lands at roughly 57px (a 1.2rem icon over a .68rem label, plus .5rem
+     of padding top and bottom), so this is deliberately a few pixels of slack
+     rather than a match to the pixel — the exact height depends on which system
+     font the device resolved. */
+  .tc-main { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
 }
 
 /* ── Cards & stats ─────────────────────────────────────────────────── */
@@ -1240,6 +1251,51 @@ html.sidebar-rail { --tc-sidebar: 74px; }
 .job-card .meta { font-size: .74rem; color: #6a7381; }
 .job-card .title { font-size: .78rem; color: #495057; margin-top: .15rem; }
 .job-card.overdue { border-left-color: var(--tc-crimson-500); }
+
+/* The board's own controls: add a card, close the day out. Three buttons share
+   one row on a desktop and go two-up on a phone, so a foreman holding the phone
+   can still book a car in without zooming the page out. */
+.tc-board-actions { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.tc-board-actions .btn { white-space: nowrap; }
+
+/* ── The closing sheet (end of day report) ─────────────────────────── */
+.tc-report-bar {
+  display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+  padding-bottom: .6rem; margin-bottom: .6rem; border-bottom: 1px solid var(--tc-line);
+}
+.tc-report-presets { display: flex; gap: .3rem; flex-wrap: wrap; }
+.tc-report-dates { display: flex; align-items: center; gap: .35rem; }
+.tc-report-dates input { max-width: 10.5rem; }
+/* A note is prose the shop typed: wrap it rather than let one long sentence push
+   the time and the job number off the sheet. */
+.tc-note-cell { max-width: 28rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+@media (max-width: 767.98px) {
+  /* The board is thirteen columns wide and nobody swipes to column nine by
+     accident, so on a phone the columns snap one at a time instead of landing
+     between two of them. */
+  .kanban { scroll-snap-type: x mandatory; scroll-padding-left: .5rem; }
+  .kanban-col { flex: 0 0 84vw; scroll-snap-align: start; max-height: none; }
+  .kanban-body { max-height: 60vh; }
+  .tc-board-actions { width: 100%; }
+  .tc-board-actions .btn { flex: 1 1 40%; }
+  .tc-note-cell { max-width: none; }
+
+  /* The closing sheet is long and the presets are how you travel through it, so
+     the bar stays at the top of the modal body instead of scrolling away — and
+     the five ranges sit on one line you can flick sideways rather than wrapping
+     into two rows that push the sheet off the screen. */
+  .tc-report-bar {
+    position: sticky; top: 0; z-index: 3; background: #fff; padding-top: .3rem;
+  }
+  .tc-report-presets {
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
+    -webkit-overflow-scrolling: touch; padding-bottom: .15rem;
+  }
+  .tc-report-presets::-webkit-scrollbar { width: 0; height: 0; }
+  .tc-report-dates { flex-wrap: nowrap; }
+  .tc-report-dates input { max-width: none; flex: 1 1 auto; min-width: 0; }
+}
 
 /* ── Tables ────────────────────────────────────────────────────────── */
 .table-tc { font-size: .875rem; }
@@ -1706,9 +1762,58 @@ h1.h4, .page-title { font-weight: 700; letter-spacing: -.015em; }
 
 /* A phone gets columns about a screen wide with snap scrolling, so a card fills
    the viewport instead of being a sliver of a 268px column. */
+.kanban { -webkit-overflow-scrolling: touch; }
+
+/* ── The stage rail (phones only) ────────────────────────────────────────
+   Eleven columns is a wall you can see across on a desktop and a kilometre of
+   swiping on a phone, so a phone gets a rail: one chip per stage with its own
+   count, which jumps the board straight to that column. Above the breakpoint the
+   columns *are* the rail, so it is not rendered at all. */
+.tc-stage-rail { display: none; }
+
+/* A finger is not a mouse: the card's Move button becomes a real thumb target,
+   and the card stops advertising a grab it cannot offer — HTML5 drag never
+   fires on a touchscreen. */
+@media (hover: none), (max-width: 767px) {
+  .job-card { cursor: default; padding: .7rem .8rem; }
+  .job-card:active { cursor: default; }
+  .job-card-move { width: 40px; height: 40px; font-size: 1rem; }
+}
+
+/* Tablet: two columns in portrait, three or four in landscape, wide enough for
+   the registration and the walk chip without shrinking the type further. */
+@media (min-width: 768px) and (max-width: 1199.98px) {
+  .kanban-col { flex-basis: 300px; }
+}
+
 @media (max-width: 767px) {
   .kanban { scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; }
   .kanban-col { flex: 0 0 82vw; scroll-snap-align: center; }
+
+  .tc-stage-rail {
+    display: flex; gap: .4rem; overflow-x: auto; padding: .1rem 0 .55rem;
+    margin-bottom: .3rem; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .tc-stage-rail::-webkit-scrollbar { width: 0; height: 0; }
+  .tc-stage-rail-chip {
+    flex: 0 0 auto; display: inline-flex; align-items: center; gap: .4rem;
+    min-height: 40px; padding: 0 .75rem; border-radius: 999px;
+    font-family: inherit; font-size: .78rem; font-weight: 600; white-space: nowrap;
+    cursor: pointer; border: 1px solid var(--tc-line-strong);
+    background: #fff; color: var(--tc-navy-800);
+  }
+  .tc-stage-rail-chip.is-active {
+    background: var(--tc-navy-800); border-color: var(--tc-navy-800); color: #fff;
+  }
+  .tc-stage-rail-chip.is-dim { opacity: .45; }
+  .tc-stage-rail-chip.is-hit {
+    border-color: var(--tc-crimson-500); color: var(--tc-crimson-600);
+  }
+  .tc-stage-rail-count {
+    font-size: .7rem; font-weight: 700; font-variant-numeric: tabular-nums;
+    background: rgba(8, 20, 44, .08); border-radius: 999px; padding: .06rem .42rem;
+  }
+  .tc-stage-rail-chip.is-active .tc-stage-rail-count { background: rgba(255, 255, 255, .22); }
 }
 
 /* ── Tables ────────────────────────────────────────────────────────── */

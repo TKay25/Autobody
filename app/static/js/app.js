@@ -47,8 +47,11 @@
       icon: 'cash-coin', href: '#/invoices' },
     { label: 'Add stock item', hint: 'Parts, paint and consumables',
       icon: 'box-seam', href: '#/parts?new=1' },
-    { label: 'Enquiries and Bookings', hint: 'Phone, WhatsApp and walk-in requests',
-      icon: 'calendar-check', href: '#/bookings' },
+    /* Deliberately no enquiry tile. The board is where the desk already works,
+       and the enquiry desk is one tap away in the rail and in the phone's tab
+       bar — a card that leads to the screen next door is a card nobody taps.
+       It was also the only tile lite mode kept, so with it gone that strip has
+       nothing to draw on the shipped screens and is not mounted at all. */
   ];
 
   /* ── Display preferences ──────────────────────────────────────────────

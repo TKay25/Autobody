@@ -139,6 +139,7 @@ at the estimate header, not per line, so totals reconcile to the cent.
 | Add a panel | Add a key to `LABOUR_MATRIX` — the estimator UI picks it up automatically |
 | Add an insurer | `app/constants.py` → `INSURERS` + `INSURER_ALIASES` |
 | Add a workshop stage | `STAGES`, `STAGE_LABELS`, `STAGE_COLOURS`, `STAGE_PROGRESS`, `STAGE_CUSTOMER_TEXT` |
+| Add a service line | `app/constants.py` → `SERVICES` **and** `SERVICE_STAGES` (the ordered subset of `STAGES` that line walks) |
 | Add a bot intent | `INTENT_PATTERNS` + a `_menu_*` handler in `intent_router.py` |
 | Add a notification | A function in `notifications.py` + a Meta template name |
 | Add an API endpoint | `app/views/api.py` (all routes are `@login_required` JSON) |

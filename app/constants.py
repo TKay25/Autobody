@@ -159,6 +159,48 @@ SERVICE_NAMES = [s["name"] for s in SERVICES]
 SERVICE_BY_NAME = {s["name"]: s for s in SERVICES}
 SERVICE_BY_CODE = {s["code"]: s for s in SERVICES}
 
+# ── Which stages each service actually walks ─────────────────────────────────
+# Every card used to walk all eleven columns whatever it was booked in for, so a
+# valet sat in "Panel Beating" and "Spray Painting" doing nothing, and the shop
+# could not tell a card that had skipped a stage from one that never needed it.
+#
+# Each walk is an *ordered subset of STAGES*, never a new stage: the board has to
+# keep rendering one set of columns for every card on it, and the colours,
+# progress weights and customer wording are keyed off STAGES. A walk is only ever
+# "which of the shop's doors does this job go through, and in what order".
+PANEL_WALK = list(STAGES)
+# Appearance work: in, cleaned and corrected, inspected, handed back.
+APPEARANCE_WALK = ["INTAKE", "DETAILING", "QC", "READY", "COLLECTED"]
+
+SERVICE_STAGES = {
+    "AUTO_BODY": PANEL_WALK,
+    "PANEL_SPRAY": PANEL_WALK,
+    "REBUILD": PANEL_WALK,
+    # Trim off, surface prepared, refitted and valeted before the QC gate. No
+    # booth: a wrap is not painted.
+    "WRAP": ["INTAKE", "STRIP", "PREP", "REASSEMBLY", "DETAILING", "QC",
+             "READY", "COLLECTED"],
+    "DETAIL": APPEARANCE_WALK,
+    "CERAMIC": APPEARANCE_WALK,
+    "PPF": APPEARANCE_WALK,
+}
+
+
+def stages_for_service(service: str | None) -> list[str]:
+    """The stages a card booked in for *service* walks, in order.
+
+    Takes the service *name* (what a job card stores) or its *code* (what the bot
+    and the reports speak), because both ends of the shop ask this question.
+    Anything unrecognised — a retired line, a card written by hand, an empty
+    field — gets the full workshop walk: a card must never become un-movable
+    because somebody corrected its service line.
+    """
+    key = (service or "").strip()
+    entry = SERVICE_BY_NAME.get(key) or SERVICE_BY_CODE.get(key.upper())
+    if not entry:
+        return list(STAGES)
+    return list(SERVICE_STAGES.get(entry["code"], STAGES))
+
 # Services where the customer is not reporting damage. "Please describe the
 # damage" is the right question for a bent bumper and the wrong one for a ceramic
 # coating — now that every service funnels through the same enquiry, the wording

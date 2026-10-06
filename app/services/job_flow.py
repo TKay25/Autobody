@@ -11,6 +11,7 @@ from ..constants import (
     CLOSED_STAGES,
     QC_CHECKLIST,
     SERVICE_NAMES,
+    STAGE_LABELS,
     STAGES,
 )
 from ..extensions import db
@@ -231,11 +232,37 @@ def open_job_card(
 # Stage transitions
 # ─────────────────────────────────────────────────────────────────────────────
 def next_stage(stage: str) -> str | None:
+    """The next column on the board, which is not always the card's next stage.
+
+    Kept for callers that only know a stage code. Anything holding a card should
+    ask `next_stage_for(job)`, because the service decides the walk.
+    """
     try:
         idx = STAGES.index(stage)
     except ValueError:
         return None
     return STAGES[idx + 1] if idx + 1 < len(STAGES) else None
+
+
+def next_stage_for(job: JobCard) -> str | None:
+    """The stage *this card* goes to next, on its own service's walk.
+
+    A valet booked in for Detailing does not pass through the spray booth, so
+    advancing it has to follow its own walk rather than the board's column order.
+    """
+    walk = job.stages()
+    if job.stage in walk:
+        idx = walk.index(job.stage)
+        return walk[idx + 1] if idx + 1 < len(walk) else None
+
+    # Off its own walk: the service was corrected after the car was booked in, or
+    # the card was written before the walks existed. Point it at the first stage
+    # of its own walk still ahead of it, so a Detail card sitting in Spray
+    # Painting goes to Detailing rather than being walked to the end of a panel
+    # job. A stage the board does not know at all counts as "before the start".
+    here = STAGES.index(job.stage) if job.stage in STAGES else 0
+    ahead = [s for s in walk if STAGES.index(s) > here]
+    return ahead[0] if ahead else None
 
 
 def can_advance(job: JobCard) -> tuple[bool, str]:
@@ -257,7 +284,7 @@ def can_advance(job: JobCard) -> tuple[bool, str]:
         if failed:
             return False, f"{len(failed)} QC check(s) failed. Re-work required before release."
 
-    return True, next_stage(job.stage) or "COLLECTED"
+    return True, next_stage_for(job) or "COLLECTED"
 
 
 def advance_job(job: JobCard, *, user_id: int | None = None, note: str | None = None,
@@ -265,12 +292,25 @@ def advance_job(job: JobCard, *, user_id: int | None = None, note: str | None = 
     if target:
         if target not in STAGES:
             raise JobFlowError(f"Unknown stage '{target}'.")
+        # Every walk is a subset of the board's columns, so the columns a card
+        # never visits are still drops a foreman can make — as a decision, not by
+        # accident. Without this, one slip of the finger put a valet in the spray
+        # booth and the board reported it as ordinary progress.
+        if target not in job.stages() and not force:
+            nxt = STAGE_LABELS.get(next_stage_for(job) or "", "")
+            raise JobFlowError(
+                f"{STAGE_LABELS.get(target, target)} is not on this card's walk "
+                f"({job.service or 'workshop'}): "
+                f"{' → '.join(STAGE_LABELS.get(s, s) for s in job.stages())}. "
+                f"The next stage is {nxt or 'collection'} — move it there on "
+                "purpose to override."
+            )
         new_stage = target
     else:
         ok, message = can_advance(job)
         if not ok and not force:
             raise JobFlowError(message)
-        new_stage = message if ok else (next_stage(job.stage) or "COLLECTED")
+        new_stage = message if ok else (next_stage_for(job) or "COLLECTED")
 
     job.stage = new_stage
     if new_stage == "READY":

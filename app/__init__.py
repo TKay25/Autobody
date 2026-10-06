@@ -30,6 +30,7 @@ from .constants import (
     ROLES,
     SERVICE_NAMES,
     SERVICES,
+    SERVICE_STAGES,
     STAGE_COLOURS,
     STAGE_LABELS,
     STAGE_PROGRESS,
@@ -724,6 +725,9 @@ def reference_meta() -> dict:
         "stage_progress": STAGE_PROGRESS,
         "services": SERVICES,
         "service_names": SERVICE_NAMES,
+        # Which stages each service walks (keyed by service code). The board gets
+        # this with its own payload; the card screen reads it from here.
+        "service_stages": SERVICE_STAGES,
         "booking_statuses": BOOKING_STATUSES,
         "booking_status_labels": BOOKING_STATUS_LABELS,
         "booking_sources": BOOKING_SOURCES,

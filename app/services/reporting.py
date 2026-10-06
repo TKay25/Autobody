@@ -20,7 +20,7 @@ from ..constants import (
     TASK_STATUSES,
     TASK_STATUS_LABELS,
 )
-from ..models import Booking, Invoice, JobCard, Payment, Task, User, utcnow
+from ..models import Booking, Invoice, JobCard, JobStageEvent, Payment, Task, User, utcnow
 
 
 def _dec(value) -> Decimal:
@@ -111,10 +111,137 @@ def _task_row(task: Task) -> dict:
     }
 
 
+def _event_row(event: JobStageEvent) -> dict:
+    """One stage move, with the note the shop typed on it.
+
+    The closing sheet lists these in the order they happened. The totals say what
+    a day amounted to; only the notes say what was actually done and what the
+    next bench was told, which is the part a handover is really about.
+    """
+    job = event.job
+    return {
+        "id": event.id,
+        "job_id": event.job_id,
+        "job_no": job.job_no if job else None,
+        "customer_name": job.customer.name if job and job.customer else None,
+        "reg_no": job.vehicle.reg_no if job and job.vehicle else None,
+        "stage": event.stage,
+        "stage_label": STAGE_LABELS.get(event.stage, event.stage),
+        "note": event.note,
+        "user": event.user.full_name if event.user else "System",
+        "at": event.created_at.isoformat() if event.created_at else None,
+        # Date *and* clock: the same sheet answers for one day and for a month, and
+        # a bare "14:20" is unreadable once a range covers more than one day.
+        "at_local": (tz.format_local(event.created_at, "%d %b %H:%M")
+                     if event.created_at else None),
+    }
+
+
+# ── The closing sheet, over a day or over any span of days ───────────────────
+# The ranges the sheet offers in one tap, named here with the rest of the
+# calendar arithmetic so the screen, the JSON and the printed sheet all read the
+# same window from the same words.
+PRESETS = ("today", "yesterday", "month", "year", "custom")
+
+
+def preset_bounds(preset: str, *, start: date | None = None,
+                  end: date | None = None) -> tuple[date, date]:
+    """The inclusive Harare dates a preset covers.
+
+    ``month`` and ``year`` run up to *today* rather than to the end of the
+    calendar period: this is a closing sheet read at the bench, and counting days
+    that have not happened yet would pad every figure with zeros — which turns a
+    steady month into what looks like a collapse.
+    """
+    today = tz.today()
+    if preset == "today":
+        return today, today
+    if preset == "yesterday":
+        yesterday = today - timedelta(days=1)
+        return yesterday, yesterday
+    if preset == "month":
+        return today.replace(day=1), today
+    if preset == "year":
+        return date(today.year, 1, 1), today
+    if preset == "custom":
+        if not start and not end:
+            raise ValueError("Pick the dates the custom range covers.")
+        first = start or end
+        last = end or start
+        if last < first:
+            raise ValueError("The end of the range falls before its start.")
+        return first, last
+    raise ValueError(f"'{preset}' is not a range this report knows.")
+
+
+def range_label(first: date, last: date) -> str:
+    """'Thursday, 01 October 2026', or '01 Oct 2026 → 06 Oct 2026'."""
+    if first == last:
+        return first.strftime("%A, %d %B %Y")
+    return f"{first.strftime('%d %b %Y')} → {last.strftime('%d %b %Y')}"
+
+
 def end_of_day(day: date | None = None) -> dict:
     """Everything that happened on ``day``, plus what is still open."""
     day = day or tz.today()
-    start, end = _day_window(day)
+    sheet = _sheet(*_day_window(day))
+    sheet.update({
+        "date": day.isoformat(),
+        "date_label": range_label(day, day),
+        "generated_at": utcnow().isoformat(),
+        # The sheet is read in the workshop, so it prints the workshop's clock.
+        "generated_at_local": tz.format_local(utcnow(), "%d %b %Y %H:%M"),
+    })
+    return sheet
+
+
+def window_report(first: date, last: date, *, preset: str = "custom",
+                  label: str | None = None) -> dict:
+    """The same closing sheet, over a span of days rather than over one.
+
+    ``first`` and ``last`` are inclusive Harare dates, and the window is bounded
+    by the workshop's own midnight at both ends — see :func:`_day_window` for why
+    that is not ``datetime.combine``. Everything the day sheet counts for one day
+    is counted across the span: cards opened, completed and collected, the notes
+    typed on stage moves, the money taken, the to-do closed, the enquiries
+    handled.
+    """
+    start = tz.start_of_day_utc(first)
+    end = tz.start_of_day_utc(last + timedelta(days=1))
+    sheet = _sheet(start, end)
+    title = label or range_label(first, last)
+    sheet.update({
+        "preset": preset,
+        "range": {
+            "from": first.isoformat(),
+            "to": last.isoformat(),
+            "days": (last - first).days + 1,
+            "label": title,
+        },
+        # `date` stays the last day of the span, so the field the day sheet has
+        # always carried still means something to a reader who asked for one day.
+        "date": last.isoformat(),
+        "date_label": title,
+        "generated_at": utcnow().isoformat(),
+        "generated_at_local": tz.format_local(utcnow(), "%d %b %Y %H:%M"),
+    })
+    return sheet
+
+
+def _sheet(start: datetime, end: datetime) -> dict:
+    """Every section of the closing sheet, for the half-open window [start, end).
+
+    The one place the figures are assembled, shared by :func:`end_of_day` and
+    :func:`window_report`, so a day and a quarter are the same arithmetic over
+    different spans — the screen, the JSON and the paper cannot tell two
+    different stories about the same window.
+    """
+    # The Harare calendar dates the window covers, for the day-shaped columns that
+    # are stored as dates rather than timestamps: an appointment's slot date, a
+    # to-do's due date. Taken from the window itself so a month's sheet still
+    # shows every appointment that fell inside it.
+    first = tz.to_local(start).date()
+    last = tz.to_local(end - timedelta(seconds=1)).date()
 
     jobs = JobCard.query.all()
     bookings = Booking.query.all()
@@ -161,7 +288,8 @@ def end_of_day(day: date | None = None) -> dict:
     }
 
     # ── Enquiries & bookings (the same record at different statuses) ─────
-    scheduled = [b for b in bookings if b.slot_date == day]
+    scheduled = [b for b in bookings
+                 if b.slot_date and first <= b.slot_date and b.slot_date <= last]
     raised = [b for b in bookings if _in_window(b.created_at, start, end)]
     awaiting = [b for b in bookings if b.status == "REQUESTED"]
     handled = [b for b in bookings if b.status in ("CONFIRMED", "ATTENDED")]
@@ -232,6 +360,8 @@ def end_of_day(day: date | None = None) -> dict:
     tasks = Task.query.all()
     open_tasks = [t for t in tasks if t.is_open]
     done_today = [t for t in tasks if _in_window(t.completed_at, start, end)]
+    due_in_window = [t for t in open_tasks
+                     if t.due_date and first <= t.due_date and t.due_date <= last]
 
     task_status_counts = {code: 0 for code in TASK_STATUSES}
     for task in open_tasks:
@@ -257,7 +387,7 @@ def end_of_day(day: date | None = None) -> dict:
         "doing": task_status_counts.get("DOING", 0),
         "blocked": task_status_counts.get("BLOCKED", 0),
         "overdue": len([t for t in open_tasks if t.is_overdue]),
-        "due_today": len([t for t in open_tasks if t.due_date == day]),
+        "due_today": len(due_in_window),
         "undated": len([t for t in open_tasks if not t.due_date]),
         "done_today": len(done_today),
         "by_status": [
@@ -296,15 +426,27 @@ def end_of_day(day: date | None = None) -> dict:
             "done_tasks": len([t for t in done_today if t.custodian_id == user.id]),
         })
 
+    # ── Stage notes ──────────────────────────────────────────────────────
+    # Every note typed on a stage move, in the order the moves happened. This is
+    # the part of a shift no count can carry: what was actually done, and what the
+    # next bench was told. A move with no note still counts — the shop has to be
+    # able to see that a card went somewhere, even when nobody wrote anything.
+    events = (JobStageEvent.query
+              .filter(JobStageEvent.created_at >= start,
+                      JobStageEvent.created_at < end)
+              .order_by(JobStageEvent.id.asc())
+              .all())
+    notes_section = {
+        "moves": len(events),
+        "with_note": len([e for e in events if e.note]),
+        "list": [_event_row(e) for e in events],
+    }
+
     return {
-        "date": day.isoformat(),
-        "date_label": day.strftime("%A, %d %B %Y"),
-        "generated_at": utcnow().isoformat(),
-        # The sheet is read in the workshop, so it prints the workshop's clock.
-        "generated_at_local": tz.format_local(utcnow(), "%d %b %Y %H:%M"),
         "jobs": jobs_section,
         "bookings": bookings_section,
         "tasks": tasks_section,
         "money": money_section,
         "staff": staff_section,
+        "notes": notes_section,
     }
