@@ -1408,6 +1408,16 @@ def list_bookings():
     query = Booking.query
     if status:
         query = query.filter(Booking.status == status)
+    # Where it came from. The desk works one channel at a time — chasing the
+    # WhatsApp enquiries that came in overnight is a different job from working
+    # the phone list — so the source has to be filterable, not just printed.
+    source = want(request.args, "source")
+    if source:
+        query = query.filter(Booking.source == source)
+    # Nothing priced yet. An enquiry nobody has quoted is the one that is
+    # actually waiting on the workshop, so it gets its own filter.
+    if want(request.args, "unquoted"):
+        query = query.filter(~Booking.estimates.any())
     # The customers who have asked to move an appointment and are waiting on an
     # answer. Not expressible as a status: the booking is confirmed, it is the
     # *request* that is outstanding, which is why it needs its own filter.
@@ -1420,6 +1430,9 @@ def list_bookings():
         # Every row shows its photo count, so a lazy load here would be one extra
         # SELECT per enquiry on a list that polls.
         db.selectinload(Booking.photos),
+        # And every row shows whether it has been priced, which is the same
+        # problem: one query per row without this.
+        db.selectinload(Booking.estimates),
     )
     bookings = query.order_by(Booking.slot_date.asc(), Booking.id.desc()).limit(300).all()
     return jsonify({"items": [b.to_dict() for b in bookings], "count": len(bookings)})
@@ -1591,6 +1604,13 @@ def update_booking(booking_id: int):
         booking.slot_time = want(data, "slot_time")
     if "notes" in data:
         booking.notes = want(data, "notes")
+    if "service" in data:
+        # Correctable: the desk describes the job when the customer rings, the
+        # estimator sometimes finds it is something else entirely.
+        service = want(data, "service")
+        if service not in SERVICE_NAMES:
+            return bad("Unknown service.")
+        booking.service = service
 
     explicit_confirmed = as_int(data.get("confirmed_by_id"))
     explicit_attended = as_int(data.get("attended_by_id"))

@@ -43,6 +43,21 @@ Every token lives in one place (`:root` in `app/static/css/app.css`), and
 | Activity log | `#/activity` | Immutable audit trail — who changed what, filterable by entity |
 | Staff | `#/staff` | Role-based accounts and WhatsApp bot configuration |
 
+#### Delivery scope — `LITE_MODE`
+
+The shell ships the screens the client asked for — the **WIP board**
+(`#/board`), the **enquiry desk** (`#/bookings`) and the **WhatsApp chat
+manager** (`#/inbox`) — and the rail carries nothing else. The other entries were
+**deleted from the navigation model**, not merely hidden, so no part of the shell
+offers them as a destination. The routes themselves are still registered, so a
+bookmark, a link or the command palette still lands on the deeper screens if
+somebody asks for one.
+
+`LITE_MODE=true` (the shipped default) also opens the app on the board, adds a
+phone tab bar for those screens, and drops the quick-action cards that would lead
+off-screen. Set `LITE_MODE=false` to land on the dashboard with the top bar's
+full chrome back.
+
 Cross-cutting:
 
 - **Control layer** — one coherent set of inputs, selects, checkboxes, radios, switches

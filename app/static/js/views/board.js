@@ -64,12 +64,23 @@
           T.pendingFor((url) => url === `/api/jobs/${job.id}/stage`).length
             ? h('div.job-card-unsaved', [T.icon('cloud-arrow-up'), ' Not saved yet'])
             : null,
-          h('div.d-flex.justify-content-between.align-items-center.mt-2',
+          h('div.d-flex.justify-content-between.align-items-center.mt-2', [
             h('div.d-flex.gap-1',
               job.bay ? h('span.chip', job.bay) : null),
-            h('div.meta', job.is_overdue
-              ? h('span.text-danger.fw-semibold', `${job.days_in_shop}d`)
-              : `${job.days_in_shop}d`)),
+            h('div.d-flex.align-items-center.gap-2', [
+              h('div.meta', job.is_overdue
+                ? h('span.text-danger.fw-semibold', `${job.days_in_shop}d`)
+                : `${job.days_in_shop}d`),
+              /* Drag-and-drop never fires on a touchscreen, so the card also
+                 carries a Move button that opens the same stage picker. */
+              h('button.job-card-move', {
+                type: 'button',
+                title: 'Move to another stage',
+                'aria-label': `Move ${job.job_no || job.reg_no || 'this job card'} to another stage`,
+                onclick: (event) => { event.stopPropagation(); openMove(job, to); },
+              }, T.icon('arrows-move')),
+            ]),
+          ]),
         ]);
 
         card.addEventListener('dragstart', (e) => {
@@ -102,24 +113,13 @@
           if (!jobId) return;
           const current = placements.find((p) => String(p.job.id) === jobId);
           if (current && current.to === col.stage) return;
-          // Optimistic move, through placeCard so the badges come with it.
-          // Dropping the same card twice in one visit must not read as two
-          // different moves, which is why the placement is updated, not just the
-          // element.
-          placeCard(jobId, col.stage);
-          try {
-            const res = await api.post(`/api/jobs/${jobId}/stage`, { stage: col.stage });
-            T.toast(`${res.job.job_no} → ${res.job.stage_label}${res.notified ? ' · customer notified' : ''}`);
-          } catch (err) {
-            T.toast(err.message, 'danger');
-            ctx.refresh();
-          }
+          await moveTo(jobId, col.stage, current ? current.to : null);
         },
       }, [
         h('div.kanban-head', [h('span', col.label), badge]),
         body,
       ]);
-      return { shell, stage: col.stage, badge, body, trueCount: placed.length };
+      return { shell, stage: col.stage, label: col.label, badge, body, trueCount: placed.length };
     });
 
     /* Move a card, and everything derived from where it sits: the placement the
@@ -146,6 +146,40 @@
       placements.forEach((p) => { perStage[p.to] = (perStage[p.to] || 0) + 1; });
       columns.forEach((column) => { column.trueCount = perStage[column.stage] || 0; });
       applyFilter(currentTerm);
+    }
+
+    /* One move, two affordances: the desktop drag and the phone's Move button
+       post the identical request. The card is placed optimistically first —
+       through placeCard, so the badges come with it — then the server is told,
+       and a rejection rolls the whole board back. */
+    async function moveTo(jobId, stage, currentStage) {
+      if (!stage || stage === currentStage) return;
+      placeCard(jobId, stage);
+      try {
+        const res = await api.post(`/api/jobs/${jobId}/stage`, { stage });
+        T.toast(`${res.job.job_no} → ${res.job.stage_label}${res.notified ? ' · customer notified' : ''}`);
+      } catch (err) {
+        T.toast(err.message, 'danger');
+        ctx.refresh();
+      }
+    }
+
+    /* The touch path: a stage picker built from the columns already on screen,
+       so the choices can never drift from the board. */
+    async function openMove(job, currentStage) {
+      const res = await T.formModal({
+        title: `Move ${job.job_no || job.reg_no || 'this job card'}`,
+        subtitle: 'Pick the stage this vehicle moves to.',
+        icon: 'arrows-move',
+        fields: [{
+          name: 'stage', label: 'Stage', type: 'select', col: 12,
+          value: currentStage,
+          options: columns.map((c) => ({ value: c.stage, label: c.label })),
+        }],
+        submitLabel: 'Move card',
+      });
+      if (!res) return;
+      await moveTo(job.id, res.stage, currentStage);
     }
 
     const resultLabel = h('div.tc-board-count.small.text-secondary.mb-2');

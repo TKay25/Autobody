@@ -6,8 +6,10 @@
 
   const ACTIONS = [
     { id: 'new-job', label: 'New job card', hint: 'Intake', icon: 'plus-square', run: () => T.newJobCard() },
-    { id: 'new-quotation', label: 'New quotation', hint: 'Workshop', icon: 'calculator',
-      run: () => T.newJobCard({ focus: 'estimate' }) },
+    { id: 'new-quotation', label: 'New quotation', hint: 'Price a job', icon: 'calculator',
+      run: () => T.newQuotation() },
+    { id: 'quotations', label: 'Quotations', hint: 'Workshop', icon: 'calculator',
+      run: () => T.navigate('/quotations') },
     { id: 'new-customer', label: 'New customer', hint: 'CRM', icon: 'person-plus', run: () => T.navigate('/customers?new=1') },
     { id: 'board', label: 'WIP board', hint: 'Workshop', icon: 'kanban', run: () => T.navigate('/board') },
     { id: 'dashboard', label: 'Dashboard', hint: 'Workshop', icon: 'speedometer2', run: () => T.navigate('/dashboard') },

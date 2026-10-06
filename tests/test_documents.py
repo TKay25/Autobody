@@ -137,13 +137,26 @@ def _pdf_text(pdf: bytes) -> str:
     are not greppable in the raw bytes — both layers have to come off first.
     Without this a test can only assert that "a PDF came back", which would pass
     just as happily on an empty page.
+
+    ``~`` and ``>`` are both digits of the ASCII85 alphabet, so the body can end
+    in one of them before the ``~>`` terminator. Only the two characters of the
+    terminator may come off: stripping every trailing ``~``/``>`` shortens the
+    body by one character, corrupts the last group, and turns the stream into
+    mojibake that inflates in no decoder at all.
     """
     out = []
     for chunk in re.findall(rb"stream(.*?)endstream", pdf, re.S):
-        body = re.sub(rb"\s", b"", chunk.strip(b"\r\n")).rstrip(b"~>")
-        try:
-            out.append(zlib.decompress(base64.a85decode(body, adobe=False)))
-        except Exception:      # a stream that is not encoded this way
+        body = re.sub(rb"\s", b"", chunk)     # the page streams are line-wrapped
+        if body.endswith(b"~>"):              # the terminator, and only that
+            body = body[:-2]
+        for unwrap in (lambda b: zlib.decompress(base64.a85decode(b, adobe=False)),
+                       zlib.decompress):
+            try:
+                out.append(unwrap(body))
+                break
+            except Exception:
+                continue
+        else:                  # a stream that is not encoded this way
             out.append(chunk)
     return b"\n".join(out).decode("latin-1", "replace")
 
@@ -203,7 +216,9 @@ def _ink_extent(pdf: bytes) -> tuple[float, float]:
     """
     low, high = float("inf"), -float("inf")
     for chunk in re.findall(rb"stream(.*?)endstream", pdf, re.S):
-        body = re.sub(rb"\s", b"", chunk.strip(b"\r\n")).rstrip(b"~>")
+        body = re.sub(rb"\s", b"", chunk)
+        if body.endswith(b"~>"):     # the terminator only; `~`/`>` are a85 digits
+            body = body[:-2]
         try:
             src = zlib.decompress(base64.a85decode(body, adobe=False)).decode("latin-1")
         except Exception:

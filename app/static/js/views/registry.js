@@ -245,6 +245,25 @@
     const statusLabel = (code) => labels[code] || code;
     const STATUS_CODES = ['REQUESTED', 'CONFIRMED', 'ATTENDED', 'ARRIVED',
                           'COMPLETED', 'NO_SHOW', 'CANCELLED'];
+
+    /* Where an enquiry came from. The column holds a code — written by the bot,
+       by the Flow and by the desk — and this screen used to print it raw, so the
+       desk read "whatsapp" beside "phone" and "web". An enquiry the bot took on
+       its own is the one worth spotting, so it gets the name and the mark.
+       The wording comes from the server so every screen agrees. */
+    const sourceLabels = (meta || {}).booking_source_labels || {};
+    const sourceLabel = (code) => sourceLabels[code] || code || '';
+    const SOURCE_ICONS = {
+      whatsapp: 'whatsapp', phone: 'telephone', walkin: 'person-walking',
+      web: 'globe', email: 'envelope',
+    };
+    const SOURCE_CODES = (meta || {}).booking_sources
+      || ['whatsapp', 'phone', 'walkin', 'web', 'email'];
+
+    const filters = {
+      source: ctx.query.source || '',
+      unquoted: ctx.query.unquoted === '1',
+    };
     let staffCache = null;
 
     /* Staff list for the "who attended" picker — fetched once and allowed to
@@ -336,7 +355,13 @@
 
     async function load() {
       T.mount(host, T.skeletonTable(7, 5));
-      const data = await api.get('/api/bookings');
+      const params = new URLSearchParams();
+      if (filters.source) params.set('source', filters.source);
+      if (filters.unquoted) params.set('unquoted', '1');
+      /* Keep the filters in the address bar, or opening an enquiry and coming
+         back loses the channel you were working through. */
+      T.listState('bookings', params);
+      const data = await api.get(`/api/bookings?${params.toString()}`);
       const colour = { REQUESTED: 'warning', CONFIRMED: 'info', ATTENDED: 'success',
                        ARRIVED: 'primary', COMPLETED: 'success', NO_SHOW: 'secondary',
                        CANCELLED: 'danger' };
@@ -350,7 +375,11 @@
           { label: 'Reference', render: (r) => h('div', [
               h('div.fw-semibold', r.display_reference || r.reference),
               h('div.small.text-secondary', r.booking_reference
-                ? `Enquiry ${r.reference}` : (r.source || '')),
+                ? `Enquiry ${r.reference}` : ''),
+              h('div.small.tc-hint', [
+                T.icon(SOURCE_ICONS[r.source] || 'question-circle'),
+                ` ${sourceLabel(r.source)}`,
+              ]),
               T.photoPill(r, { cls: 'mt-1',
                 title: 'Damage photos sent with the enquiry',
                 onClick: enquiryPhotos }),
@@ -367,7 +396,20 @@
                 ` asked for ${r.requested_slot_text || 'another time'}`,
               ]) : null,
             ]) },
-          { label: 'From', render: (r) => money(r.quoted_from) },
+          { label: 'Quotation', render: (r) => (r.quotation
+              ? h('div', [
+                  h('div.fw-semibold', money(r.quotation.total, r.quotation.currency)),
+                  h('div.small.text-secondary', r.quotation.reference
+                    + (r.quotation.count > 1 ? ` · ${r.quotation.count} versions` : '')),
+                  h('div.mt-1', T.badge(r.quotation.status,
+                    r.quotation.status === 'APPROVED' ? 'success'
+                      : r.quotation.status === 'DECLINED' ? 'danger' : 'secondary')),
+                ])
+              : h('div', [
+                  h('div.small.text-secondary', r.quoted_from > 0
+                    ? `From ${money(r.quoted_from)}` : 'Not priced yet'),
+                  h('div.small.tc-hint', 'No quotation raised'),
+                ])) },
           { label: 'Status', render: (r) => h('div', [
               h(`span.badge.text-bg-${colour[r.status] || 'secondary'}`, statusLabel(r.status)),
               r.outcome_label ? h('div.small.text-secondary.mt-1', r.outcome_label) : null,
@@ -375,6 +417,14 @@
           { label: 'Handled by', class: 'd-none d-lg-table-cell', render: (r) =>
               h('span.small', r.attended_by || r.confirmed_by || '—') },
           { label: '', class: 'text-end', render: (r) => h('div.d-flex.gap-1.justify-content-end', [
+              r.quotation && r.quotation.status === 'APPROVED' ? null
+                : h('button.btn.btn-sm.btn-outline-secondary', {
+                    title: r.quotation ? 'Raise another version' : 'Price this enquiry',
+                    onclick: (e) => {
+                      e.stopPropagation();
+                      T.newQuotation({ booking: r, onCreated: () => load() });
+                    },
+                  }, T.icon('calculator'), r.quotation ? null : ' Quote'),
               r.status === 'REQUESTED' ? h('button.btn.btn-sm.btn-brand', {
                 onclick: (e) => { e.stopPropagation(); confirmBooking(r); },
               }, 'Confirm') : null,
@@ -475,6 +525,36 @@
             load();
           },
         }, T.icon('plus-lg'), ' New booking'),
+      ]),
+      /* Which channel an enquiry arrived on, and whether anybody has priced it.
+         Both are the questions the desk actually starts the day with: what came
+         in on WhatsApp overnight, and what is still sitting unquoted. */
+      h('div.tc-toolbar.mb-3', [
+        T.iconSelect({
+          value: filters.source, icon: 'broadcast', width: 172, ariaLabel: 'Where it came from',
+          onChange: (v) => { filters.source = v; load(); },
+          options: [{ value: '', label: 'Every channel' }].concat(
+            SOURCE_CODES.map((code) => ({ value: code, label: sourceLabel(code) }))),
+        }),
+        (() => {
+          /* The class has to be right on the first paint too, not only after the
+             first click: arriving from a link that already filters would show a
+             filter that is on while the button says it is off. */
+          const btn = h('button', { type: 'button' },
+            T.icon('calculator'), ' Not priced yet');
+          const paint = () => {
+            btn.className = filters.unquoted
+              ? 'btn btn-sm btn-brand' : 'btn btn-sm btn-outline-secondary';
+          };
+          paint();
+          btn.addEventListener('click', () => {
+            filters.unquoted = !filters.unquoted;
+            paint();
+            load();
+          });
+          return btn;
+        })(),
+        h('div.tc-toolbar-spacer'),
       ]),
       T.pendingStrip({ match: (url) => /\/bookings/.test(url), label: 'enquiry change' }),
       T.section({ body: host, flush: true }),

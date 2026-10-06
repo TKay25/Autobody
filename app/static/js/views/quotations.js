@@ -22,22 +22,25 @@
       || status,
     STATUS_TONE[status] || 'secondary');
 
-  const serviceNames = () => (T.store.get('meta')?.service_names || []);
+  const serviceNames = () => (T.store.get('meta') || {}).service_names || [];
 
   /* ── raising one ────────────────────────────────────────────────────── */
   /**
-   * Build a quotation on a new enquiry, without touching the job cards.
+   * Build a quotation on an enquiry, without touching the job cards.
    *
    * @param {object}   [opts]
+   * @param {object}   [opts.booking]   price an enquiry the desk already has,
+   *                                    instead of opening a new one
    * @param {Function} [opts.onCreated] called with the saved estimate
    * @returns {Promise<object|null>} the estimate, or null if cancelled
    */
-  async function newQuotation({ onCreated } = {}) {
+  async function newQuotation({ booking, onCreated } = {}) {
     const [customersRes, panelsRes] = await Promise.all([
       api.get('/api/customers'), api.get('/api/estimating/panels'),
     ]);
     const customers = customersRes.items;
     const panels = panelsRes.panels;
+    const onEnquiry = !!booking;
 
     const selected = new Set();
     /* Which customer this is for. `id` is set only when the desk picked one off
@@ -58,7 +61,7 @@
 
     const serviceSelect = h('select.form-select.form-select-sm', { name: 'service' },
       (serviceNames().length ? serviceNames() : ['Panel Beating & Spray Painting'])
-        .map((s) => h('option', { selected: s === 'Panel Beating & Spray Painting' }, s)));
+        .map((s) => h('option', { selected: s === (booking ? booking.service : 'Panel Beating & Spray Painting') }, s)));
 
     /* Name and number are only questions for somebody who is not on file. Asking
        beside a customer that was just picked invites a second, conflicting record
@@ -162,6 +165,26 @@
         return null;
       }
       const phone = phoneField.read();
+
+      if (onEnquiry) {
+        /* Quoting an enquiry that already exists: whoever it is for was settled
+           when it came in, so nothing here asks again. A corrected service is
+           written back — the desk describes the job on the phone and the
+           estimator sometimes finds it is something else. */
+        if (serviceSelect.value !== booking.service) {
+          const saved = await api.patch(`/api/bookings/${booking.id}`,
+            { service: serviceSelect.value });
+          booking.service = saved.booking.service;
+        }
+        const estRes = await api.post(`/api/bookings/${booking.id}/estimate`, {
+          panels: [...selected],
+          include_paint: paintBox.checked,
+          include_consumables: consumablesBox.checked,
+          notes: notesInput.value,
+        });
+        return { estimate: estRes.estimate, booking };
+      }
+
       if (!chosen.id && !nameInput.value.trim()) {
         nameInput.classList.add('is-invalid');
         nameInput.focus();
@@ -193,7 +216,39 @@
       return { estimate: estRes.estimate, booking: bookingRes.booking };
     }
 
+    /* Quoting an enquiry the desk already has: who it is for was settled when it
+       came in, and asking again invites a second answer that disagrees with the
+       first. The service stays editable, because the estimator legitimately
+       changes their mind once they have seen the damage. */
+    const whoSection = onEnquiry
+      ? [
+          h('div.col-12', h('div.tc-form-section', [h('span.idx', 1), h('span', 'The enquiry')])),
+          h('div.col-md-8', h('div.tc-quote-picked', [
+            h('div.d-flex.align-items-center.gap-2.mb-1', [
+              T.icon('chat-left-text'),
+              h('span.fw-semibold', booking.display_reference || booking.reference),
+              booking.source_label ? T.badge(booking.source_label, 'secondary') : null,
+            ]),
+            h('div.tc-hint', [
+              booking.customer_name || '—',
+              booking.customer_phone ? ` · ${booking.customer_phone}` : '',
+              booking.reg_no ? ` · ${booking.reg_no}` : ' · vehicle not captured yet',
+            ].join('')),
+          ])),
+          h('div.col-md-4', field('Service', serviceSelect)),
+        ]
+      : [
+          h('div.col-12', h('div.tc-form-section', [h('span.idx', 1), h('span', 'Who it is for')])),
+          h('div.col-md-4', field('Customer', customerSelect.node)),
+          nameField,
+          phoneFieldHost,
+          h('div.col-md-4', field('Service', serviceSelect)),
+        ];
+
     let busy = false;
+    /* Cleared when the dialog is dismissed with the X, so a half-typed
+       quotation never looks saved. */
+    let settled = false;
     async function run(btn, label, send) {
       if (busy) return;
       busy = true;
@@ -207,12 +262,9 @@
         }
         if (send) {
           T.mount(btn, [h('span.spinner-border.spinner-border-sm.me-1'), ' Sending…']);
-          const sent = await api.post(`/api/estimates/${saved.estimate.id}/send`, {});
+          await api.post(`/api/estimates/${saved.estimate.id}/send`, {});
           T.toast(`Quotation **${saved.estimate.reference}** sent on WhatsApp · `
             + money(saved.estimate.total), 'success');
-          if (sent && sent.result && sent.result.link) {
-            console.debug('Quotation link', sent.result.link);
-          }
         } else {
           T.toast(`Quotation **${saved.estimate.reference}** saved · `
             + money(saved.estimate.total), 'success');
@@ -231,20 +283,18 @@
       [T.icon('clipboard-check'), ' Save quotation']);
     const sendBtn = h('button.btn.btn-brand.btn-sm.fw-semibold', { type: 'button' },
       [T.icon('whatsapp'), ' Send quotation via WhatsApp']);
-    let settled = false;
 
     const m = T.modal({
-      title: 'New quotation',
-      subtitle: 'Price the job now. The customer accepts, and the car is booked in after that.',
+      title: onEnquiry
+        ? `Quotation for ${booking.display_reference || booking.reference}`
+        : 'New quotation',
+      subtitle: 'Price the job now. Accepting the quotation is what books the car in '
+        + 'and opens its job card.',
       icon: 'calculator',
       accent: 'brand',
       size: 'lg',
       body: h('div.row.g-3', [
-        h('div.col-12', h('div.tc-form-section', [h('span.idx', 1), h('span', 'Who it is for')])),
-        h('div.col-md-4', field('Customer', customerSelect.node)),
-        nameField,
-        phoneFieldHost,
-        h('div.col-md-4', field('Service', serviceSelect)),
+        whoSection,
 
         h('div.col-12', h('div.tc-form-section', [h('span.idx', 2), h('span', 'Damaged panels')])),
         h('div.col-12', h('div', [
@@ -276,7 +326,6 @@
     sendBtn.addEventListener('click', () => run(sendBtn,
       [T.icon('whatsapp'), ' Send quotation via WhatsApp'], true));
     [paintBox, consumablesBox].forEach((el) => el.addEventListener('change', refreshPreview));
-    m.el.addEventListener('hidden.bs.modal', () => { if (!settled && !onCreated) onCreated?.(null); });
 
     setTimeout(() => nameInput.focus(), 300);
     return null;
@@ -286,7 +335,6 @@
   /* ── the tab ────────────────────────────────────────────────────────── */
   T.route('/quotations', async (ctx) => {
     ctx.title = 'Quotations';
-    const meta = T.store.get('meta');
     const state = {
       q: ctx.query.q || '',
       status: ctx.query.status || '',
@@ -361,10 +409,10 @@
       }),
       h('button.btn.btn-sm.btn-outline-secondary', {
         type: 'button',
-        class: state.open ? 'is-active' : null,
         onclick: (e) => {
           state.open = !state.open;
-          e.currentTarget.classList.toggle('is-active', state.open);
+          e.currentTarget.className = state.open
+            ? 'btn btn-sm btn-brand' : 'btn btn-sm btn-outline-secondary';
           load();
         },
       }, T.icon('hourglass-split'), ' Awaiting an answer'),
@@ -388,7 +436,7 @@
           'Priced on the enquiry · a job card opens when the customer accepts'),
       ]),
       filters,
-      T.section({ body: host, flush: true, tools: (meta && null) }),
+      T.section({ body: host, flush: true }),
     ]);
   });
 
@@ -466,7 +514,7 @@
 
         est.status === 'APPROVED' && !est.job_id
           ? h('button.btn.btn-sm.btn-brand', {
-              type: 'button', onclick: (e) => bookIn(e.currentTarget, est),
+              type: 'button', onclick: () => bookIn(est, onChanged),
             }, T.icon('clipboard-plus'), ' Book the car in')
           : null,
       ]);
@@ -537,11 +585,8 @@
    * bot takes most enquiries from a photo and a message — so it is asked for
    * here, once the customer has committed and a card is about to exist.
    */
-  async function bookIn(trigger, est) {
-    const [usersRes, panelsRes] = await Promise.all([
-      api.get('/api/users'), api.get('/api/estimate-meta').catch(() => null),
-    ]);
-    void panelsRes;
+  async function bookIn(est, onChanged) {
+    const usersRes = await api.get('/api/users');
     const technicians = usersRes.items.filter((u) => (
       ['technician', 'manager', 'owner'].includes(u.role)));
 
@@ -618,7 +663,8 @@
             title: 'Vehicle booked in',
             action: { label: 'Open job card', run: () => T.navigate(`/jobs/${res.job.id}`) },
           });
-        if (trigger) trigger.disabled = false;
+        // The row now has a card behind it, so the list has to say so.
+        if (onChanged) onChanged();
       } catch (err) {
         saveBtn.disabled = false;
         T.mount(saveBtn, [T.icon('clipboard-plus'), ' Open the job card']);

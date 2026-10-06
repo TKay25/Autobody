@@ -106,7 +106,7 @@
    *                                     navigating straight to its job card
    * @returns {Promise<object|null>} the created job, or null if cancelled
    */
-  async function newJobCard({ onCreated, focus } = {}) {
+  async function newJobCard({ onCreated } = {}) {
     const meta = T.store.get('meta');
     const [customersRes, usersRes] = await Promise.all([
       api.get('/api/customers'), api.get('/api/users'),
@@ -125,23 +125,13 @@
     ]);
 
     /* ── the quotation the customer already has, if any ───────────────── */
-    const source = { pinned: false, estimate: null, file: null, items: [] };
+    const source = { estimate: null, items: [] };
     const quoteSearch = T.searchInput({
       placeholder: 'Search quotation, job card, customer or reg…', width: 300,
       oninput: T.debounce((e) => loadQuotations(e.target.value), 350),
     });
     const quoteListHost = h('div.tc-quote-list');
     const quotePreview = h('div');
-    const docName = h('span.tc-hint');
-    const docInput = h('input.form-control.form-control-sm', {
-      type: 'file', accept: '.pdf,.png,.jpg,.jpeg,.webp', 'aria-label': 'Quotation document',
-    });
-    docInput.addEventListener('change', () => {
-      source.file = docInput.files[0] || null;
-      docName.textContent = source.file
-        ? source.file.name
-        : 'No file chosen — the line items above are still recorded.';
-    });
 
     const attachPane = h('div.tc-attach-pane', [
       h('div.d-flex.align-items-center.gap-2.mb-2.flex-wrap', [
@@ -150,17 +140,10 @@
           type: 'button', onclick: () => loadQuotations(''),
         }, T.icon('arrow-clockwise'), ' Refresh'),
       ]),
-      h('div.tc-hint.mb-2', 'Pick a quotation the customer already has and its lines are copied onto this job card — or leave it blank and measure the panels on the job card afterwards.'),
+      h('div.tc-hint.mb-2', 'The same car coming back, or the fleet sending the same job again: pick the quotation we already wrote and its lines are copied onto this card. Otherwise leave it blank and price the job on the card afterwards.'),
       quoteListHost,
       quotePreview,
-      h('div.tc-field.mt-3', [
-        h('label.tc-label', { for: 'quotationDoc' }, 'Quotation document',
-          h('span.tc-hint.ms-1', '(optional)')),
-        docInput,
-        h('div', docName),
-      ]),
     ]);
-    docInput.id = 'quotationDoc';
 
     async function loadQuotations(q) {
       const params = new URLSearchParams();
@@ -419,11 +402,9 @@
         [T.icon('check-lg'), ' Create job card']);
 
       const m = T.modal({
-        title: focus === 'estimate' ? 'New quotation' : 'New job card',
-        subtitle: focus === 'estimate'
-          ? 'A quotation lives on a job card, so the customer and vehicle come first.'
-          : 'Book the vehicle in and build the estimate in one pass.',
-        icon: focus === 'estimate' ? 'calculator' : 'clipboard-plus',
+        title: 'New job card',
+        subtitle: 'Book the vehicle in; the panels get priced on the card once it exists.',
+        icon: 'clipboard-plus',
         accent: 'brand',
         size: 'xl',
         body: h('div', form),
@@ -435,16 +416,6 @@
           createBtn,
         ],
       });
-
-      /* The "New quotation" quick action opens this same intake — a quotation only
-         exists inside a job card — but lands on the estimate section with "build it
-         here" already chosen, so it does not just duplicate New job card. */
-      if (focus === 'estimate') {
-        setTimeout(() => {
-          form.querySelector('#jd-estimate')
-            ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }, 420);
-      }
 
       /* Clear the invalid ring the moment the operator fixes a field. */
       form.addEventListener('input', (e) => e.target.classList?.remove('is-invalid'));
@@ -479,35 +450,6 @@
         T.mount(createBtn, [h('span.spinner-border.spinner-border-sm.me-1'), ' Saving…']);
         try {
           const res = await api.post('/api/jobs', data);
-
-          // The paperwork goes on after the job exists, so it always has an owner.
-          if (source.file) {
-            T.mount(createBtn, [h('span.spinner-border.spinner-border-sm.me-1'), ' Attaching…']);
-            try {
-              const payload = new FormData();
-              payload.append('file', source.file);
-              payload.append('kind', 'QUOTATION');
-              payload.append('caption', source.estimate
-                ? `Quotation ${source.estimate.reference}` : 'Quotation attached at intake');
-              const upload = await fetch(`/api/jobs/${res.job.id}/documents`, {
-                method: 'POST',
-                headers: { 'X-CSRFToken': window.__CSRF__ || '' },
-                credentials: 'same-origin',
-                body: payload,
-              });
-              /* `fetch` only rejects on a network failure, so a 400 for a bad file
-                 type used to pass silently and the operator was told the job card
-                 was created with its document attached. */
-              if (!upload.ok) {
-                const body = await upload.json().catch(() => ({}));
-                T.toast(body.error || 'The job card was created, but the document did not attach.',
-                  'warning');
-              }
-            } catch (uploadErr) {
-              T.toast('The job card was created, but the document did not attach.',
-                'warning');
-            }
-          }
 
           settled = true;
           m.close();

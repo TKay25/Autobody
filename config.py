@@ -152,6 +152,17 @@ class Config:
     # ── Behaviour ────────────────────────────────────────────────────────
     NOTIFY_ON_STAGE_CHANGE = _bool("NOTIFY_ON_STAGE_CHANGE", True)
 
+    # ── Delivery scope ───────────────────────────────────────────────────
+    # The client asked for a minimal console: the WIP board, the enquiry desk and
+    # the WhatsApp chat manager, and nothing else in the rail. Those three are now
+    # the whole navigation model — the other entries were deleted rather than
+    # hidden — so this flag no longer decides what the rail offers. What is left to
+    # it is the landing screen (the board, against the dashboard) and the chrome
+    # that mirrors the shipped destinations: the phone tab bar and the quick-action
+    # cards. On by default so a deploy matches the ask out of the box; the deeper
+    # routes stay registered, so a direct link still lands.
+    LITE_MODE = _bool("LITE_MODE", True)
+
     # ── Seeding ──────────────────────────────────────────────────────────
     # Password handed to the staff accounts the seeder creates. Set
     # SEED_PASSWORD before a real deployment — the default is published in this

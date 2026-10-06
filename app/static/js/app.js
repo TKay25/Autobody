@@ -10,43 +10,23 @@
      [badge key, words], and a pair with a zero count is simply left out. */
   const NAV = [
     { section: 'Workshop' },
-    { route: '/dashboard', label: 'Dashboard', icon: 'grid-1x2-fill', key: 'd',
-      hint: 'Overview of today',
-      preview: [['jobs', 'open job cards'], ['jobs_ready', 'ready to collect']] },
     { route: '/board', label: 'WIP board', icon: 'kanban', key: 'k',
       hint: 'Drag job cards through the shop',
       preview: [['jobs', 'in the shop'], ['jobs_overdue', 'overdue']] },
-    { route: '/jobs', label: 'Job cards', icon: 'clipboard-check', badge: 'jobs', key: 'j',
-      hint: 'Every vehicle in the shop',
-      preview: [['jobs', 'open'], ['jobs_overdue', 'overdue']] },
-    { route: '/todo', label: 'To-do', icon: 'list-check', badge: 'tasks', key: 't',
-      hint: 'What has to happen today and this week',
-      preview: [['tasks', 'due today']] },
     { route: '/bookings', label: 'Enquiries & Bookings', icon: 'calendar-check', badge: 'bookings',
       key: 'e', hint: 'Enquiries, bookings and confirmations',
       preview: [['bookings', 'awaiting an answer']] },
     { section: 'Customers' },
-    { route: '/customers', label: 'Customers', icon: 'people', key: 'c', hint: 'CRM and contact details' },
-    { route: '/vehicles', label: 'Vehicles', icon: 'car-front', key: 'v', hint: 'Registration register' },
     { route: '/inbox', label: 'WhatsApp', icon: 'whatsapp', badge: 'whatsapp', key: 'w',
       hint: 'Chat with customers',
       preview: [['whatsapp', 'unread']] },
-    { section: 'Money' },
-    { route: '/payments', label: 'Payments', icon: 'cash-coin', key: 'p',
-      hint: 'Receipts, methods and takings' },
-    { route: '/invoices', label: 'Invoices', icon: 'receipt', badge: 'invoices', key: 'f',
-      hint: 'Billing and payments',
-      preview: [['invoices', 'past due']] },
-    { route: '/reports', label: 'Reports', icon: 'graph-up-arrow', key: 'r',
-      hint: 'Performance and margins' },
-    { section: 'Resources' },
-    { route: '/parts', label: 'Parts & stock', icon: 'box-seam', badge: 'parts', key: 's',
-      hint: 'Stock levels and suppliers',
-      preview: [['parts', 'at or below reorder level']] },
-    { route: '/activity', label: 'Activity log', icon: 'clock-history', key: 'a',
-      hint: 'Who changed what' },
-    { route: '/staff', label: 'Staff & settings', icon: 'gear', key: 'g', hint: 'Accounts and bot setup' },
   ];
+
+  /* The screens this console ships, named once so the rail, the quick actions and
+     the phone's tabs are all reading the same list. The client asked for the WIP
+     board, the enquiry desk and the WhatsApp chat manager; every other screen is
+     gone from the shell rather than hidden inside it. */
+  const LITE_ROUTES = ['/board', '/inbox', '/bookings'];
 
   /* Model order, so a rearranged rail can be put back exactly as it shipped. */
   const NAV_INDEX = {};
@@ -61,8 +41,8 @@
   const QUICK_ACTIONS = [
     { label: 'New job card', hint: 'Book a vehicle in and estimate it',
       icon: 'clipboard-plus', tone: 'brand', run: () => T.newJobCard() },
-    { label: 'New quotation', hint: 'Price a job card that is already open',
-      icon: 'calculator', run: () => T.newJobCard({ focus: 'estimate' }) },
+    { label: 'New quotation', hint: 'Price a job — no job card needed yet',
+      icon: 'calculator', run: () => T.newQuotation() },
     { label: 'Payments & invoices', hint: 'Record a receipt against an invoice',
       icon: 'cash-coin', href: '#/invoices' },
     { label: 'Add stock item', hint: 'Parts, paint and consumables',
@@ -213,11 +193,20 @@
 
     /* Navigation ----------------------------------------------------- */
     const pills = {};
+    /* The unread count that rides on the phone's WhatsApp tab, kept apart from
+       `pills` so it can never be mistaken for the rail's own pill. */
+    const tabWhatsappPill = h('span.tc-tab-pill', { hidden: true });
 
-    /* Grouped, not a flat list: each of Workshop / Customers / Money / Resources
-       is drawn as its own pane, so the eye can find a block instead of scanning
-       sixteen rows. The model stays flat — the grouping is derived, so adding a
-       nav item is still one line. */
+    /* Grouped, not a flat list: each section is drawn as its own pane, so the eye
+       can find a block instead of scanning rows. The model stays flat — the
+       grouping is derived, so adding a nav item is still one line.
+
+       Only three rows are left to group: the board, the enquiry desk and the
+       WhatsApp manager. The other screens were deleted from the model rather than
+       hidden behind the flag, so there is nothing here this console could offer
+       that the client did not ask for. */
+    const lite = !!payload.lite;
+
     const navGroups = [];
     NAV.forEach((item) => {
       if (item.section) navGroups.push({ label: item.section, items: [] });
@@ -394,10 +383,10 @@
     }
 
     /* ── `g` chords ──────────────────────────────────────────────────
-       Fourteen rows is past the point where reaching for the mouse beats typing,
-       and a chord is how you get fourteen shortcuts without eating the alphabet.
-       Press `g` and every row shows its letter; idle, the chips take up no space
-       at all, so nothing changes for anyone who never presses it. */
+       Three rows hardly need a chord, but the chord is what lets a row carry a
+       letter without spending a single-key shortcut on it, and it costs nothing
+       to keep. Press `g` and every row shows its letter; idle, the chips take up
+       no space at all, so nothing changes for anyone who never presses it. */
     const jumpTo = {};
     NAV.forEach((item) => { if (item.key) jumpTo[item.key] = item.route; });
 
@@ -1123,7 +1112,9 @@
     ]);
 
     const topbar = h('header.tc-topbar', [
-      h('button.btn.btn-icon.btn-outline-secondary.d-lg-none', {
+      /* Lite mode leans on the phone's tab bar, so the off-canvas toggle would
+         only offer a rail whose rows are already on screen. */
+      lite ? null : h('button.btn.btn-icon.btn-outline-secondary.d-lg-none', {
         type: 'button',
         'aria-label': 'Toggle navigation',
         onclick: () => {
@@ -1137,12 +1128,12 @@
       h('div.tc-crumbs', [
         h('span.tc-crumb-home', T.icon('grid-1x2')),
         h('span.tc-crumb-sep', '/'),
-        h('span#pageCrumb.tc-crumb-current', 'dashboard'),
+        h('span#pageCrumb.tc-crumb-current', lite ? 'board' : 'dashboard'),
       ]),
 
       h('div.ms-auto.d-flex.align-items-center.gap-2', [
         paletteBtn,
-        h('a.btn.btn-icon.btn-outline-secondary.d-none.d-lg-inline-grid', {
+        lite ? null : h('a.btn.btn-icon.btn-outline-secondary.d-none.d-lg-inline-grid', {
           href: '#/activity', title: 'Activity log', 'aria-label': 'Activity log',
         }, T.icon('clock-history')),
         h('a.btn.btn-icon.btn-outline-success', {
@@ -1156,30 +1147,37 @@
       ]),
     ]);
 
-    /* Quick actions: a strip of cards under the top bar, on every screen. */
-    const quickbar = h('div.tc-quickbar', { role: 'group', 'aria-label': 'Quick actions' },
-      QUICK_ACTIONS.map((action) => {
-        const tag = (action.href ? 'a' : 'button')
-          + '.tc-quick-card' + (action.tone ? '.is-' + action.tone : '');
-        const props = {
-          title: action.hint,
-          'aria-label': `${action.label} — ${action.hint}`,
-          onclick: (e) => {
-            if (action.run) { e.preventDefault(); action.run(); return; }
-            /* Same hash means no hashchange event — re-render by hand. */
-            if (window.location.hash === action.href) { e.preventDefault(); T.renderRoute(); }
-          },
-        };
-        if (action.href) props.href = action.href;
-        else props.type = 'button';
-        return h(tag, props, [
-          h('span.tc-quick-icon', T.icon(action.icon)),
-          h('div.tc-quick-text', [
-            h('span.tc-quick-label', action.label),
-            h('span.tc-quick-hint', action.hint),
-          ]),
-        ]);
-      }));
+    /* Quick actions: a strip of cards under the top bar, on every screen. Lite
+       mode keeps only the ones that lead to a screen it ships — and with none
+       left it draws nothing, rather than a row of dead ends. */
+    const quickActions = lite
+      ? QUICK_ACTIONS.filter((a) => a.href && LITE_ROUTES.some((r) => a.href.includes(r)))
+      : QUICK_ACTIONS;
+    const quickbar = quickActions.length
+      ? h('div.tc-quickbar', { role: 'group', 'aria-label': 'Quick actions' },
+        quickActions.map((action) => {
+          const tag = (action.href ? 'a' : 'button')
+            + '.tc-quick-card' + (action.tone ? '.is-' + action.tone : '');
+          const props = {
+            title: action.hint,
+            'aria-label': `${action.label} — ${action.hint}`,
+            onclick: (e) => {
+              if (action.run) { e.preventDefault(); action.run(); return; }
+              /* Same hash means no hashchange event — re-render by hand. */
+              if (window.location.hash === action.href) { e.preventDefault(); T.renderRoute(); }
+            },
+          };
+          if (action.href) props.href = action.href;
+          else props.type = 'button';
+          return h(tag, props, [
+            h('span.tc-quick-icon', T.icon(action.icon)),
+            h('div.tc-quick-text', [
+              h('span.tc-quick-label', action.label),
+              h('span.tc-quick-hint', action.hint),
+            ]),
+          ]);
+        }))
+      : null;
 
     const outlet = h('main.tc-content', { id: 'main-content' },
       h('div#viewOutlet.tc-view'));
@@ -1222,6 +1220,10 @@
           pill.className = `tc-nav-pill${key === 'whatsapp' && count ? ' is-success' : ''}`
             + `${['jobs_overdue', 'invoices', 'parts'].includes(key) && count ? ' is-alert' : ''}`;
         });
+        /* Same count, mirrored onto the phone's WhatsApp tab. */
+        const waUnread = data.whatsapp || 0;
+        tabWhatsappPill.textContent = waUnread > 99 ? '99+' : String(waUnread);
+        tabWhatsappPill.hidden = !waUnread;
         const t = document.querySelector('.tc-topbar') || topbar;
         t.classList.toggle('has-attention', (data.attention || 0) > 0);
         // Keep the badge live even while the panel is shut. Two cheap counts
@@ -1276,7 +1278,42 @@
       }
     });
 
-    return h('div', [sidebar, h('div.tc-main', [topbar, quickbar, outlet]),
+    /* Mobile tab bar ------------------------------------------------------
+       The shipped screens as thumb-reachable tabs, in the rail's own order.
+       Hidden from the lg breakpoint up, where the rail already carries them, so
+       it never doubles up on a desktop — and because lite mode drops the
+       off-canvas toggle, this is the only way between screens on a phone. */
+    const mobileTabs = h('nav.tc-tabbar.d-lg-none', { 'aria-label': 'Primary' },
+      [
+        { route: '/board', label: 'WIP', icon: 'kanban' },
+        { route: '/bookings', label: 'Bookings', icon: 'calendar-check' },
+        { route: '/inbox', label: 'WhatsApp', icon: 'whatsapp' },
+      ].map((tab) => h('a.tc-tab', {
+        href: `#${tab.route}`,
+        'data-route': tab.route,
+        'aria-label': tab.label,
+      }, [
+        h('span.tc-tab-icon', [
+          T.icon(tab.icon),
+          tab.route === '/inbox' ? tabWhatsappPill : null,
+        ]),
+        h('span.tc-tab-label', tab.label),
+      ])));
+
+    /* The tab's crimson is driven off the same hash the router reads, so it can
+       never disagree with the screen actually on show. */
+    function syncTabs() {
+      const here = (window.location.hash.replace(/^#/, '').split('?')[0])
+        || (window.__HOME__ || '/dashboard');
+      mobileTabs.querySelectorAll('.tc-tab').forEach((tab) => {
+        const base = tab.dataset.route;
+        tab.classList.toggle('active', here === base || here.startsWith(base + '/'));
+      });
+    }
+    document.addEventListener('topclass:nav', syncTabs);
+    syncTabs();
+
+    return h('div', [sidebar, h('div.tc-main', [topbar, quickbar, outlet]), mobileTabs,
                      attnPanel, outboxPanel, navPop]);
   }
 
@@ -1456,6 +1493,8 @@
        from a legacy key would otherwise sit unused until the next load. */
     loadPrefs((payload.user || {}).id, (payload.user || {}).preferences);
     applyDensity(isCompact());
+    /* Where the router sends an empty hash. Lite mode opens on the board. */
+    window.__HOME__ = payload.lite ? '/board' : '/dashboard';
     T.mount('#app', layout(payload));
     T.startRouter();
 

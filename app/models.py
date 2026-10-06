@@ -15,6 +15,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from .constants import (
     BOOKING_OUTCOMES,
+    BOOKING_SOURCE_LABELS,
     ENQUIRY_REF_PREFIX,
     STAGE_LABELS,
     STAGE_PROGRESS,
@@ -1179,6 +1180,27 @@ class Booking(TimestampMixin, db.Model):
         when = self.requested_slot_date.strftime("%a %d %b %Y")
         return f"{when} at {self.requested_slot_time}" if self.requested_slot_time else when
 
+    def _quotation_summary(self) -> dict | None:
+        """The enquiry's most recent quotation, in the shape a list row needs.
+
+        Deliberately small: a list of enquiries should not carry every line item
+        of every quote, and the row only has to answer "is there a price, and has
+        the customer answered?".
+        """
+        quotes = list(self.estimates or [])
+        if not quotes:
+            return None
+        approved = [e for e in quotes if e.status == "APPROVED"]
+        estimate = approved[-1] if approved else quotes[-1]
+        return {
+            "id": estimate.id,
+            "reference": estimate.reference,
+            "status": estimate.status,
+            "total": float(_money(estimate.total)),
+            "currency": estimate.currency or "USD",
+            "count": len(quotes),
+        }
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -1197,6 +1219,11 @@ class Booking(TimestampMixin, db.Model):
             "slot_time": self.slot_time,
             "status": self.status,
             "source": self.source,
+            "source_label": BOOKING_SOURCE_LABELS.get(self.source or "", self.source),
+            # The quotation raised on this enquiry, if there is one. The desk
+            # needs to see at a glance which enquiries are still unquoted — that
+            # is the whole point of quoting before the car is booked in.
+            "quotation": self._quotation_summary(),
             "notes": self.notes,
             "quoted_from": float(_money(self.quoted_from)),
             "confirmed_by_id": self.confirmed_by_id,

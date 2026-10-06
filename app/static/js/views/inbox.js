@@ -178,6 +178,17 @@
     const selectedId = ctx.query.id || null;
     const conversations = await api.get('/api/whatsapp/conversations');
 
+    /* ── phone pane switch ────────────────────────────────────────────
+       Under 860px the list and the thread cannot sit side by side, so exactly
+       one is shown: the list until a conversation is tapped, then the thread
+       full width. Desktop ignores this — the class only bites inside the media
+       query. */
+    let mobileOpen = false;
+    function syncMobilePane() {
+      const view = document.querySelector('.tc-chat-view');
+      if (view) view.classList.toggle('chat-mobile-open', mobileOpen);
+    }
+
     /* ── left rail ──────────────────────────────────────────────────── */
     const listHost = h('div.chat-list');
     let activeId = selectedId || (conversations.items[0] || {}).id || null;
@@ -227,6 +238,9 @@
                 if (item) node.classList.toggle('active', item.id === activeId);
               });
               window.history.replaceState(null, '', `#/inbox?id=${c.id}`);
+              /* A tap on a phone opens the thread full width. */
+              mobileOpen = true;
+              syncMobilePane();
               loadThread(c.id);
             });
             return el;
@@ -329,6 +343,12 @@
 
       T.mount(panelHost, [
         h('div.chat-head', [
+          /* Phone-only: returns to the conversation list. */
+          h('button.chat-back', {
+            type: 'button', 'aria-label': 'Back to conversations',
+            title: 'Back to conversations',
+            onclick: () => { mobileOpen = false; syncMobilePane(); },
+          }, T.icon('chevron-left')),
           h('span.tc-avatar.chat-avatar', initialsOf(c.display_name)),
           h('div.flex-fill.min-w-0', [
             h('div.fw-bold.text-truncate', c.display_name),

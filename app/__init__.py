@@ -16,6 +16,8 @@ from .constants import (
     BOOKING_SLOTS,
     BOOKING_STATUS_LABELS,
     BOOKING_STATUSES,
+    BOOKING_SOURCE_LABELS,
+    BOOKING_SOURCES,
     INVOICE_STATUSES,
     PART_CATEGORIES,
     PART_STATUSES,
@@ -446,6 +448,10 @@ def _register_jinja(app: Flask) -> None:
                 "website": app.config["COMPANY_WEBSITE"],
             },
             "APP_VERSION": __version__,
+            # Counted rather than written down: the rail lost two stages when
+            # quoting moved onto the enquiry, and this number stayed at thirteen
+            # on the sign-in page until somebody happened to read it.
+            "STAGE_COUNT": len(STAGES),
             "DEMO_ACCOUNTS": _demo_accounts(app),
             "DEMO_PASSWORD": (
                 app.config["SEED_PASSWORD"] if app.config.get("SHOW_DEMO_ACCOUNTS") else None
@@ -720,6 +726,8 @@ def reference_meta() -> dict:
         "service_names": SERVICE_NAMES,
         "booking_statuses": BOOKING_STATUSES,
         "booking_status_labels": BOOKING_STATUS_LABELS,
+        "booking_sources": BOOKING_SOURCES,
+        "booking_source_labels": BOOKING_SOURCE_LABELS,
         "booking_outcomes": [{"code": code, "label": label}
                              for code, label in BOOKING_OUTCOMES.items()],
         "booking_slots": BOOKING_SLOTS,

@@ -1163,6 +1163,43 @@ html.sidebar-rail { --tc-sidebar: 74px; }
   .tc-search-label { display: none; }
 }
 
+/* ── Mobile tab bar ────────────────────────────────────────────────────
+   The lite console's screens as thumb-reachable tabs, shown only where the
+   rail is put away (below the lg breakpoint, via `.d-lg-none`). It rides above
+   the safe-area inset so a notched phone does not clip it. */
+.tc-tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 1030;
+  display: flex; align-items: stretch;
+  background: rgba(255, 255, 255, .94);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid var(--tc-line);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.tc-tab {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: .12rem;
+  padding: .5rem .4rem; text-decoration: none;
+  color: var(--tc-ink-muted); font-size: .68rem; font-weight: 650;
+  transition: color var(--tc-fast);
+}
+.tc-tab:hover { color: var(--tc-navy-800); }
+.tc-tab.active { color: var(--tc-crimson-600); }
+.tc-tab-icon { position: relative; display: grid; place-items: center; font-size: 1.2rem; }
+.tc-tab.active .tc-tab-icon { color: var(--tc-crimson-500); }
+.tc-tab-label { letter-spacing: .01em; }
+.tc-tab-pill {
+  position: absolute; top: -6px; right: -12px;
+  min-width: 17px; padding: 0 4px; border-radius: 999px;
+  background: var(--tc-crimson-500); color: #fff;
+  font-size: .58rem; font-weight: 800; line-height: 16px; text-align: center;
+  box-shadow: 0 0 0 2px #fff;
+}
+
+@media (max-width: 991px) {
+  /* Room for the tab bar, so the last card is never parked behind it. */
+  .tc-main { padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px)); }
+}
+
 /* ── Cards & stats ─────────────────────────────────────────────────── */
 .stat-card { border: 0; border-radius: .85rem; box-shadow: 0 1px 3px rgba(8, 20, 44, .09); }
 .stat-card .stat-value { font-size: 1.65rem; font-weight: 700; line-height: 1.1; color: var(--tc-navy-900); }
@@ -1230,9 +1267,14 @@ html.sidebar-rail { --tc-sidebar: 74px; }
 @media (max-width: 860px) {
   .chat-wrap { grid-template-columns: 1fr; height: auto; }
   /* Stacked there is no fixed row height for the panels to scroll against, so
-     the log simply grew — a long thread made a 9000px page. Cap them instead. */
-  .chat-wrap > .card { height: 34vh; }
-  .chat-wrap > .flex-fill { height: 56vh; }
+     the log simply grew — a long thread made a 9000px page. Cap them instead.
+     Only one pane is shown at a time here (see `.chat-mobile-open` below), so
+     each gets a full-height frame rather than two half-height boxes. */
+  .chat-wrap > .card,
+  .chat-wrap > .flex-fill { height: 74vh; }
+  /* One pane at a time on a phone: the list, or the open thread. */
+  .tc-chat-view.chat-mobile-open .chat-wrap > .card { display: none; }
+  .tc-chat-view:not(.chat-mobile-open) .chat-wrap > .flex-fill { display: none; }
 }
 
 /* Tabs inside the attention panel — one bell, two lists. */
@@ -1648,6 +1690,27 @@ h1.h4, .page-title { font-weight: 700; letter-spacing: -.015em; }
 .job-card:hover { box-shadow: var(--tc-shadow-2); transform: translateY(-1px); }
 .job-card:focus-visible { box-shadow: var(--tc-ring); }
 
+/* The card's touch affordance: HTML5 drag never fires on a phone, so this opens
+   the stage picker instead — the same move, by tap rather than by drag. */
+.job-card-move {
+  flex: none; width: 27px; height: 27px; padding: 0;
+  display: grid; place-items: center; cursor: pointer;
+  border: 1px solid var(--tc-line); border-radius: .5rem;
+  background: #fff; color: var(--tc-navy-700); font-size: .82rem;
+  transition: border-color var(--tc-fast), color var(--tc-fast), background var(--tc-fast);
+}
+.job-card-move:hover {
+  border-color: var(--tc-crimson-500); color: var(--tc-crimson-600); background: #fdecef;
+}
+.job-card-move:focus-visible { outline: none; box-shadow: var(--tc-focus-ring); }
+
+/* A phone gets columns about a screen wide with snap scrolling, so a card fills
+   the viewport instead of being a sliver of a 268px column. */
+@media (max-width: 767px) {
+  .kanban { scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; }
+  .kanban-col { flex: 0 0 82vw; scroll-snap-align: center; }
+}
+
 /* ── Tables ────────────────────────────────────────────────────────── */
 .table-tc thead th {
   background: #f8fafd; position: sticky; top: 0; z-index: 2;
@@ -1683,6 +1746,19 @@ h1.h4, .page-title { font-weight: 700; letter-spacing: -.015em; }
   padding: .7rem .9rem; border-top: 1px solid var(--tc-line); background: #fff;
 }
 .tc-composer textarea { border-radius: .85rem; }
+/* Phone-only back affordance inside the open thread. Hidden on desktop, where
+   the conversation list is always on screen beside it. */
+.chat-back { display: none; }
+@media (max-width: 860px) {
+  .chat-back {
+    display: inline-grid; place-items: center; flex: none;
+    width: 34px; height: 34px; padding: 0; border-radius: .6rem; cursor: pointer;
+    border: 1px solid var(--tc-line); background: #fff; color: var(--tc-navy-800);
+  }
+  .chat-back:hover { border-color: var(--tc-control-border-hover); }
+  /* Keep the send box clear of the home indicator. */
+  .tc-composer { padding-bottom: calc(.7rem + env(safe-area-inset-bottom, 0px)); }
+}
 .chip.is-human { background: var(--tc-navy-800); color: #fff; border-color: transparent; }
 .chip.is-warn {
   background: rgba(232, 163, 23, .16); color: #8a6109;

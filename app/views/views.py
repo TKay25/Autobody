@@ -110,6 +110,10 @@ def _bootstrap_payload() -> dict:
         "user": current_user.to_dict(),
         "meta": reference_meta(),
         "version": __version__,
+        # The trimmed console (board + enquiries + WhatsApp only). Sent with the
+        # shell so the rail is correct on the first paint rather than after a round
+        # trip.
+        "lite": bool(current_app.config.get("LITE_MODE", False)),
         "company": {
             "name": current_app.config["COMPANY_NAME"],
             "address": current_app.config["COMPANY_ADDRESS"],

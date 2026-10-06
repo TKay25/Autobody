@@ -1844,9 +1844,15 @@
     }).replace(/\*/g, '.*') + '$');
     routes.push({ regex, keys, handler, pattern });
   }
+  /* Where the app lands when no hash is present. A deploy that ships only the
+     board and the chat manager sets window.__HOME__ = '/board' before the router
+     starts; the full console keeps the dashboard. */
+  function homeRoute() {
+    return window.__HOME__ || '/dashboard';
+  }
   function currentPath() {
     const hash = window.location.hash.replace(/^#/, '');
-    return hash || '/dashboard';
+    return hash || homeRoute();
   }
   function navigate(path, replace) {
     const target = '#' + path;
@@ -1910,7 +1916,7 @@
        "not saved yet" strip and only grow one on the next navigation — which is
        exactly when the operator has stopped looking. */
     try { await refreshPending(); } catch (e) { /* no store, no queue */ }
-    if (!window.location.hash) window.location.hash = '/dashboard';
+    if (!window.location.hash) window.location.hash = homeRoute();
     else renderRoute();
   }
 

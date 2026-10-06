@@ -259,6 +259,22 @@ BOOKING_STATUS_LABELS = {
 # Still waiting on the customer or the workshop — used by the end-of-day report.
 BOOKING_OPEN_STATUSES = ["REQUESTED", "CONFIRMED", "ATTENDED", "ARRIVED"]
 
+# Where an enquiry came from. The column holds a short code — it is written by
+# the bot, by the desk and by the Flow, and has to survive a round trip — so the
+# wording lives here rather than in whichever screen happens to render it.
+# `whatsapp` is the one the desk most needs to recognise: an enquiry that arrived
+# through the Flow is one nobody had to type in.
+BOOKING_SOURCE_LABELS = {
+    "whatsapp": "WhatsApp",
+    "phone": "Phone call",
+    "walkin": "Walk-in",
+    "web": "Web form",
+    "email": "Email",
+}
+# The order the filter offers them in: the channel the shop actually works from
+# first, and anything unrecognised falls to the end rather than being hidden.
+BOOKING_SOURCES = ["whatsapp", "phone", "walkin", "web", "email"]
+
 # Appointments the workshop is still expecting but that have not turned up yet.
 # This is the set that *holds a slot* and the set a customer can still move or
 # cancel -- ARRIVED is excluded from both, because the vehicle is already on the
