@@ -1137,6 +1137,119 @@ def test_tracking_works_by_registration_plate(app):
         assert "Quality Control" in replies[0]["body"]
 
 
+def test_tracking_works_by_the_tms_number_the_insurer_gave(app):
+    """The card is numbered by the TMS, so the customer may quote that number.
+
+    "TMS 88231" has the shape of a registration plate, which is why asking by
+    shape sent it to the plate lookup and answered "not found" for a car that
+    was in the shop.
+    """
+    with app.app_context():
+        customer = Customer(name="TMS Tester", phone="+263771110023",
+                            whatsapp="+263771110023")
+        db.session.add(customer)
+        db.session.flush()
+        vehicle = Vehicle(customer_id=customer.id, reg_no="TMS3000")
+        db.session.add(vehicle)
+        db.session.flush()
+        job = JobCard(job_no="TMS 88231", tms_id="TMS 88231", customer_id=customer.id,
+                      vehicle_id=vehicle.id, service="Panel Beating & Spray Painting",
+                      stage="PANEL")
+        db.session.add(job)
+        db.session.commit()
+
+        conv = get_or_create_conversation("263771110023", "TMS Tester")
+        replies = intent_router.handle_inbound(conv, text_body="any news on tms 88231?")
+
+        body = replies[0]["body"]
+        assert "TMS 88231" in body, body
+        assert "Panel" in body, body
+
+
+def test_a_tms_number_is_read_however_the_customer_spaces_it(app):
+    """The desk types the spacing the TMS gave; the customer types their own."""
+    with app.app_context():
+        customer = Customer(name="Spacing Tester", phone="+263771110033",
+                            whatsapp="+263771110033")
+        db.session.add(customer)
+        db.session.flush()
+        vehicle = Vehicle(customer_id=customer.id, reg_no="TMS4000")
+        db.session.add(vehicle)
+        db.session.flush()
+        job = JobCard(job_no="TMS 88231", tms_id="TMS 88231", customer_id=customer.id,
+                      vehicle_id=vehicle.id, service="Car Detailing", stage="QC")
+        db.session.add(job)
+        db.session.commit()
+
+        conv = get_or_create_conversation("263771110033", "Spacing Tester")
+
+        hyphenated = intent_router.handle_inbound(conv, text_body="tms-88231")
+        assert "TMS 88231" in hyphenated[0]["body"], hyphenated[0]["body"]
+
+        run_together = intent_router.handle_inbound(conv, text_body="TMS88231")
+        assert "TMS 88231" in run_together[0]["body"], run_together[0]["body"]
+
+
+def test_a_card_number_is_read_when_the_customer_drops_every_separator(app):
+    """We file the card as TC-2026-9410; a customer may well type tc20269410."""
+    with app.app_context():
+        customer = Customer(name="Glued Tester", phone="+263771110053",
+                            whatsapp="+263771110053")
+        db.session.add(customer)
+        db.session.flush()
+        vehicle = Vehicle(customer_id=customer.id, reg_no="GLU1000")
+        db.session.add(vehicle)
+        db.session.flush()
+        job = JobCard(job_no="TC-2026-9410", customer_id=customer.id,
+                      vehicle_id=vehicle.id, service="Car Detailing", stage="QC")
+        db.session.add(job)
+        db.session.commit()
+
+        conv = get_or_create_conversation("263771110053", "Glued Tester")
+        intent_router.handle_inbound(conv, text_body="track my repair")
+        replies = intent_router.handle_inbound(conv, text_body="tc20269410")
+
+        body = replies[0]["body"]
+        assert "TC-2026-9410" in body, body
+        assert "Quality Control" in body, body
+
+
+def test_a_number_broken_into_many_pieces_is_still_one_number(app):
+    """The TMS wrote "TMS 88231"; a customer may type it a piece at a time."""
+    with app.app_context():
+        customer = Customer(name="Pieces Tester", phone="+263771110063",
+                            whatsapp="+263771110063")
+        db.session.add(customer)
+        db.session.flush()
+        vehicle = Vehicle(customer_id=customer.id, reg_no="PCS1000")
+        db.session.add(vehicle)
+        db.session.flush()
+        job = JobCard(job_no="TMS 88231", tms_id="TMS 88231", customer_id=customer.id,
+                      vehicle_id=vehicle.id, service="Panel Beating & Spray Painting",
+                      stage="PANEL")
+        db.session.add(job)
+        db.session.commit()
+
+        conv = get_or_create_conversation("263771110063", "Pieces Tester")
+        intent_router.handle_inbound(conv, text_body="track my repair")
+        replies = intent_router.handle_inbound(conv, text_body="TMS 8 82 31")
+
+        body = replies[0]["body"]
+        assert "TMS 88231" in body, body
+        assert "Panel" in body, body
+
+
+def test_a_reference_we_never_issued_is_still_not_found(app):
+    """Reading numbers as typed must not turn every plate into a card number."""
+    with app.app_context():
+        conv = get_or_create_conversation("263771110043", "Unknown Ref")
+        intent_router.handle_inbound(conv, text_body="track my repair")
+        assert conv.state == "TRACK_REF", conv.state
+
+        replies = intent_router.handle_inbound(conv, text_body="TMS 99999")
+        assert "could not find" in replies[0]["body"].lower(), replies[0]["body"]
+
+
 def test_unknown_input_falls_back_then_offers_human(app):
     with app.app_context():
         conv = get_or_create_conversation("263771110004", "Fallback Tester")

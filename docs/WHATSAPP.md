@@ -95,7 +95,7 @@ that cap is what used to keep the extra rows off the greeting entirely.
 | Row | Id | What it does |
 |---|---|---|
 | Enquiries | `m_enquiries` | The seven services → a short brief on the one picked → the enquiry form (or the chat enquiry when no Flow is built) |
-| Track my repair | `m_track` | Job number or registration plate |
+| Track my repair | `m_track` | Job number — the shop's own or the insurer's TMS reference — or a registration plate |
 | I have paid — send proof | `m_pay` | Bank/EcoCash details, then waits for a screenshot |
 | Our services & prices | `m_services` | The seven service lines — a "from USD" price on the ones we publish a price for |
 | Talk to a person | `m_human` | Hands over **and** raises a callback ticket |
@@ -198,6 +198,13 @@ Bot:      Job card TC-2026-0004
           ⚠️ Waiting on 1 part(s): Front bumper — replacement
           📅 Promised date: 18 Sep 2026
 ```
+
+- **What counts as a reference.** The card number (`TC-2026-0004`), the insurer's
+  TMS reference (`TMS 88231`), or the registration plate. Numbers are read as
+  typed and as run together, so `tc2026-0004`, `TC20260004` and `TMS 8 82 31`
+  all find the card we filed — but only against numbers the shop really issued,
+  so a reference we never issued is still answered honestly rather than matched
+  to the closest thing.
 
 ### 3.4 I've paid — send proof
 

@@ -160,9 +160,12 @@ T = {
               "Izithombe zisiza ukunikeza intengo eqinile.",
     },
     "ask_ref": {
-        "en": "Please send your job number (e.g. TC-2026-0007) or vehicle registration.",
-        "sn": "Tumirai nhamba yejobi (semuenzaniso TC-2026-0007) kana nhamba yemota.",
-        "nd": "Thumela inombolo yomsebenzi (isb. TC-2026-0007) kumbe inombolo yemota.",
+        "en": "Please send your job number (e.g. TC-2026-0007 or your TMS reference) "
+              "or vehicle registration.",
+        "sn": "Tumirai nhamba yejobi (semuenzaniso TC-2026-0007 kana nhamba yeTMS) "
+              "kana nhamba yemota.",
+        "nd": "Thumela inombolo yomsebenzi (isb. TC-2026-0007 kumbe inombolo ye-TMS) "
+              "kumbe inombolo yemota.",
     },
     "not_found": {
         "en": "I could not find anything with that reference. Please check and "
@@ -409,6 +412,16 @@ def match_service(text: str) -> str | None:
 
 REG_PATTERN = re.compile(r"\b([A-Z]{2,3}[ -]?\d{2,5}[A-Z]?)\b", re.I)
 JOB_PATTERN = re.compile(r"\b(TC-\d{4}-\d{3,5})\b", re.I)
+# A card number is also read from the words the customer typed, because the TMS
+# picks its own format and "TMS 88231" reads exactly like a plate. Nothing is
+# guessed from the shape: see `IntentRouter._job_by_typed_ref`.
+# Letters and digits apart, not runs of both — a customer who drops the space
+# writes "TMS88231" as one word, and that boundary is the one the desk's number
+# has. Splitting it there is reading what they meant, not inventing a number.
+REF_RUN_PATTERN = re.compile(r"[A-Z]+|\d+")
+JOB_REF_RUNS = 3            # "TC-2026-0007" is three runs; nothing we mint is longer
+JOB_REF_SPLIT_RUNS = 6      # ...but a customer may break their number into more
+JOB_REF_MAX_RUNS = 24       # a long message is not a number
 # Deliberately loose. An address that fails a strict RFC regex is still worth
 # keeping — the front desk can correct it, but a missed one is a lead we cannot
 # send a quotation to.
@@ -2575,6 +2588,11 @@ class IntentRouter:
             job = JobCard.query.filter_by(job_no=match.group(1).upper()).first()
             if job:
                 return job
+        # Before the plate branch: a TMS reference reads exactly like a plate
+        # ("TMS 88231"), so it would otherwise be looked up as one and lost.
+        job = self._job_by_typed_ref(raw)
+        if job:
+            return job
         reg_match = REG_PATTERN.search(raw.upper().replace(" ", ""))
         candidate = reg_match.group(1) if reg_match else raw.strip().upper()
         if len(candidate) >= 3:
@@ -2588,6 +2606,69 @@ class IntentRouter:
                         return job
                 return jobs[0] if jobs else None
         return None
+
+    def _job_by_typed_ref(self, raw: str) -> JobCard | None:
+        """The card whose number the customer typed — but only if we issued it.
+
+        A TMS ID is the insurer's to format, and "TMS 88231" has the shape of a
+        registration plate, so nothing is inferred from the shape here. Instead
+        the words are read as typed, in the spellings a customer writes them
+        (spaced, hyphenated, run together — a run-together number is read at its
+        letter/digit boundary), and only a number that is really a card number
+        can match. A plate therefore falls through to the plate lookup.
+
+        Two passes, because a customer's spacing and ours are not the same
+        thing. The first tries the spellings a desk writes, exactly; the second
+        drops every separator from both sides, so "TC20260007" and "TMS 8 82 31"
+        read as the "TC-2026-0007" and "TMS 88231" we filed.
+        """
+        # A long message is not a number; capping the words keeps this cheap.
+        runs = REF_RUN_PATTERN.findall((raw or "").upper())[:JOB_REF_MAX_RUNS]
+        # Longest reading first: "TC-2026-0007" is one number, not the two smaller
+        # readings "TC-2026" and "2026-0007". `job_no` is indexed, so this pass is
+        # a handful of exact lookups rather than a scan of the shop's cards.
+        for size in range(min(JOB_REF_RUNS, len(runs)), 0, -1):
+            for start in range(len(runs) - size + 1):
+                window = runs[start:start + size]
+                joined = "".join(window)
+                if not any(char.isdigit() for char in joined):
+                    continue            # "please let me know" is never a number
+                for guess in ("-".join(window), " ".join(window), joined):
+                    job = JobCard.query.filter_by(job_no=guess).first()
+                    if job:
+                        return job
+        # Wider windows here: a customer can break a number into more pieces than
+        # the desk wrote ("TMS 8 82 31" for "TMS 88231"), and every reading is
+        # still compared against a number we issued, so a wider one cannot be an
+        # invented match.
+        readings = set()
+        for size in range(min(JOB_REF_SPLIT_RUNS, len(runs)), 0, -1):
+            for start in range(len(runs) - size + 1):
+                joined = "".join(runs[start:start + size])
+                if any(char.isdigit() for char in joined):
+                    readings.add(joined)
+        return self._job_by_loose_ref(readings) if readings else None
+
+    @staticmethod
+    def _job_by_loose_ref(readings: set[str]) -> JobCard | None:
+        """A card whose number reads as one of `readings` once *our* separators go.
+
+        One query, and it is reached only when a message carried a number that no
+        card number matched as spelled — the same shape of lookup the plate
+        branch makes over the vehicles. A plate that reads character-for-character
+        as a card number we issued resolves as the card, and the reply names the
+        card it used, so the customer can see which reading we took.
+        """
+        stripped = db.func.upper(JobCard.job_no)
+        for separator in ("-", "/", ".", " "):
+            stripped = db.func.replace(stripped, separator, "")
+        rows = JobCard.query.filter(stripped.in_(readings)).all()
+        if not rows:
+            return None
+        # The longest number is the most complete reading of what they typed; the
+        # id settles a tie, so the answer never depends on the rows' order.
+        rows.sort(key=lambda job: (-len(job.job_no or ""), job.id))
+        return rows[0]
 
     def _fallback(self, message: str | None = None) -> list[dict]:
         self.reset_strikes = False
