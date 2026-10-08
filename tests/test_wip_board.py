@@ -24,6 +24,11 @@ for one car. And "What is the car in for" takes **more than one answer**: a car 
 for a panel repair and a valet is one card whose walk is the *union* of both
 lines, so the second service is a stage the shop goes through rather than an
 override somebody has to stamp.
+
+A last one ties them together: the drop itself is the decision. Letting go of a
+card over a column opens the dialog on *that* column, with the stages offered as
+a list to pick from and the customer's message already ticked — the board does
+not ask the shop to say twice where a car has just gone.
 """
 from __future__ import annotations
 
@@ -825,3 +830,58 @@ def test_the_job_dialogs_save_button_is_associated_with_its_form():
     assert "const form = h('form.row.g-3', { id: formId, novalidate: true }" in dialog
     assert "save.setAttribute('form', formId)" in dialog, (
         "the job dialog's Save button is orphaned — clicking it does nothing")
+
+
+# ── the drop says where the card goes ────────────────────────────────────────
+def test_a_dropped_card_opens_on_the_column_it_was_dropped_on():
+    """Letting go over a column *is* the instruction, so the dialog must carry it.
+
+    The stage picker is seeded from the drop rather than from where the card
+    already sat. Falling back to the current stage asked the foreman to make the
+    same choice twice — and the second answer, the one the card arrived with, put
+    the car back in the column it came from.
+    """
+    src = BOARD_JS.read_text(encoding="utf-8")
+    column = src[src.index("ondrop: async (e) => {"):]
+    column = column[:column.index("return { shell, stage: col.stage")]
+    assert "openJob(current.job, current.to, { stage: col.stage })" in column, (
+        "the drop opens the dialog without saying which column it landed in")
+
+    dialog = _job_dialog(src)
+    assert "value: preset || currentStage" in dialog, (
+        "the dialog is not seeded with the stage the card was dropped on")
+
+
+def test_the_stage_field_is_a_list_of_stages_not_a_value_to_spell():
+    """A stage is picked from the board's own columns, never typed from memory.
+
+    The control is the app's searchable combobox over a real <select>, grouped
+    into the stages the card walks and the columns it never visits — so what the
+    shop can choose from is what the board actually has.
+    """
+    dialog = _job_dialog(BOARD_JS.read_text(encoding="utf-8"))
+
+    assert "{ name: 'stage', label: 'Stage', type: 'select', col: 12, required: true" in dialog
+    assert "optgroups: [" in dialog, "the stage field offers no stages to pick from"
+    assert "T.searchableSelect(select, {" in dialog, (
+        "the stage field is a bare <select> with no picker wrapped around it")
+    assert "walkFor(job)" in dialog, "the stages on offer are not the card's own walk"
+
+
+def test_the_customer_is_told_unless_the_move_switches_it_off():
+    """WhatsApp is the default, so the toggle has to arrive already ticked.
+
+    The switch is drawn from the field's own value and posts what is ticked at the
+    end. A shop that has to remember to tick "WhatsApp the customer" on every move
+    is a shop whose customers stop hearing about their cars.
+    """
+    dialog = _job_dialog(BOARD_JS.read_text(encoding="utf-8"))
+    assert "{ name: 'notify', label: 'WhatsApp the customer', type: 'switch', col: 12," in dialog
+
+    notify = dialog[dialog.index("{ name: 'notify'"):]
+    assert "value: true" in notify[:notify.index("}")], (
+        "the notification toggle starts switched off")
+    assert "checked: !!field.value" in dialog, (
+        "the switch ignores the value the field was given")
+    assert "notify: controls.notify.checked" in dialog, (
+        "the tick in the dialog never reaches the move")

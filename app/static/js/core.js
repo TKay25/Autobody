@@ -1109,7 +1109,19 @@
     let items = [];
     let active = -1;
 
-    const showLabel = () => { input.value = labelOf(select.value); };
+    /* A value the list cannot name is still a value.
+     *
+     * `labelOf` answers "" for a value with no option behind it — a stage the
+     * board has since been rebuilt without, a customer saved after the form was
+     * drawn, a stage the card walks and the picker was never handed — and printing
+     * that into the box is indistinguishable from *nothing chosen*: the
+     * placeholder shows over a select that is holding a perfectly good value. So
+     * what cannot be named is shown as it stands. A blank box over a real value is
+     * the one reading this control must never give the shop. */
+    const showLabel = () => {
+      const value = select.value;
+      input.value = labelOf(value) || value;
+    };
 
     function highlight(index) {
       items.forEach((it) => it.el.classList.remove('is-active'));

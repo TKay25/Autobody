@@ -227,6 +227,23 @@ def test_quick_actions_strip_is_wired():
         assert cls in css, f"{cls} is missing from the stylesheet"
 
 
+def test_a_chosen_value_is_never_shown_as_a_blank_box():
+    """A picker holding a value must not read as though nothing is chosen.
+
+    The visible control is a text box fed from the hidden <select>'s value by
+    `showLabel()`. Printing only the option's *label* meant that a value with no
+    option behind it — a stage the board was rebuilt without, a list the picker
+    was never handed — emptied the box while the select underneath still held the
+    value. On the WIP board that reads as a card dropped into a column whose stage
+    picker says "Search…": the drop looks like it never happened at all.
+    """
+    core = (JS_DIR / "core.js").read_text(encoding="utf-8")
+    assert "input.value = labelOf(value) || value;" in core, (
+        "a value the list cannot name is printed as an empty box")
+    assert re.search(r"showLabel\(\);\s*return \{", core), (
+        "the picker does not print its value when it is built")
+
+
 @pytest.mark.parametrize("colour", ["brand", "primary", "success", "warning", "danger"])
 def test_stage_colours_are_known_bootstrap_slots(colour):
     """Stage badges must map to a real utility class, not a made-up colour."""
