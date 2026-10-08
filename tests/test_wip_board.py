@@ -16,6 +16,14 @@ navigate away to the job's own screen, which cost the board its place thirteen
 columns in to answer a question the board is already holding — where is this car
 and what is next. So the dialog carries the facts, the walk, the move and the
 note, and the full job card is one button inside it.
+
+Two more, both about what the desk is asked when a car arrives. A card can carry
+the **TMS's own reference**, and where there is one it *is* the card number,
+because a shop running alongside the insurer's system cannot quote two numbers
+for one car. And "What is the car in for" takes **more than one answer**: a car in
+for a panel repair and a valet is one card whose walk is the *union* of both
+lines, so the second service is a stage the shop goes through rather than an
+override somebody has to stamp.
 """
 from __future__ import annotations
 
@@ -24,7 +32,14 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from app import tz
-from app.constants import SERVICE_NAMES, SERVICE_STAGES, SERVICES, STAGES, stages_for_service
+from app.constants import (
+    SERVICE_NAMES,
+    SERVICE_STAGES,
+    SERVICES,
+    STAGES,
+    stages_for_service,
+    stages_for_services,
+)
 from app.extensions import db
 from app.models import JobCard, JobStageEvent
 from app.services import reporting
@@ -362,6 +377,38 @@ def test_a_service_the_shop_no_longer_offers_walks_the_whole_board():
     assert stages_for_service("") == STAGES
 
 
+def test_several_services_walk_the_union_of_their_stages():
+    """A car in for two things goes through every door either of them needs."""
+    valet = stages_for_service("Car Detailing")
+    wrap = stages_for_service("Car Vinyl Wrapping")
+
+    # A wrap already covers the valet's stages; the valet's walk alone does not
+    # cover the wrap's, so the union has to come out as the wrap's.
+    assert stages_for_services(["Car Detailing", "Car Vinyl Wrapping"]) == wrap
+    assert stages_for_services(["Car Vinyl Wrapping", "Car Detailing"]) == wrap
+    assert valet != wrap, "the two lines are meant to differ for this to prove anything"
+
+    # Repeats and blanks are noise, not extra stages.
+    assert stages_for_services(["Car Detailing", "Car Detailing"]) == valet
+    assert stages_for_services(["", None, "Car Detailing", " "]) == valet
+
+    # Still a walk like any other: the board's own order, and nothing the board
+    # has no column for.
+    for combo in (["Car Detailing", "Ceramic Coating"],
+                  ["Rebuilds & Performance Upgrades", "Car Detailing"],
+                  [s["name"] for s in SERVICES]):
+        walk = stages_for_services(combo)
+        assert walk[0] == "INTAKE" and walk[-1] == "COLLECTED", combo
+        assert walk == [s for s in STAGES if s in walk], combo
+        assert set(walk) <= set(STAGES), combo
+
+    # A line nobody recognises contributes the whole workshop, exactly as it does
+    # on its own — the union cannot strand a card either.
+    assert stages_for_services(["Car Detailing", "Diesel Tuning"]) == STAGES
+    assert stages_for_services([]) == STAGES
+    assert stages_for_services(None) == STAGES
+
+
 def test_the_card_remembers_the_service_it_was_booked_in_for(auth_client):
     job = _card(auth_client, reg="SVC1", whatsapp="+263772000040",
                 service="Car Detailing")
@@ -445,6 +492,145 @@ def test_a_panel_card_still_walks_the_whole_shop_floor(auth_client):
     assert detail["next_stage"] == "PARTS_ORDER"
 
 
+# ── the TMS's own number ─────────────────────────────────────────────────────
+def test_a_card_can_be_numbered_by_the_tms(auth_client):
+    """Where the insurer issued a reference, that reference *is* the number.
+
+    A shop running alongside the TMS's own system cannot quote two numbers for
+    one car, so the ID is not a note beside the card number — it becomes the card
+    number, in the same upper-cased, space-collapsed form any other key gets.
+    """
+    job = _card(auth_client, reg="TMS1", whatsapp="+263772000046",
+                tms_id=" tms 88231 ")
+
+    assert job["job_no"] == "TMS 88231"
+    assert job["tms_id"] == "TMS 88231"
+
+    # The search answers to it, because it is not a second field to look in.
+    found = auth_client.get("/api/jobs?q=TMS 88231").get_json()["items"]
+    assert [j["job_no"] for j in found] == ["TMS 88231"]
+
+
+def test_a_card_with_no_tms_id_still_gets_the_shops_own_number(auth_client):
+    """Most cars have no TMS paper behind them, and those are numbered as before."""
+    job = _card(auth_client, reg="TMS2", whatsapp="+263772000047")
+    assert job["job_no"].startswith(f"TC-{tz.today().year}-")
+    assert job["tms_id"] is None
+
+
+def test_the_same_tms_number_cannot_open_two_cards(auth_client):
+    """Two cards answering to one reference is the thing this number avoids."""
+    first = _card(auth_client, reg="TMS3", whatsapp="+263772000048", tms_id="TMS 9001")
+
+    res = auth_client.post("/api/jobs", json={
+        "reg_no": "TMS4", "customer_name": "Second Car", "tms_id": "tms 9001",
+    })
+    assert res.status_code == 409, res.get_json()
+    assert "TMS 9001" in res.get_json()["message"]
+
+    # Refused means no card: nothing was left behind against that number.
+    jobs = auth_client.get("/api/jobs?q=TMS 9001").get_json()["items"]
+    assert [j["id"] for j in jobs] == [first["id"]]
+
+
+def test_a_tms_number_too_long_to_be_a_card_number_is_refused(auth_client):
+    res = auth_client.post("/api/jobs", json={
+        "reg_no": "TMS5", "customer_name": "Long Number", "tms_id": "X" * 40,
+    })
+    assert res.status_code == 409, res.get_json()
+    assert "TMS ID" in res.get_json()["message"]
+    assert not auth_client.get("/api/jobs?q=XXXX").get_json()["items"]
+
+
+# ── more than one service on one card ────────────────────────────────────────
+def test_a_car_can_be_in_for_more_than_one_service(auth_client):
+    job = _card(auth_client, reg="MULTI1", whatsapp="+263772000049",
+                services=["Car Detailing", "Ceramic Coating"])
+
+    # The first line picked leads the card; the rest ride with it.
+    assert job["service"] == "Car Detailing"
+    assert job["services"] == ["Car Detailing", "Ceramic Coating"]
+    assert job["service_codes"] == ["DETAIL", "CERAMIC"]
+
+    detail = auth_client.get(f"/api/jobs/{job['id']}").get_json()
+    assert detail["walk"] == stages_for_service("Car Detailing")
+    assert detail["next_stage"] == "DETAILING"
+
+
+def test_a_second_service_adds_its_stages_to_the_cards_walk(auth_client):
+    """The walk is the union of the lines — not the leading line's alone.
+
+    A valet that also wants a wrap has to reach the trim and the prep bay, or the
+    shop would have to move the card off its own walk to get the wrapping done and
+    have that stamped as an override.
+    """
+    job = _card(auth_client, reg="MULTI2", whatsapp="+263772000050",
+                services=["Car Detailing", "Car Vinyl Wrapping"])
+
+    detail = auth_client.get(f"/api/jobs/{job['id']}").get_json()
+    assert detail["walk"] == stages_for_service("Car Vinyl Wrapping")
+    # A union, not everything: a wrap is never painted, so the booth stays off it.
+    assert "PAINT" not in detail["walk"]
+    assert detail["next_stage"] == "STRIP"
+
+    moved = auth_client.post(f"/api/jobs/{job['id']}/advance", json={"notify": False})
+    assert moved.status_code == 200, moved.get_json()
+    assert moved.get_json()["job"]["stage"] == "STRIP"
+
+
+def test_the_board_carries_every_line_so_it_can_union_the_walks(auth_client):
+    job = _card(auth_client, reg="MULTI3", whatsapp="+263772000051",
+                services=["Car Detailing", "Ceramic Coating"])
+
+    board = auth_client.get("/api/dashboard").get_json()["board"]
+    card = next(j for j in _column(board, "INTAKE")["jobs"] if j["id"] == job["id"])
+    assert card["services"] == ["Car Detailing", "Ceramic Coating"]
+    assert card["service_codes"] == ["DETAIL", "CERAMIC"]
+    # One honest position on one walk, whichever way the shop reads the column.
+    assert card["stage_steps"] == len(stages_for_service("Car Detailing"))
+    assert card["stage_step"] == 1
+
+
+def test_the_card_names_its_tms_number_on_the_same_payload(auth_client):
+    job = _card(auth_client, reg="TMS6", whatsapp="+263772000052", tms_id="TMS-77")
+    board = auth_client.get("/api/dashboard").get_json()["board"]
+    card = next(j for j in _column(board, "INTAKE")["jobs"] if j["id"] == job["id"])
+    assert card["job_no"] == "TMS-77"
+    assert card["tms_id"] == "TMS-77"
+
+
+def test_a_line_the_shop_does_not_offer_is_refused_even_as_a_second_one(auth_client):
+    res = auth_client.post("/api/jobs", json={
+        "reg_no": "BAD901", "customer_name": "Two Lines",
+        "services": ["Car Detailing", "Rocket Science"],
+    })
+    assert res.status_code == 400, res.get_json()
+    assert "Rocket Science" in res.get_json()["message"]
+
+
+def test_the_card_leads_with_one_line_for_the_reports(auth_client, app):
+    """The reports, the bot and the quotations all still speak one service name.
+
+    `service` is the line that leads the card, so nothing written before a card
+    could carry a second one reads differently now.
+    """
+    job = _card(auth_client, reg="MULTI4", whatsapp="+263772000053",
+                services=["Car Detailing", "Ceramic Coating"])
+
+    with app.app_context():
+        card = db.session.get(JobCard, job["id"])
+        assert card.service == "Car Detailing"
+        assert card.service_names == ["Car Detailing", "Ceramic Coating"]
+        assert card.service_code == "DETAIL"
+        assert card.stages() == stages_for_service("Car Detailing")
+
+        # A value nobody can parse is "no extra lines", never a card that cannot
+        # be read — the column is free text as far as the database is concerned.
+        card.extra_services = "not json at all"
+        assert card.service_names == ["Car Detailing"]
+        assert card.stages() == stages_for_service("Car Detailing")
+
+
 def test_a_drop_off_the_cards_walk_is_refused_and_names_the_walk(auth_client):
     """The board is one set of columns for every card; the card is not."""
     job = _card(auth_client, reg="OFF1", whatsapp="+263772000044",
@@ -500,13 +686,27 @@ def test_a_card_off_its_walk_is_pointed_back_onto_it(auth_client):
 
 # ── the phone is a device the shop actually uses ─────────────────────────────
 def test_the_add_card_dialog_asks_which_service():
-    """The stages come from the service, so the board has to ask for it."""
+    """The stages come from the service, so the board has to ask for it.
+
+    It asks for more than one: a car is often in for two things, and a picker
+    that took a single answer dropped the second service the desk was told
+    about. The TMS's number is asked for in the same breath, because where the
+    insurer issued one it *is* the card number.
+    """
     src = BOARD_JS.read_text(encoding="utf-8")
     block = src[src.index("async function quickJob()"):]
     block = block[:block.index("submitLabel: 'Open the card'")]
-    assert "name: 'service'" in block, "the card is opened without a service"
+    assert "name: 'services'" in block, "the card is opened without a service"
+    assert "type: 'checks'" in block, "the picker still takes a single answer"
     assert "services.map" in block, "the service list is not offered"
-    assert "service: res.service" in src, "the chosen service never reaches the server"
+    assert "name: 'tms_id'" in block, "the popup never asks for the TMS ID"
+
+    assert "services: res.services" in src, "the chosen services never reach the server"
+    assert "tms_id: res.tms_id" in src, "the TMS ID never reaches the server"
+
+    # And the board draws the card's walk from every line, not from one code.
+    assert "job.service_codes" in src, "the board only reads one service code"
+    assert "walks[code]" in src, "the board does not look a code's walk up"
 
 
 def test_the_move_dialog_offers_the_cards_own_walk_first():

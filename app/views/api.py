@@ -5,6 +5,7 @@ estimating, parts, invoices and the WhatsApp inbox.
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -109,6 +110,26 @@ def want(container, key, default=None):
         value = value.strip()
         return value or default
     return value
+
+
+def _service_lines(data: dict) -> tuple[str, list[str]]:
+    """The leading service line and the others, off an intake payload.
+
+    A car can be in for more than one thing — a panel repair that also wants a
+    valet is still one card — and the form posts the lines in the shop's own
+    service order, so the first one read is the line that leads the card. A
+    single-line client posts ``service`` and gets exactly what it always did.
+    """
+    raw = data.get("services")
+    if isinstance(raw, str):
+        raw = [raw]
+    picked: list[str] = []
+    for value in raw or []:
+        name = (value or "").strip() if isinstance(value, str) else ""
+        if name and name not in picked:
+            picked.append(name)
+    service = want(data, "service") or (picked[0] if picked else "")
+    return service, [name for name in picked if name != service]
 
 
 def as_date(value) -> date | None:
@@ -515,26 +536,42 @@ def create_job():
         mileage=as_int(data.get("mileage")),
     )
 
-    service = want(data, "service") or SERVICE_NAMES[1]
+    service, extra_services = _service_lines(data)
+    service = service or SERVICE_NAMES[1]
     if service not in SERVICE_NAMES:
         return bad("Unknown service.")
+    unknown = [name for name in extra_services if name not in SERVICE_NAMES]
+    if unknown:
+        return bad(f"Unknown service: {unknown[0]}.")
 
     priority = want(data, "priority") or "NORMAL"
     if priority not in PRIORITIES:
         priority = "NORMAL"
 
-    job = job_flow.open_job_card(
-        customer=customer, vehicle=vehicle, service=service,        description=want(data, "description"),
-        damage_summary=want(data, "damage_summary"),
-        priority=priority,
-        promised_date=as_date(data.get("promised_date")),
-        bay=want(data, "bay"),
-        user_id=current_user.id,
-        technician_id=as_int(data.get("technician_id")),
-        fuel_level=want(data, "fuel_level"),
-        valuables=want(data, "valuables"),
-        odometer_in=as_int(data.get("odometer_in")) or vehicle.mileage,
-    )
+    try:
+        job = job_flow.open_job_card(
+            customer=customer, vehicle=vehicle, service=service,
+            services=[service, *extra_services],
+            # The TMS's own number, where the insurer's system issued one. It
+            # becomes the card number, so it is checked before anything is opened.
+            tms_id=want(data, "tms_id"),
+            description=want(data, "description"),
+            damage_summary=want(data, "damage_summary"),
+            priority=priority,
+            promised_date=as_date(data.get("promised_date")),
+            bay=want(data, "bay"),
+            user_id=current_user.id,
+            technician_id=as_int(data.get("technician_id")),
+            fuel_level=want(data, "fuel_level"),
+            valuables=want(data, "valuables"),
+            odometer_in=as_int(data.get("odometer_in")) or vehicle.mileage,
+        )
+    except job_flow.JobFlowError as exc:
+        # A number another card already answers to, or one too long to be a card
+        # number. Dropped before anything is written, so the desk corrects the
+        # number rather than hunting the board for a card that never closed out.
+        db.session.rollback()
+        return bad(str(exc), 409)
 
     booking = None
     if data.get("booking_id"):
@@ -607,9 +644,10 @@ def create_job():
 
     log_activity(
         "job.created",
-        f"Opened job card {job.job_no} for {vehicle.reg_no} ({service})",
+        f"Opened job card {job.job_no} for {vehicle.reg_no} "
+        f"({' + '.join([service, *extra_services])})",
         entity_type="job", entity_id=job.id, entity_ref=job.job_no, job_id=job.id,
-        meta={"priority": job.priority},
+        meta={"priority": job.priority, "tms_id": job.tms_id},
         commit=True,
     )
 
@@ -630,6 +668,16 @@ def update_job(job_id: int):
         job.priority = data["priority"]
     if "service" in data and data["service"] in SERVICE_NAMES:
         job.service = data["service"]
+    if "services" in data:
+        # Correcting which lines the car is in for. The leading one is `service`
+        # above (or the first line posted), so only the others are stored here —
+        # and an unknown one is refused rather than quietly dropping a service the
+        # shop is about to do.
+        _, extras = _service_lines(data)
+        unknown = [name for name in extras if name not in SERVICE_NAMES]
+        if unknown:
+            return bad(f"Unknown service: {unknown[0]}.")
+        job.extra_services = json.dumps(extras) if extras else None
     if "promised_date" in data:
         job.promised_date = as_date(data["promised_date"])
     if "technician_id" in data:

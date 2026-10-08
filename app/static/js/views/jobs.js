@@ -39,7 +39,7 @@
           { label: 'Customer', render: (r) => h('div', [
               h('div', r.customer_name),
               h('div.small.text-secondary', r.customer_phone || '')]) },
-          { label: 'Service', class: 'd-none d-lg-table-cell', render: (r) => h('span.small', r.service) },
+          { label: 'Service', class: 'd-none d-lg-table-cell', render: (r) => h('span.small', T.serviceText(r)) },
           { label: 'Stage', render: (r) => T.stageBadge(r.stage, r.stage_label) },
           { label: 'Progress', class: 'd-none d-md-table-cell', render: (r) => h('div.d-flex.align-items-center.gap-2',
               h('div.progress.flex-fill', { style: 'height:6px;min-width:60px' },
@@ -366,11 +366,24 @@
       h('div.col-12', sectionHead(2, 'Job details')),
       h('div.col-md-4', field('Service', T.searchableSelect(h('select.form-select.form-select-sm', { name: 'service' },
         (meta.service_names || []).map((s) => h('option', { selected: s === 'Panel Beating & Spray Painting' }, s))),
-        { placeholder: 'Search services…', ariaLabel: 'Search services' }).node)),
+        { placeholder: 'Search services…', ariaLabel: 'Search services' }).node,
+        { hint: 'The leading line, and the stages the card walks.' })),
+      h('div.col-md-3', field('TMS ID', h('input.form-control.form-control-sm.text-uppercase', {
+        name: 'tms_id', placeholder: 'Blank mints one',
+      }), { hint: 'The insurer\'s reference. It becomes the card number.' })),
       h('div.col-md-2', field('Priority', T.searchableSelect(h('select.form-select.form-select-sm', { name: 'priority' },
         ['LOW', 'NORMAL', 'HIGH', 'URGENT'].map((p) => h('option', { selected: p === 'NORMAL' }, p))),
         { placeholder: 'Search…', ariaLabel: 'Search priority' }).node)),
       h('div.col-md-3', field('Promised date', h('input.form-control.form-control-sm', { name: 'promised_date', type: 'date', value: T.today() }))),
+      h('div.col-12', field('Also in for',
+        h('div.d-flex.flex-wrap.gap-3', (meta.service_names || []).map((s, i) => {
+          const id = `line${i}`;
+          return h('div.form-check.form-check-inline', [
+            h('input.form-check-input', { type: 'checkbox', value: s, id, 'data-service-line': '1' }),
+            h('label.form-check-label.small', { for: id }, s),
+          ]);
+        })),
+        { hint: 'A car in for more than one thing is still one card: it walks the stages of every line ticked.' })),
       h('div.col-md-3', field('Bay', h('input.form-control.form-control-sm', { name: 'bay', placeholder: 'Bay 1' }))),
       h('div.col-md-6', field('Technician', T.searchableSelect(h('select.form-select.form-select-sm', { name: 'technician_id' },
         [h('option', { value: '' }, '— Unassigned —')].concat(
@@ -425,6 +438,12 @@
         data.customer_phone = phoneField.read();
         data.keys_received = form.querySelector('[name=keys_received]').checked;
         data.parts = JSON.parse(form.dataset.parts || '[]');
+        /* The extra service lines are read by hand: a checkbox group shares one
+           name, and T.formData() keeps only the last value for a repeated name,
+           so the second line ticked would be the only one that arrived. The
+           leading line travels as `service` and the server puts it first. */
+        data.services = Array.from(form.querySelectorAll('[data-service-line]:checked'))
+          .map((box) => box.value);
 
         const missing = [];
         if (!data.reg_no) {

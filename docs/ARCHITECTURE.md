@@ -140,6 +140,9 @@ at the estimate header, not per line, so totals reconcile to the cent.
 | Add an insurer | `app/constants.py` → `INSURERS` + `INSURER_ALIASES` |
 | Add a workshop stage | `STAGES`, `STAGE_LABELS`, `STAGE_COLOURS`, `STAGE_PROGRESS`, `STAGE_CUSTOMER_TEXT` |
 | Add a service line | `app/constants.py` → `SERVICES` **and** `SERVICE_STAGES` (the ordered subset of `STAGES` that line walks) |
+| Let a car be in for several services | Post `services: [...]` on `POST /api/jobs` (first one leads) — the card walks `stages_for_services()`, the union of the lines |
+| Number a card from the insurer's system | Post `tms_id` on intake — `open_job_card()` makes it the `job_no`, refusing one already in use |
+| Add a form control | A `type` branch in `core.js` → `formModal()` (`select`, `combo`, `options`, `checks`, `segmented`, `switch`, `tel`, `textarea`, …) |
 | Add a bot intent | `INTENT_PATTERNS` + a `_menu_*` handler in `intent_router.py` |
 | Add a notification | A function in `notifications.py` + a Meta template name |
 | Add an API endpoint | `app/views/api.py` (all routes are `@login_required` JSON) |

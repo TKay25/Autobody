@@ -276,6 +276,16 @@ def _ensure_schema(app: Flask) -> None:
             "feedback_at": "TIMESTAMP",
         })
 
+        # A card can be in for more than one service line, and it can carry the
+        # TMS's own reference — which then *is* its number. Both columns were
+        # added to a table that already exists, so both need the guard: without it
+        # every query touching `job_cards` fails on any database provisioned
+        # before this release, locally and on Render alike.
+        ensure_columns(db.engine, "job_cards", {
+            "extra_services": "TEXT",
+            "tms_id": "VARCHAR(30)",
+        })
+
         # An ID number is verified against the physical document when the vehicle
         # is collected, so it lives on the customer rather than the job card.
         ensure_columns(db.engine, "customers", {

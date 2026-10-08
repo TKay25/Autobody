@@ -1466,6 +1466,39 @@
           return shell(f, h('div.tc-option-list', cards), { bare: true });
         }
 
+        /* — checkboxes as a group: "tick everything that applies" — */
+        if (f.type === 'checks') {
+          const picked = (Array.isArray(start) ? start : [start]).map(String).filter(Boolean);
+          let firstBox = null;
+          const cards = optionList(f).map((o) => {
+            const box = h('input.form-check-input', {
+              id: `f_${f.name}_${o.value}`, name: f.name, type: 'checkbox',
+              value: o.value, checked: picked.includes(String(o.value)),
+              disabled: !!f.disabled,
+            });
+            if (!firstBox) firstBox = box;
+            const card = h('label.tc-option', {
+              class: picked.includes(String(o.value)) ? 'is-checked' : null,
+              for: `f_${f.name}_${o.value}`,
+            }, [
+              h('div.tc-option-body', [
+                h('div.tc-option-title', o.label),
+                o.description ? h('div.tc-option-desc', o.description) : null,
+              ]),
+              box,
+            ]);
+            /* The tick and the card have to agree: `.tc-option` is styled from
+               `is-checked`, so a card that misses this reads as unpicked while the
+               value it posts says otherwise. */
+            box.addEventListener('change', () => card.classList.toggle('is-checked', box.checked));
+            return card;
+          });
+          /* A composite control registers a wrapper, so the required-field
+             handling resolves to the first tick rather than the group. */
+          refs[f.name] = { el: firstBox };
+          return shell(f, h('div.tc-option-list', cards));
+        }
+
         /* — segmented control (still posts a real value) — */
         if (f.type === 'segmented') {
           const hidden = h('input', { type: 'hidden', name: f.name, value: start });
@@ -1611,10 +1644,16 @@
             v = form.querySelector(`[name="${f.name}"]:checked`)?.value ?? '';
           } else if (f.type === 'number' || f.type === 'money') {
             v = el.value === '' ? null : Number(el.value);
+          } else if (f.type === 'checks') {
+            /* The group posts a *list*, and none ticked is an empty one — which
+               the required check below has to treat as missing, not as filled. */
+            v = Array.from(form.querySelectorAll(`input[name="${f.name}"]:checked`))
+              .map((box) => box.value);
           } else v = el.value.trim();
 
           const gate = gates[f.name];
-          if (f.required && (v === '' || v === null || v === undefined)) {
+          if (f.required && (v === '' || v === null || v === undefined
+                             || (Array.isArray(v) && !v.length))) {
             gate.fail(f.requiredMessage);
             if (!firstBad) firstBad = el;
             ok = false;
@@ -1672,6 +1711,18 @@
   function priorityBadge(priority) {
     const c = { LOW: 'secondary', NORMAL: 'info', HIGH: 'warning', URGENT: 'danger' }[priority] || 'secondary';
     return h(`span.badge.text-bg-${c}`, priority);
+  }
+  /* What a car is in for, as one line.
+     A card can be in for more than one service — a panel repair that also wants a
+     valet — and every screen that names the service has to name all of them: a
+     card showing only its leading line looks like the second one was never asked
+     for. A card written before this was possible falls back to its single line. */
+  function serviceText(job, fallback) {
+    const names = (job && job.services && job.services.length)
+      ? job.services
+      : [(job && job.service) || ''];
+    const text = names.filter(Boolean).join(' + ');
+    return text || (fallback === undefined ? '' : fallback);
   }
   function emptyState(title, subtitle, iconName) {
     return h('div.empty-state', [h('div', icon(iconName || 'inbox')),
@@ -1981,6 +2032,7 @@
   TCA.badge = badge;
   TCA.stageBadge = stageBadge;
   TCA.priorityBadge = priorityBadge;
+  TCA.serviceText = serviceText;
   TCA.emptyState = emptyState;
   TCA.searchInput = searchInput;
   TCA.iconSelect = iconSelect;

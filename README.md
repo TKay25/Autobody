@@ -79,7 +79,9 @@ Cross-cutting:
 - **Job-card intake in a popup** — the whole booking-and-estimate wizard (customer,
   vehicle, job details, panel picker, live pricing) runs in a modal, so `n`, the topbar
   button, the command palette, the dashboard and the job list never leave the page you
-  are on. The running estimate total sits in the modal footer.
+  are on. The running estimate total sits in the modal footer. The popup also takes the
+  insurer's **TMS ID** — where there is one it *is* the card number — and lets a car be
+  in for **more than one service**, whose walks are unioned into one card's walk.
 - **Attach an existing quotation** — instead of re-tapping every panel, pick the
   quotation the customer already has and its line items are copied onto the job card.
   See [Intake](#intake-attach-a-quotation-or-build-one).
@@ -297,6 +299,23 @@ type a registration and only that customer's / that vehicle's quotations are off
 **Build it here** — the original panel picker with live pricing. Used when nothing is on
 file, or when the job genuinely differs from the last one. If no quotation matches the
 vehicle the wizard switches to this automatically.
+
+### The card number, and what the car is in for
+
+**TMS ID.** Jobs that come through an insurer's system already have a reference. Type it
+on the popup (or the wizard) and it *becomes* the job card number — upper-cased, with
+runs of whitespace collapsed — because a shop running alongside the TMS cannot quote two
+numbers for one car. A number another card already answers to is refused outright
+(HTTP 409) and nothing is written, so the desk corrects it rather than hunting for a
+half-opened card. Leave it blank and the shop mints the usual `TC-YYYY-NNNN`.
+
+**More than one service.** "What is the car in for" takes any number of answers: a panel
+repair that also wants a valet is one job card at one price. The card walks the **union**
+of its services' stages — a valet added to a wrap reaches the trim and the prep bay, and
+is never sent to a booth a wrap does not visit — ordered by the board's own `STAGES`,
+because a walk is never a new order of its own. The first line ticked leads the card:
+`service` stays a single name for the reports, the bot and the quotations, and the rest
+ride along as `services`.
 
 **Quotation document** — either mode accepts a PDF or photo of the assessor's paperwork.
 It is stored under `instance/uploads/documents/` and recorded against the job card

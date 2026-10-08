@@ -56,7 +56,7 @@
       columns: [
         { label: 'Job card', render: (r) => h('div', h('div.fw-semibold', r.reg_no), h('div.small.text-secondary', r.job_no)) },
         { label: 'Customer', render: (r) => r.customer_name },
-        { label: 'Service', render: (r) => h('span.small', r.service) },
+        { label: 'Service', render: (r) => h('span.small', T.serviceText(r)) },
         { label: 'Promised', render: (r) => h('span', { class: r.is_overdue ? 'text-danger fw-semibold' : '' }, dateShort(r.promised_date)) },
         { label: '', class: 'text-end', render: (r) => h('span.chip', `${r.days_in_shop}d in shop`) },
       ],

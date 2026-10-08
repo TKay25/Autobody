@@ -201,6 +201,33 @@ def stages_for_service(service: str | None) -> list[str]:
         return list(STAGES)
     return list(SERVICE_STAGES.get(entry["code"], STAGES))
 
+
+def stages_for_services(services) -> list[str]:
+    """The stages a card booked in for *several* service lines walks.
+
+    A car can be in for more than one thing — a panel repair that also wants a
+    valet — and the card has to pass through every door either line needs. The
+    alternative is the shop moving it off its own walk to get the valeting done,
+    which the board then has to stamp as an override: a legitimate job booked in
+    as a mistake.
+
+    The walks are therefore **unioned**, and the result stays a walk like any
+    other — an ordered subset of ``STAGES``, in the board's own order, never a
+    new order of its own. A line nobody recognises contributes the whole
+    workshop, exactly as ``stages_for_service`` does for one, so a card can still
+    never be stranded by a service line the shop stopped offering.
+    """
+    names: list[str] = []
+    for raw in services or []:
+        name = (raw or "").strip()
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        return list(STAGES)
+
+    walked = {stage for name in names for stage in stages_for_service(name)}
+    return [stage for stage in STAGES if stage in walked]
+
 # Services where the customer is not reporting damage. "Please describe the
 # damage" is the right question for a bent bumper and the wrong one for a ceramic
 # coating — now that every service funnels through the same enquiry, the wording

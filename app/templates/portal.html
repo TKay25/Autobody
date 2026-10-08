@@ -59,7 +59,7 @@
             <span class="badge text-bg-dark">{{ job.vehicle.reg_no if job.vehicle else '' }}</span>
           </div>
           <div class="small text-secondary">
-            Job card {{ job.job_no }} · {{ job.service }} · booked in {{ job.checked_in_at | nice_date }}
+            Job card {{ job.job_no }} · {{ job.service_names | join(' + ') }} · booked in {{ job.checked_in_at | nice_date }}
           </div>
         </div>
         <div class="text-end">

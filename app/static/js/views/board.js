@@ -17,14 +17,23 @@
     const meta = T.store.get('meta') || {};
     const services = meta.services || [];
     const walks = data.board.walks || {};
-    const serviceByCode = {};
-    services.forEach((s) => { serviceByCode[s.code] = s; });
+    const serviceByName = {};
+    services.forEach((s) => { serviceByName[s.name] = s; });
+    const jobColumns = () => columns.map((c) => c.stage);
 
-    /* A card's own walk, falling back to every column. The server does the same
-       for a service line it no longer offers, so the board can never end up
-       unable to move a card. */
+    /* A card's own walk, falling back to every column.
+       A car can be in for more than one thing, so the walks of every line it is
+       in for are *unioned* — a panel repair that also wants a valet has to pass
+       through the valeting bay or the shop would have to move it off its walk. A
+       line the board has no walk for (a retired service, or none at all) counts
+       as the whole board, which is what the server does for the same card, so the
+       board can never end up unable to move one. */
     function walkFor(job) {
-      return walks[job.service_code] || columns.map((c) => c.stage);
+      const codes = (job.service_codes && job.service_codes.length)
+        ? job.service_codes : [job.service_code];
+      const onBoard = jobColumns();
+      const known = codes.map((code) => ((code && walks[code]) ? walks[code] : onBoard));
+      return onBoard.filter((stage) => known.some((walk) => walk.includes(stage)));
     }
 
     /* What the car is in for, and how far along that service's own walk it is.
@@ -32,16 +41,17 @@
        is a mistake worth seeing, not one to be hidden behind a step count that
        assumes it belongs where it is. */
     function serviceChip(job) {
-      const svc = serviceByCode[job.service_code];
-      const name = svc ? svc.short : (job.service || '');
-      if (!name) return null;
+      const names = ((job.services && job.services.length)
+        ? job.services : [job.service]).filter(Boolean)
+        .map((name) => (serviceByName[name] || {}).short || name);
+      if (!names.length) return null;
       const step = job.stage_step
         ? `step ${job.stage_step}/${job.stage_steps || '?'}`
         : 'off its walk';
       return h('span', {
         class: `chip${job.stage_step ? '' : ' is-warn'}`,
-        title: `${job.service || 'Service'} — ${step}`,
-      }, `${name} · ${step}`);
+        title: `${names.join(' + ')} — ${step}`,
+      }, `${names.join(' + ')} · ${step}`);
     }
 
     /* A queued stage move must not look undone.
@@ -155,9 +165,11 @@
           el: card,
           jobId: job.id,
           stage: to,
-          // Everything an operator might type: plate, name, job number, vehicle.
-          haystack: [job.job_no, job.reg_no, job.vehicle_title, job.customer_name,
-                     job.service, job.bay, job.stage_label]
+          // Everything an operator might type: plate, name, job number, vehicle,
+          // and every service line the car is in for — a valet asked for as a
+          // second line is still something the desk searches by.
+          haystack: [job.job_no, job.tms_id, job.reg_no, job.vehicle_title,
+                     job.customer_name, T.serviceText(job), job.bay, job.stage_label]
             .filter(Boolean).join(' ').toLowerCase(),
         });
       });
@@ -390,7 +402,7 @@
         ['Vehicle', job.vehicle_title],
         ['Customer', job.customer_name],
         ['Phone', job.customer_phone],
-        ['In for', job.service],
+        ['In for', T.serviceText(job)],
         ['Priority', job.priority && job.priority !== 'NORMAL' ? job.priority : ''],
         ['Technician', job.technician],
         ['Bay', job.bay],
@@ -485,23 +497,31 @@
 
     /* A card added from the board.
 
-       The five things the shop has in front of it: what the car is in for, which
-       car, who owns it, where to reach them, and what is wrong with it. Bay,
+       The things the shop has in front of it: what the car is in for, which car,
+       who owns it, where to reach them, and what is wrong with it. Bay,
        technician and promised date are chosen on the card itself, where there is
        room to think about them.
 
-       The service is asked for here rather than defaulted to panel work, because
-       it decides the stages the card walks: a car booked in for a valet that
-       silently became a panel job was sent through the spray booth. The default
-       offered is the same one the server would have assumed (the panel line). */
+       "What is the car in for" is asked for here rather than defaulted to panel
+       work, because it decides the stages the card walks: a car booked in for a
+       valet that silently became a panel job was sent through the spray booth.
+       It takes **more than one** answer, because a car often is in for more than
+       one thing — a panel repair that also wants a valet — and the walk is then
+       the union of the lines, so the second service is a stage the shop goes
+       through rather than an override it has to stamp.
+
+       The TMS ID is the reference the insurer's system issues, and where there is
+       one it becomes the card number: it is the number both sides quote, so the
+       shop must not be answering to a second one. */
     async function quickJob() {
       const serviceField = services.length
         ? [{
-            name: 'service', label: 'What is the car in for', type: 'select',
+            name: 'services', label: 'What is the car in for', type: 'checks',
             col: 12, required: true,
-            value: (services[1] || services[0]).name,
+            value: [(services[1] || services[0]).name],
             options: services.map((s) => ({ value: s.name, label: s.name })),
-            help: 'This sets the stages the card walks — its own walk, not the whole board.',
+            help: 'Tick everything the car is in for. Together they set the stages '
+                  + 'the card walks — its own walk, not the whole board.',
           }]
         : [];
 
@@ -511,11 +531,13 @@
         icon: 'clipboard-plus',
         fields: [
           ...serviceField,
+          { name: 'tms_id', label: 'TMS ID', col: 6, placeholder: 'e.g. TMS 88231',
+            help: 'The insurer\'s reference. It becomes the card number; blank mints one.' },
           { name: 'reg_no', label: 'Registration', col: 6, required: true,
             placeholder: 'ABC 1234', help: 'Spaces are ignored.' },
           { name: 'customer_name', label: 'Client name', col: 6, required: true,
             placeholder: 'Who is the car for?' },
-          { name: 'customer_whatsapp', label: 'Client WhatsApp', type: 'tel', col: 12,
+          { name: 'customer_whatsapp', label: 'Client WhatsApp', type: 'tel', col: 6,
             help: 'Every stage update on this card goes here.' },
           { name: 'description', label: 'Job description', type: 'textarea', col: 12,
             rows: 3, placeholder: 'e.g. Right rear quarter panel and door' },
@@ -525,7 +547,8 @@
       if (!res) return;
       try {
         const body = await api.post('/api/jobs', {
-          service: res.service,
+          services: res.services,
+          tms_id: res.tms_id,
           reg_no: res.reg_no,
           customer_name: res.customer_name,
           customer_whatsapp: res.customer_whatsapp,
@@ -536,7 +559,7 @@
            job card the server has never heard of. */
         if (body && body.queued) { T.toast(body.message, 'warning'); return; }
         T.toast(`${body.job.job_no} opened for ${body.job.reg_no}`
-          + (body.job.stage_steps ? ` · ${body.job.stage_steps}-stage ${body.job.service} walk.` : '.'));
+          + (body.job.stage_steps ? ` · ${body.job.stage_steps}-stage ${T.serviceText(body.job)} walk.` : '.'));
         T.navigate(`/jobs/${body.job.id}`);
       } catch (err) {
         T.toast(err.message, 'danger');

@@ -75,7 +75,7 @@
         <h2>Vehicle</h2>
         <div class="doc-field"><span>Registration</span><strong>{{ vehicle.reg_no if vehicle else '—' }}</strong></div>
         <div class="doc-field"><span>Vehicle</span><strong>{{ vehicle.title if vehicle else '—' }}</strong></div>
-        <div class="doc-field"><span>Service</span><strong>{{ job.service if job else '—' }}</strong></div>
+        <div class="doc-field"><span>Service</span><strong>{{ job.service_names | join(' + ') if job else '—' }}</strong></div>
       {% endif %}
     </div>
   </section>

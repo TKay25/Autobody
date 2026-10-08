@@ -183,6 +183,23 @@ def test_api_client_sends_the_csrf_token():
     assert "window.__CSRF__" in core
 
 
+def test_the_form_builder_has_a_multi_pick_control():
+    """`type: 'checks'` asks a question with more than one right answer.
+
+    The Add job card dialog's services need it — a car is often in for more than
+    one thing — and there was no such control: the dialog's single <select> meant
+    the second service the desk was told about was silently dropped. It posts a
+    *list*, and none ticked has to read as nothing chosen rather than as filled,
+    or a required multi-pick would pass with an empty answer.
+    """
+    core = (JS_DIR / "core.js").read_text(encoding="utf-8")
+    assert "f.type === 'checks'" in core, "no multi-pick control in formModal"
+    assert "input[name=\"${f.name}\"]:checked" in core, \
+        "the group is not read back as a list of what was ticked"
+    assert "Array.isArray(v) && !v.length" in core, \
+        "an empty multi-pick would satisfy a required field"
+
+
 def test_theme_tokens_are_complete():
     """The brand palette must define every token the stylesheet consumes."""
     css = (ROOT / "app" / "static" / "css" / "app.css").read_text(encoding="utf-8")

@@ -21,6 +21,7 @@ from .constants import (
     STAGE_LABELS,
     STAGE_PROGRESS,
     stages_for_service,
+    stages_for_services,
 )
 from . import tz
 from .extensions import db
@@ -362,6 +363,27 @@ class Vehicle(TimestampMixin, db.Model):
 # ─────────────────────────────────────────────────────────────────────────────
 # Job cards
 # ─────────────────────────────────────────────────────────────────────────────
+def _json_names(raw: str | None) -> list[str]:
+    """A JSON array of service names off a text column. Never raises.
+
+    The column is free text as far as the database is concerned, and a card can
+    be written by hand, by an older release, or by whatever a CSV import put
+    there. An unreadable value means "no extra lines" — which is the same answer
+    as an empty one, and keeps a card that nobody can parse still movable.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if isinstance(parsed, str):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        return []
+    return [str(item).strip() for item in parsed if str(item or "").strip()]
+
+
 class JobCard(TimestampMixin, db.Model):
     __tablename__ = "job_cards"
 
@@ -375,6 +397,17 @@ class JobCard(TimestampMixin, db.Model):
     booking_id = db.Column(db.Integer, db.ForeignKey("bookings.id"), nullable=True, index=True)
 
     service = db.Column(db.String(80), default="Panel Beating & Spray Painting")
+    # The *other* lines the car is in for, as a JSON array of service names. A car
+    # in for a panel repair and a valet is one job card at one price, not two cards
+    # the shop has to remember are the same car. `service` stays the leading line,
+    # so every report, quotation and bot answer written before this column existed
+    # keeps reading exactly what it read before.
+    extra_services = db.Column(db.Text)
+    # The TMS's own reference for this job, where the insurer's system issued one.
+    # Whatever the desk types here *is* the card number (`job_no`): it is the
+    # number the shop and the TMS both quote. The column keeps the provenance, so
+    # a card can say whether its number came from the TMS or was minted here.
+    tms_id = db.Column(db.String(30), nullable=True, index=True)
     stage = db.Column(db.String(30), default="INTAKE", nullable=False, index=True)
     priority = db.Column(db.String(20), default="NORMAL", nullable=False)
 
@@ -433,14 +466,45 @@ class JobCard(TimestampMixin, db.Model):
         entry = SERVICE_BY_NAME.get((self.service or "").strip())
         return entry["code"] if entry else ""
 
+    @property
+    def service_names(self) -> list[str]:
+        """Every service the car is in for, the leading line first.
+
+        A card can be in for more than one thing, and every screen that names the
+        service has to name all of them: a card showing only its leading line
+        looks like the valet was never asked for.
+        """
+        names: list[str] = []
+        for raw in [self.service, *_json_names(self.extra_services)]:
+            name = (raw or "").strip()
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    @property
+    def service_codes(self) -> list[str]:
+        """The codes of `service_names`, for the board's walks.
+
+        Only the lines the shop still offers one for, because a retired line has
+        no walk to contribute — the same refusal to guess that `service_code`
+        makes for a single line.
+        """
+        codes: list[str] = []
+        for name in self.service_names:
+            entry = SERVICE_BY_NAME.get(name)
+            if entry and entry["code"] not in codes:
+                codes.append(entry["code"])
+        return codes
+
     def stages(self) -> list[str]:
         """This card's own walk through the workshop, in order.
 
-        The service chosen when the card was opened decides it — a valet is not
-        sent to the spray booth — so this is the list `job_flow` advances
+        The service lines chosen when the card was opened decide it — a valet is
+        not sent to the spray booth, and a car in for two things goes through
+        every door either of them needs. This is the list `job_flow` advances
         through, and the list the move dialog offers.
         """
-        return stages_for_service(self.service)
+        return stages_for_services(self.service_names)
 
     def stage_step(self) -> int:
         """Where the card is on its own walk: 1-based, or 0 when it is off it.
@@ -519,6 +583,16 @@ class JobCard(TimestampMixin, db.Model):
             "reg_no": self.vehicle.reg_no if self.vehicle else None,
             "vehicle_title": self.vehicle.title if self.vehicle else None,
             "service": self.service,
+            # Everything the car is in for, and a code for each line the shop
+            # still walks. Sent with every card because the board *unions* these
+            # walks to draw this card's own board, and every screen that names the
+            # service has to name all of them.
+            "services": self.service_names,
+            "service_codes": self.service_codes,
+            # The TMS's reference where the insurer issued one — which is also the
+            # card number. Kept on the payload so a card can say where its number
+            # came from.
+            "tms_id": self.tms_id,
             # The service's code, and where the card is on that service's own
             # walk ("step 3 of 8"). Sent with every card — the board draws the
             # walk from these rather than re-deriving it from the service name.

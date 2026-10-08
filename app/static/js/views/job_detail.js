@@ -33,7 +33,7 @@
               j.priority !== 'NORMAL' ? T.priorityBadge(j.priority) : null,
             ]),
             h('div.small.text-secondary.mt-1',
-              `Job card ${j.job_no} · ${j.service} · in shop ${j.days_in_shop} day(s) · promised ${dateShort(j.promised_date)}`),
+              `Job card ${j.job_no} · ${T.serviceText(j)} · in shop ${j.days_in_shop} day(s) · promised ${dateShort(j.promised_date)}`),
             h('div.small.mt-1', [
               T.icon('person'), ' ', h('a.text-decoration-none', { href: `#/customers` }, j.customer_name),
               j.customer_phone ? h('span.text-secondary', ` · ${j.customer_phone}`) : null,

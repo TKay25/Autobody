@@ -1,6 +1,7 @@
 """Job card lifecycle: intake, stage transitions, QC gating, invoicing."""
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -40,6 +41,10 @@ class JobFlowError(Exception):
 # ─────────────────────────────────────────────────────────────────────────────
 # Numbering
 # ─────────────────────────────────────────────────────────────────────────────
+# `job_cards.job_no` is VARCHAR(30), so a number typed by hand has to fit in it.
+JOB_NO_MAX = 30
+
+
 def next_job_no(year: int | None = None) -> str:
     year = year or tz.today().year
     prefix = f"TC-{year}-"
@@ -50,6 +55,17 @@ def next_job_no(year: int | None = None) -> str:
         or 0
     )
     return f"{prefix}{count + 1:04d}"
+
+
+def normalise_job_no(value: str | None) -> str:
+    """A card number typed by hand, in the form the shop files it under.
+
+    Upper-cased, with runs of whitespace collapsed to one — the same treatment a
+    registration gets, and for the same reason: "tms 88231" and "TMS  88231" are
+    one card, not two. Spaces are left in place rather than removed, because the
+    number is quoted back to the TMS exactly as they wrote it.
+    """
+    return " ".join((value or "").split()).upper()
 
 
 def next_invoice_no() -> str:
@@ -186,6 +202,8 @@ def open_job_card(
     customer: Customer,
     vehicle: Vehicle,
     service: str,
+    services: list[str] | None = None,
+    tms_id: str | None = None,
     description: str | None = None,
     damage_summary: str | None = None,
     priority: str = "NORMAL",
@@ -197,8 +215,40 @@ def open_job_card(
     valuables: str | None = None,
     odometer_in: int | None = None,
 ) -> JobCard:
+    """Open a card, numbered by the TMS where it gave us one.
+
+    ``tms_id`` is the reference the TMS issues. When the desk has it, *that* is
+    the card number — it is the number both sides quote on the phone, and a shop
+    running alongside the TMS's own system cannot afford two of them. It is
+    refused while it is still nothing but a string, so no card is half-opened
+    against a number another card already answers to. Blank means the shop mints
+    one as it always has.
+
+    ``services`` carries every line the car is in for, the leading one first, of
+    which ``service`` is the first: together they decide the walk.
+    """
+    reference = normalise_job_no(tms_id)
+    if reference:
+        if len(reference) > JOB_NO_MAX:
+            raise JobFlowError(
+                f"A TMS ID can be at most {JOB_NO_MAX} characters."
+            )
+        if JobCard.query.filter_by(job_no=reference).first():
+            raise JobFlowError(f"Job card {reference} already exists.")
+
+    lines: list[str] = []
+    for raw in services or []:
+        name = (raw or "").strip() if isinstance(raw, str) else ""
+        if name and name not in lines:
+            lines.append(name)
+    extra = [name for name in lines if name != service]
+
     job = JobCard(
-        job_no=next_job_no(),
+        job_no=reference or next_job_no(),
+        tms_id=reference or None,
+        # NULL, not "[]": a card in for one thing is exactly what every reader
+        # before this column existed already handles.
+        extra_services=json.dumps(extra) if extra else None,
         customer=customer,
         vehicle=vehicle,
         service=service,
