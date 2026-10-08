@@ -1723,10 +1723,9 @@
         h('thead', h('tr', columns.map((c) => h('th', { class: c.class || '', scope: 'col' }, c.label)))),
         h('tbody', rows.map((row) => {
           const clickable = !!onRowClick;
-          return h('tr', {
+          const tr = h('tr', {
             class: clickable ? null : 'row-static',
             role: clickable ? 'button' : null,
-            tabindex: clickable ? '0' : null,
             'aria-label': clickable && rowLabel ? rowLabel(row) : null,
             style: clickable ? 'cursor:pointer' : null,
             onclick: clickable ? () => onRowClick(row) : null,
@@ -1734,6 +1733,14 @@
               if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick(row); }
             } : null,
           }, columns.map((c) => h('td', { class: c.class || '' }, c.render(row))));
+
+          /* The attribute, not the property, because the DOM spells it `tabIndex`:
+             a props key of `tabindex` would be assigned on as a plain JS property
+             of that name — no exception, no attribute — leaving a row that says it
+             is a button, has an Enter handler, and no keyboard that can reach it.
+             Same silent failure as the `aria-*` case above, one letter apart. */
+          if (clickable) tr.setAttribute('tabindex', '0');
+          return tr;
         }))));
   }
 

@@ -1,7 +1,7 @@
 """The WIP board's own workflow: adding a card, moving it with a note, and the
 closing sheet for the day — or for a month.
 
-Three promises are pinned here. The first is that a stage move says *why* it
+Four promises are pinned here. The first is that a stage move says *why* it
 happened (the note) and *whether the customer hears about it* (the toggle), which
 used to be an unconditional message nobody could stop. The second is that the
 closing sheet answers for any range the shop asks for, with the notes still in
@@ -10,6 +10,12 @@ The third is that the service chosen when the card is opened decides the stages
 that card walks: a car booked in for a valet is never sent through the spray
 booth, and a column it never visits is a decision the desk has to make on
 purpose rather than a slip of the finger.
+
+A fourth is pinned with them: the card opens *itself*. Tapping one used to
+navigate away to the job's own screen, which cost the board its place thirteen
+columns in to answer a question the board is already holding — where is this car
+and what is next. So the dialog carries the facts, the walk, the move and the
+note, and the full job card is one button inside it.
 """
 from __future__ import annotations
 
@@ -149,6 +155,28 @@ def test_a_note_longer_than_the_column_is_refused(auth_client):
 
     assert res.status_code == 400
     assert "240" in res.get_json()["message"]
+
+
+def test_a_note_can_be_kept_on_the_stage_the_card_is_already_in(auth_client):
+    """The dialog's note field, saved with the stage picker left alone.
+
+    A foreman who has just found something worth writing down should not have to
+    move the car to be allowed to say it. Posting the stage it is already in is
+    how the board does it: the note lands on the card's history, the card does
+    not move, and nobody is messaged about a move that never happened.
+    """
+    job = _card(auth_client, reg="NOTE1", whatsapp="+263772000015")
+    note = "Odometer read, keys and spare wheel handed over"
+    res = _move(auth_client, job["id"], "INTAKE", note=note, notify=True)
+
+    assert res.status_code == 200, res.get_json()
+    body = res.get_json()
+    assert body["job"]["stage"] == "INTAKE", "the card moved when it was asked not to"
+    assert body["notified"] is False, "a note alone told the customer something"
+
+    history = auth_client.get(f"/api/jobs/{job['id']}").get_json()["job"]["stage_history"]
+    assert note in [e["note"] for e in history], (
+        "the note was not kept on the card's history")
 
 
 def test_the_advance_button_takes_a_note_and_a_quiet_customer_too(auth_client, app):
@@ -508,3 +536,92 @@ def test_the_phone_gets_a_rail_and_a_thumb_sized_way_to_move():
     assert ".tc-stage-rail-chip" in css
     assert "min-height: 40px" in css, "the rail chips are not a thumb target"
     assert "width: 40px; height: 40px" in css, "the Move button is not a thumb target"
+
+
+# ── the card opens itself ────────────────────────────────────────────────────
+def _card_markup(src: str) -> str:
+    """The job card as the board builds it, up to its drag wiring."""
+    block = src[src.index("const card = h('div.job-card'"):]
+    return block[:block.index("card.addEventListener('dragstart'")]
+
+
+def _job_dialog(src: str) -> str:
+    """The job dialog: `openJob`, and none of the screens declared after it."""
+    block = src[src.index("function openJob("):]
+    return block[:block.index("async function quickJob(")]
+
+
+def test_a_tapped_card_opens_the_job_rather_than_leaving_the_board():
+    """The board already holds the answer, so the card answers in place.
+
+    Tapping a card used to navigate to the job's own screen — a page load and a
+    lost place thirteen columns in — when the question being asked of it was
+    "where is this car, and what is next".
+    """
+    src = BOARD_JS.read_text(encoding="utf-8")
+    card = _card_markup(src)
+
+    assert "openJob(job, to)" in card, "tapping a card does not open the job dialog"
+    assert "T.navigate(" not in card, "a tapped card still leaves the board"
+
+    # A card only a mouse can open is a card half the shop cannot open.
+    assert "card.setAttribute('tabindex', '0')" in card, (
+        "the job card cannot be reached from a keyboard")
+    assert "addEventListener('keydown'" in card, (
+        "a keyboard cannot open a job card")
+
+
+def test_the_dialog_shows_the_car_not_only_the_move():
+    """The dialog is the job card now: the facts, the move, the note, the way on."""
+    src = BOARD_JS.read_text(encoding="utf-8")
+    dialog = _job_dialog(src)
+
+    for marker in ("job.reg_no", "job.customer_phone", "job.technician", "job.bay",
+                   "job.promised_date", "job.days_in_shop", "job.description"):
+        assert marker in dialog, f"the job dialog never shows {marker}"
+    assert "T.navigate(`/jobs/${job.id}`)" in dialog, (
+        "the dialog is a dead end — nothing leads on to the full job card")
+
+
+def test_the_dialog_keeps_a_note_without_moving_the_card():
+    """A foreman writing down what was found should not have to move the car.
+
+    The stage endpoint records a note whether or not the stage changed, so what
+    the board has to get right is not drawing a move that did not happen — and
+    not announcing one either.
+    """
+    src = BOARD_JS.read_text(encoding="utf-8")
+    move = src[src.index("async function moveTo("):]
+    move = move[:move.index("function openJob(")]
+
+    assert "const moved = stage !== currentStage" in move, (
+        "a note-only save is swallowed: the endpoint is never called")
+    assert "if (moved) placeCard(jobId, stage)" in move, (
+        "a note-only save still draws the card in a new column")
+    assert "Note saved on" in move, (
+        "a note-only save reports itself as a stage move")
+
+
+def test_the_save_button_says_what_it_will_do():
+    """A button promising a move when only a note will be kept is a lie."""
+    src = BOARD_JS.read_text(encoding="utf-8")
+    dialog = _job_dialog(src)
+
+    assert "=== currentStage ? 'Save note' : 'Move card'" in dialog, (
+        "the save button does not follow the stage picker")
+    assert "controls.stage.addEventListener('change'" in dialog, (
+        "the save button never hears the stage picker change")
+
+
+def test_the_job_dialogs_save_button_is_associated_with_its_form():
+    """The footer is outside the <form>, so the button has to name it.
+
+    `form` is a read-only property on a button, so the association has to be an
+    attribute — the same trap formModal was in, and the same fix.
+    """
+    src = BOARD_JS.read_text(encoding="utf-8")
+    dialog = _job_dialog(src)
+
+    assert "const form = h('form.row.g-3', { id: formId, novalidate: true }" in dialog
+    assert "save.setAttribute('form', formId)" in dialog, (
+        "the job dialog's Save button is orphaned — clicking it does nothing")

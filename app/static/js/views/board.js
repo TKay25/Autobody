@@ -79,11 +79,31 @@
 
       placed.forEach(({ job, from, to }) => {
         const unsaved = to !== from;
+        /* The Move button is the thumb-sized way in on a touchscreen, where drag
+           events never fire at all. It opens the very same dialog the card does,
+           so it is a pointer convenience rather than a second action: the card
+           carries the keyboard access, and this one stays out of the tab order.
+           That last part has to be an attribute — `h()` would set the
+           (non-existent) `tabindex` property and leave the button focusable. */
+        const moveBtn = h('button.job-card-move', {
+          type: 'button',
+          title: 'Move to another stage',
+          'aria-hidden': 'true',
+          onclick: (event) => { event.stopPropagation(); openJob(job, to); },
+        }, T.icon('arrows-move'));
+        moveBtn.setAttribute('tabindex', '-1');
+
         const card = h('div.job-card', {
           class: 'job-card' + (job.is_overdue ? ' overdue' : '')
             + (unsaved ? ' is-unsaved' : ''),
           draggable: true,
-          onclick: () => T.navigate(`/jobs/${job.id}`),
+          /* The card opens itself rather than leaving the board: on the shop
+             floor a tapped card is a question about *that car* — where is it,
+             what is next, what was done — and answering it by navigating away
+             cost the board its place thirteen columns in. */
+          role: 'button',
+          'aria-label': `Open ${job.job_no || job.reg_no || 'this job card'}`,
+          onclick: () => openJob(job, to),
           dataset: { jobId: job.id },
         }, [
           h('div.d-flex.justify-content-between.align-items-start.gap-1',
@@ -107,18 +127,22 @@
               h('div.meta', job.is_overdue
                 ? h('span.text-danger.fw-semibold', `${job.days_in_shop}d`)
                 : `${job.days_in_shop}d`),
-              /* Drag-and-drop never fires on a touchscreen, so the card also
-                 carries a Move button that opens the same stage picker. */
-              h('button.job-card-move', {
-                type: 'button',
-                title: 'Move to another stage',
-                'aria-label': `Move ${job.job_no || job.reg_no || 'this job card'} to another stage`,
-                onclick: (event) => { event.stopPropagation(); openMove(job, to); },
-              }, T.icon('arrows-move')),
+              /* The touch way in, built above the card so its tabindex could be
+                 set as an attribute. */
+              moveBtn,
             ]),
           ]),
         ]);
 
+        /* Focusable, and Enter or Space does what a tap does — a card you can
+           only open with a mouse is a card half the shop cannot open. The
+           attribute, not the property: the DOM's is `tabIndex`. */
+        card.setAttribute('tabindex', '0');
+        card.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          openJob(job, to);
+        });
         card.addEventListener('dragstart', (e) => {
           e.dataTransfer.setData('text/plain', String(job.id));
           e.dataTransfer.effectAllowed = 'move';
@@ -152,7 +176,7 @@
              asks nothing. Anything else opens the dialog: the note and the
              customer's notification are decided there, not by the drop. */
           if (!current || current.to === col.stage) return;
-          openMove(current.job, current.to, { stage: col.stage });
+          openJob(current.job, current.to, { stage: col.stage });
         },
       }, [
         h('div.kanban-head', [h('span', col.label), badge]),
@@ -193,10 +217,22 @@
        the badges come with it — then the server is told, and a rejection rolls the
        whole board back. */
     async function moveTo(jobId, stage, currentStage, { note = '', notify = true, force = false } = {}) {
-      if (!stage || stage === currentStage) return;
-      placeCard(jobId, stage);
+      /* A stage is always posted, but it is not always a *move*: the dialog lets a
+         foreman write down what was found without walking the car to the next
+         bench, and `advance_job` records the note on the card's history either
+         way. Only a real move is drawn optimistically — there is nothing to place
+         when the card is staying where it is. */
+      if (!stage) return;
+      const moved = stage !== currentStage;
+      if (moved) placeCard(jobId, stage);
       try {
         const res = await api.post(`/api/jobs/${jobId}/stage`, { stage, note, notify, force });
+        if (!moved) {
+          /* Nothing to report beyond the truth: the card did not go anywhere, and
+             saying it did would be the board telling the shop something false. */
+          T.toast(`Note saved on ${res.job.job_no}`);
+          return;
+        }
         /* The toast has to say what actually happened. "Notified" is the server's
            answer, not the tick in the box: a customer with no number on file, or
            one whose window has closed, is told nothing whatever was asked for. */
@@ -213,14 +249,26 @@
       }
     }
 
-    /* The stage-move dialog: the one place a move is explained.
+    /* The card, opened where the shop is standing.
 
-       Every move asks for a note and for whether the customer hears about it,
-       because that is the moment both facts exist — what the shop has just done,
-       and whether it is ready to be said out loud. The note is kept on the card
-       whatever the answer: a note written only when a customer is being messaged
-       would be an audit trail shaped by marketing. */
-    async function openMove(job, currentStage, { stage: preset } = {}) {
+       Tapping a card used to leave the board for the job's own screen — a page
+       load, a lost scroll position, a back button — when the question being asked
+       of it was "where is this car, and what is next", which the board is already
+       the answer to. So a card now opens *itself*: the facts the counter asks for,
+       the stage the card walks to next, the note, and whether the customer hears
+       about it. The full job card — estimate, parts, photos, QC — is one button
+       inside it.
+
+       It replaced the move-only dialog rather than joining it. Two dialogs, one
+       for the car and one for its move, would be two places to look for a job
+       nobody has time to look for.
+
+       Every move still asks both questions, because that is the moment both facts
+       exist — what the shop has just done, and whether it is ready to be said out
+       loud. The note is kept on the card whatever the answer: a note written only
+       when a customer is being messaged would be an audit trail shaped by
+       marketing. */
+    function openJob(job, currentStage, { stage: preset } = {}) {
       /* The card's own walk comes first, in order, under its own heading. The
          columns it never visits are still there — the shop knows things the
          service list does not — but they are a separate, deliberate group, and
@@ -231,39 +279,196 @@
       const offWalk = columns.filter((c) => !walk.includes(c.stage))
         .map((c) => ({ value: c.stage, label: c.label }));
 
-      const res = await T.formModal({
-        title: `Move ${job.job_no || job.reg_no || 'this job card'}`,
-        intro: 'Say what was done, and whether the customer hears about it.',
-        icon: 'arrows-move',
-        fields: [
-          { name: 'stage', label: 'Stage', type: 'select', col: 12, required: true,
-            value: preset || currentStage,
-            optgroups: [
-              { label: `${job.service || 'This card'}'s stages`, options: onWalk },
-              ...(offWalk.length
-                ? [{ label: `Not on this card's walk`, options: offWalk }]
-                : []),
-            ],
-            help: job.stage_step
-              ? `Step ${job.stage_step} of ${job.stage_steps} on this card's walk.`
-              : 'This card is not on its own walk — move it back onto it, or override.' },
-          { name: 'force', label: 'Override the walk', type: 'switch', col: 12,
-            value: false,
-            help: 'Only for a stage this service does not go through. The move is stamped "overridden".' },
-          { name: 'note', label: 'What was done', type: 'textarea', col: 12, rows: 3,
-            placeholder: 'e.g. Both doors primed and blocked back',
-            help: 'Kept on the job card, and printed on the end-of-day sheet.' },
-          { name: 'notify', label: 'WhatsApp the customer', type: 'switch', col: 12,
-            value: true,
-            help: job.customer_whatsapp
-              ? `Sends the standard stage update to ${job.customer_whatsapp}.`
-              : 'This customer has no WhatsApp number on file — nothing will be sent.' },
+      /* The move, described once and built from below: the stage a card is offered
+         and the stage it posts come from the same list, so the two cannot drift
+         apart. */
+      const moveFields = [
+        { name: 'stage', label: 'Stage', type: 'select', col: 12, required: true,
+          value: preset || currentStage,
+          optgroups: [
+            { label: `${job.service || 'This card'}'s stages`, options: onWalk },
+            ...(offWalk.length
+              ? [{ label: `Not on this card's walk`, options: offWalk }]
+              : []),
+          ],
+          help: job.stage_step
+            ? `Step ${job.stage_step} of ${job.stage_steps} on this card's walk.`
+            : 'This card is not on its own walk — move it back onto it, or override.' },
+        { name: 'force', label: 'Override the walk', type: 'switch', col: 12,
+          value: false,
+          help: 'Only for a stage this service does not go through. The move is stamped "overridden".' },
+        { name: 'note', label: 'What was done', type: 'textarea', col: 12, rows: 3, max: 240,
+          placeholder: 'e.g. Both doors primed and blocked back',
+          help: 'Kept on the job card, and printed on the end-of-day sheet. Up to 240 characters.' },
+        { name: 'notify', label: 'WhatsApp the customer', type: 'switch', col: 12,
+          value: true,
+          help: job.customer_whatsapp
+            ? `Sends the standard stage update to ${job.customer_whatsapp}.`
+            : 'This customer has no WhatsApp number on file — nothing will be sent.' },
+      ];
+
+      /* One control per field, built from the description above. The switch rows
+         wear the app's own clothing — `tc-switch-row`, `tc-switch-text` — so a
+         toggle reads as a setting here exactly as it does everywhere else. */
+      const controls = {};
+      function controlFor(field) {
+        const id = `tca-move-${field.name}`;
+        if (field.type === 'select') {
+          /* A real <select>, wrapped in the app's searchable combobox: the control
+             every other screen uses, so the list is typed at on a keyboard and
+             swiped at on a phone. The wrapper keeps the select as the value
+             carrier, which is why the callers below still read `.value`. */
+          const select = h('select.form-select.form-select-sm', {
+            id, name: field.name, 'aria-label': field.label,
+            'aria-required': field.required ? 'true' : undefined,
+          }, (field.optgroups || []).map((group) => h('optgroup', { label: group.label },
+            group.options.map((option) => h('option', {
+              value: option.value,
+              selected: String(option.value) === String(field.value),
+            }, option.label)))));
+          controls[field.name] = select;
+          const picker = T.searchableSelect(select, {
+            placeholder: field.searchPlaceholder || 'Search…',
+            ariaLabel: `Search ${field.label}`,
+          });
+          return { node: picker.node, labelFor: picker.inputId || id };
+        }
+        if (field.type === 'textarea') {
+          const area = h('textarea.form-control.form-control-sm', {
+            id, name: field.name, rows: field.rows || 3,
+            placeholder: field.placeholder || '',
+          });
+          /* The DOM's is `maxLength`, so h()'s property assignment would land on
+             an expando and the limit would never bite. */
+          if (field.max) area.setAttribute('maxlength', String(field.max));
+          controls[field.name] = area;
+          return { node: area, labelFor: id };
+        }
+        if (field.type === 'switch') {
+          const input = h('input.form-check-input', {
+            id, name: field.name, type: 'checkbox', checked: !!field.value,
+          });
+          controls[field.name] = input;
+          return {
+            node: h('label.tc-switch-row.form-switch', { for: id }, [
+              h('div.tc-switch-text', [
+                h('div.tc-switch-title', field.label),
+                field.help ? h('div.tc-switch-sub', field.help) : null,
+              ]),
+              input,
+            ]),
+            bare: true,
+          };
+        }
+        const input = h('input.form-control.form-control-sm', {
+          id, name: field.name, value: field.value || '',
+        });
+        controls[field.name] = input;
+        return { node: input, labelFor: id };
+      }
+
+      /* The wrapper formModal builds: a label, the control, and the hint that says
+         what the move will do. A switch says its own name inside its row, so it is
+         never labelled twice. */
+      function fieldNode(field) {
+        const { node, labelFor, bare } = controlFor(field);
+        return h(`div.col-${field.col || 12}`, h('div.tc-field', [
+          field.label && !bare
+            ? h('label.tc-label', { for: labelFor || null }, field.label,
+                field.required ? h('span.req', { title: 'Required' }, '*') : null)
+            : null,
+          node,
+          field.help && !bare ? h('div.tc-hint', field.help) : null,
+        ]));
+      }
+
+      /* The facts the counter asks for, in the order it asks them. A card with no
+         bay or no technician drops the row rather than printing an empty one: a
+         blank where a bay should be reads as data that failed to load. */
+      const facts = [
+        ['Registration', job.reg_no],
+        ['Vehicle', job.vehicle_title],
+        ['Customer', job.customer_name],
+        ['Phone', job.customer_phone],
+        ['In for', job.service],
+        ['Priority', job.priority && job.priority !== 'NORMAL' ? job.priority : ''],
+        ['Technician', job.technician],
+        ['Bay', job.bay],
+        ['Promised', job.promised_date ? T.dateShort(job.promised_date) : ''],
+        ['In the shop', `${job.days_in_shop} day${job.days_in_shop === 1 ? '' : 's'}`],
+      ].filter(([, value]) => value);
+
+      const formId = 'tca-job-move-form';
+      const form = h('form.row.g-3', { id: formId, novalidate: true },
+        moveFields.map(fieldNode));
+
+      /* The way through to the rest of the card — estimate, parts, photos, QC. It
+         is an addition, not a replacement: the dialog answers the question the
+         board asks, and this opens the screen that answers every other one. */
+      const fullCard = h('button.btn.btn-outline-secondary.btn-sm', {
+        type: 'button',
+        onclick: () => { dialog.close(); T.navigate(`/jobs/${job.id}`); },
+      }, [T.icon('box-arrow-up-right'), ' Full job card']);
+
+      /* The button says what it is about to do. With the stage left where the card
+         already is there is no move to make, only a note to keep — and a button
+         promising a move would be the board lying about itself. */
+      const save = h('button.btn.btn-brand.btn-sm.fw-semibold', { type: 'submit' },
+        [T.icon('check2'), h('span', 'Move card')]);
+      const saveLabel = save.querySelector('span');
+      const describeSave = () => {
+        saveLabel.textContent = controls.stage.value === currentStage ? 'Save note' : 'Move card';
+      };
+      controls.stage.addEventListener('change', describeSave);
+      describeSave();
+
+      /* The footer stands outside the <form>, so the button has to be pointed at it
+         by name: `form` is a read-only property on a button, so it goes on as an
+         attribute. The click handler is the belt to that brace — the default action
+         is cancelled there, so a browser that honours `form=` and one that does not
+         both submit exactly once. */
+      save.setAttribute('form', formId);
+      save.addEventListener('click', (event) => { event.preventDefault(); submit(); });
+
+      const dialog = T.modal({
+        title: job.job_no || job.reg_no || 'Job card',
+        subtitle: `${job.stage_label || labelOf(currentStage)} · `
+          + (job.stage_step ? `step ${job.stage_step} of ${job.stage_steps}` : 'off its walk')
+          + (job.is_overdue ? ' · overdue' : ''),
+        icon: 'clipboard-check',
+        accent: job.is_overdue ? 'danger' : 'brand',
+        size: 'lg',
+        body: h('div', [
+          h('div.row.g-2.small.mb-3', facts.map(([label, value]) => h('div.col-6.col-md-4', [
+            h('div.tc-hint', label),
+            h('div.fw-semibold.text-truncate', value),
+          ]))),
+          job.description ? h('div.small.text-secondary.mb-3', job.description) : null,
+          form,
+        ]),
+        footer: [
+          fullCard,
+          h('button.btn.btn-outline-secondary.btn-sm',
+            { type: 'button', 'data-bs-dismiss': 'modal' }, 'Close'),
+          save,
         ],
-        submitLabel: 'Move card',
       });
-      if (!res) return;
-      await moveTo(job.id, res.stage, currentStage,
-        { note: res.note, notify: res.notify, force: res.force });
+
+      /* One save, two outcomes: a move that carries the note, or a note kept with
+         the card left where it is. Both post the same endpoint, because the note is
+         the card's history either way — and a foreman writing down what was found
+         should not have to move the car to be allowed to say it. */
+      async function submit() {
+        const stage = controls.stage.value;
+        const note = controls.note.value.trim();
+        if (!stage) return;
+        if (stage === currentStage && !note) { dialog.close(); return; }
+        dialog.close();
+        await moveTo(job.id, stage, currentStage, {
+          note, notify: controls.notify.checked, force: controls.force.checked,
+        });
+      }
+      form.addEventListener('submit', (event) => { event.preventDefault(); submit(); });
     }
 
     /* ── Adding a card, and closing the day out ───────────────────────────
@@ -622,7 +827,7 @@
              caption at all — the dialog is where the answer is given now.
              It also has to stop promising that drag is the way in: on a phone the
              card's Move button is, and the caption below says so. */
-          h('div.small.text-secondary', 'Every card walks its own service’s stages — a valet never sees the spray booth. Drag a card on a computer; on a phone tap Move. Every move takes a note, and you decide whether the customer hears about it.'),
+          h('div.small.text-secondary', 'Every card walks its own service’s stages — a valet never sees the spray booth. Tap a card to see the car, move it and leave a note; drag it on a computer, or use the card’s Move button on a phone. Every move takes a note, and you decide whether the customer hears about it.'),
         ]),
         h('div.tc-board-actions', [
           h('button.btn.btn-sm.btn-brand', { onclick: () => quickJob() },

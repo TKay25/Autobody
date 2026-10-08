@@ -94,6 +94,63 @@ def test_form_modal_submit_button_is_associated_with_its_form():
     )
 
 
+def test_clickable_table_rows_are_reachable_by_keyboard():
+    """A row that says it is a button must be one a keyboard can press.
+
+    `dataTable` used to ask `h()` for `tabindex`. The DOM spells that `tabIndex`,
+    so the request was assigned on as a plain JS property of the attribute's name:
+    no exception, no attribute, no error anywhere. Every clickable row in the app —
+    job cards, invoices, customers, parts — advertised `role="button"` and carried
+    an Enter handler that no focus could ever reach, because the row was never in
+    the tab order to begin with.
+    """
+    core = (JS_DIR / "core.js").read_text(encoding="utf-8")
+    row = core[core.index("const clickable = !!onRowClick"):]
+    row = row[:row.index("\n  function ")]
+    props = row[:row.index("columns.map((c) => h('td'")]
+
+    assert "setAttribute('tabindex', '0')" in row, (
+        "a clickable data-table row is never given the attribute, so it stays "
+        "out of the tab order and its keydown handler can never fire"
+    )
+    assert "tabindex:" not in props, (
+        "the row asks h() for `tabindex`, which is the attribute's spelling and "
+        "not the DOM's — it becomes a JS property, not an attribute"
+    )
+
+
+# Attribute spellings the DOM names differently, and that `h()` does not route to
+# setAttribute for us. `colspan`, `rowspan`, `for`, `name` and `aria-*` are
+# deliberately absent: h() already sets those as attributes, so passing them is
+# correct and `estimate.js` does exactly that for its empty-state cell.
+H_TAKES_ATTRIBUTES_LITERALLY = ("tabindex", "maxlength", "readonly", "contenteditable")
+
+
+def test_attribute_spellings_are_not_passed_through_the_builder():
+    """Pass `h()` the DOM's spelling, or set the attribute yourself.
+
+    `h()` ends in `el[key] = value`, so `tabindex` writes `el.tabindex`,
+    `maxlength` writes `el.maxlength`, `readonly` writes `el.readonly` — none of
+    which the browser knows. The attribute simply never appears, and CSS, focus
+    rings, screen readers and length limits all quietly behave as if nobody asked.
+    This is the same failure the `aria-*` block in `h()` was widened to fix, so
+    the names are listed here rather than rediscovered one screen at a time.
+    """
+    pattern = re.compile(
+        r"['\"]?(" + "|".join(H_TAKES_ATTRIBUTES_LITERALLY) + r")['\"]?\s*:")
+    offenders = []
+    for path in sorted(JS_DIR.rglob("*.js")):
+        body = path.read_text(encoding="utf-8")
+        for match in pattern.finditer(body):
+            line = body[:match.start()].count("\n") + 1
+            offenders.append(f"{path.name}:{line} {match.group(1)}")
+
+    assert not offenders, (
+        "these would become JS properties, not attributes — use setAttribute() "
+        "or the DOM's spelling: " + ", ".join(offenders)
+    )
+
+
 def test_no_hardcoded_static_urls_in_templates():
     """Everything must go through static_url() so cache busting always applies."""
     for path in TEMPLATES.rglob("*.html"):
